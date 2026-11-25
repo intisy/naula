@@ -20,8 +20,7 @@ static void web_a_domain_that_does_not_resolve_is_unreachable(void) {
     CHECK(naula_web_document("naula-test.invalid", "dd92836cca7c292258635112ecfe1acb7b4f6ecd", &bytes, &length,
                              &refusal) == NAULA_UNREACHABLE);
     if (!check_text(refusal.code, "host_not_resolved", "unresolved domain")) {
-        fprintf(stderr, "refusal detail: %s
-", refusal.detail);
+        fprintf(stderr, "refusal detail: %s\n", refusal.detail);
     }
 }
 
@@ -37,8 +36,7 @@ static void codeberg_answers_a_find_but_asks_for_a_token_by_number(void) {
     repository.size = sizeof repository;
     CHECK(forgejo->lookup(forgejo->context, "codeberg.org", number, NULL, &repository, &refusal) == NAULA_REFUSED);
     if (!check_text(refusal.code, "token_needed", "anonymous lookup by number")) {
-        fprintf(stderr, "refusal detail: %s
-", refusal.detail);
+        fprintf(stderr, "refusal detail: %s\n", refusal.detail);
     }
 }
 
