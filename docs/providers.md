@@ -3,6 +3,14 @@
 What each built-in provider reads, and what it was measured to answer. A capability a host does not offer is absent
 from `describe` and answers REFUSED `unsupported_operation`; nothing fails silently.
 
+## GitHub
+
+`contains` reads `GET repositories/{id}/compare/{commit}...{ref}?per_page=1` and answers contained when `status` is
+`ahead` or `identical`. A 404 on the compare reads the same as a repository that is gone, so the repository is looked up
+by number: while it is live the 404 is refused `missing_commit_or_ref`, and only a 404 on that lookup answers NOT_FOUND.
+It is never read as "not contained", which the identity check would act on. A ref starting with `-` is refused before
+any request, as Gitea and Forgejo refuse it, so both providers refuse the same inputs.
+
 ## Gitea and Forgejo
 
 One module, `src/provider_gitea.c`, answers both words from one route table. Measured on 2026-11-25 against

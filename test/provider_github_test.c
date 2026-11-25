@@ -422,27 +422,34 @@ static void contains_reads_compare_ahead_or_identical(void) {
     CHECK(contained_for("compare_behind.json", 200, path, &status) == 0 && status == NAULA_OK);
 }
 
-static void contains_answers_no_for_a_commit_a_live_repository_does_not_know(void) {
+static void contains_refuses_what_a_live_repository_does_not_know_and_is_not_found_once_it_is_gone(void) {
     char *repository_body = load("repository.json");
     http_route routes[2] = {route("/repositories/1296269/compare/" COMMIT "...master?per_page=1", 404, NOT_FOUND_BODY),
                             route(REPOSITORY_ROUTE, 200, repository_body)};
     http_fixture *server = serve(routes, 2);
     naula_refusal refusal = fresh_refusal();
     int contained = -1;
-    CHECK(github()->contains(NULL, NULL, NUMBER, "master", COMMIT, NULL, &contained, &refusal) == NAULA_OK);
+    CHECK(github()->contains(NULL, NULL, NUMBER, "master", COMMIT, NULL, &contained, &refusal) == NAULA_REFUSED);
     CHECK(contained == 0);
+    check_text(refusal.code, "missing_commit_or_ref", "unknown commit in a live repository");
+    CHECK(refusal.fix != NULL);
     naula_memory_release(finish(server));
     routes[1] = route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY);
     server = serve(routes, 2);
     CHECK(github()->contains(NULL, NULL, NUMBER, "master", COMMIT, NULL, &contained, &refusal) == NAULA_NOT_FOUND);
+    CHECK(contained == 0);
     naula_memory_release(finish(server));
     naula_memory_release(repository_body);
 }
 
-static void contains_refuses_a_commit_that_is_not_hex(void) {
+static void contains_refuses_a_commit_that_is_not_hex_or_a_ref_that_reads_as_an_option(void) {
     naula_refusal refusal = fresh_refusal();
     int contained = -1;
     CHECK(github()->contains(NULL, NULL, NUMBER, "master", "../x", NULL, &contained, &refusal) == NAULA_REFUSED);
+    contained = -1;
+    CHECK(github()->contains(NULL, NULL, NUMBER, "--all", COMMIT, NULL, &contained, &refusal) == NAULA_REFUSED);
+    CHECK(contained == 0);
+    check_text(refusal.code, "invalid_request", "ref read as an option");
 }
 
 static void parent_count_reads_the_commit(void) {
@@ -598,8 +605,8 @@ int main(void) {
     read_file_refuses_a_folder_and_a_file_too_large_to_inline();
     read_file_encodes_the_path_and_the_ref();
     contains_reads_compare_ahead_or_identical();
-    contains_answers_no_for_a_commit_a_live_repository_does_not_know();
-    contains_refuses_a_commit_that_is_not_hex();
+    contains_refuses_what_a_live_repository_does_not_know_and_is_not_found_once_it_is_gone();
+    contains_refuses_a_commit_that_is_not_hex_or_a_ref_that_reads_as_an_option();
     parent_count_reads_the_commit();
     a_root_commit_has_no_parents();
     list_repos_reads_every_page_of_an_organization();

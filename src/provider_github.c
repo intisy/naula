@@ -286,16 +286,6 @@ static int is_contained_status(const char *status) {
     return strcmp(status, "ahead") == 0 || strcmp(status, "identical") == 0;
 }
 
-/** A commit GitHub does not know answers 404 on compare, the same as a repository that is gone, so the repository decides which. */
-static naula_status settle_missing_commit(const char *host, uint64_t number, const char *token, int *contained,
-                                          naula_refusal *refusal) {
-    naula_status status = still_the_same_number(host, number, token, refusal);
-    if (status == NAULA_OK) {
-        *contained = 0;
-    }
-    return status;
-}
-
 static naula_status github_contains(void *context, const char *host, uint64_t number, const char *ref,
                                     const char *commit, const char *token, int *contained, naula_refusal *refusal) {
     char route[ROUTE_SIZE];
@@ -304,14 +294,15 @@ static naula_status github_contains(void *context, const char *host, uint64_t nu
     (void)context;
     *contained = 0;
     if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit) || ref == NULL || ref[0] == '\0' ||
-        naula_forge_encode_text(ref, 1, encoded_ref, sizeof encoded_ref) == 0) {
+        ref[0] == '-' || naula_forge_encode_text(ref, 1, encoded_ref, sizeof encoded_ref) == 0) {
         return naula_forge_refuse_input(&flavor, refusal, "the number, the commit or the ref");
     }
     snprintf(route, sizeof route, "repositories/%llu/compare/%s...%s?per_page=1", (unsigned long long)number, commit,
              encoded_ref);
     naula_status status = github_get(host, route, token, HISTORY_BODY_CAPACITY, &reply, refusal);
     if (status == NAULA_NOT_FOUND) {
-        return settle_missing_commit(host, number, token, contained, refusal);
+        return settle_missing(host, number, token, "missing_commit_or_ref", "commit or ref",
+                              "check the commit and the branch exist in the repository", refusal);
     }
     if (status != NAULA_OK) {
         return status;
