@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "importName": "naula",
+  "description": "Lays out, identifies and renames git repos from one name.",
+  "topics": [
+    "tools"
+  ],
+  "dependencies": []
+}

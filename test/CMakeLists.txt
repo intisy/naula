@@ -1,0 +1,5 @@
+add_executable(status_test status_test.c)
+target_link_libraries(status_test PRIVATE naula naula_allocator_counting)
+naula_strict_warnings(status_test)
+add_test(NAME status_test COMMAND status_test)
+set_tests_properties(status_test PROPERTIES TIMEOUT 120)
