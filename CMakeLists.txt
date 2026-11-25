@@ -20,10 +20,34 @@ function(naula_strict_warnings target)
     endif()
 endfunction()
 
-add_library(naula STATIC src/status.c)
+add_library(naula_cjson STATIC vendor/cjson/cJSON.c)
+target_include_directories(naula_cjson PUBLIC vendor/cjson)
+target_compile_definitions(naula_cjson PUBLIC CJSON_HIDE_SYMBOLS)
+set_target_properties(naula_cjson PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+
+if(WIN32)
+    set(naula_transport_platform_source src/transport_windows.c)
+    set(naula_transport_libraries Winhttp Shlwapi)
+else()
+    find_package(Threads REQUIRED)
+    set(naula_transport_platform_source src/transport_curl.c)
+    set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads)
+endif()
+set(naula_sources src/status.c src/sha256.c src/transport.c src/transport_sink.c ${naula_transport_platform_source})
+
+add_library(naula STATIC ${naula_sources})
 target_include_directories(naula PUBLIC include)
+target_link_libraries(naula PUBLIC naula_cjson ${naula_transport_libraries})
 set_target_properties(naula PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
 naula_strict_warnings(naula)
+
+# The same sources with the loopback and plain http hooks compiled in; only a test links it.
+add_library(naula_test_hooks STATIC EXCLUDE_FROM_ALL ${naula_sources})
+target_include_directories(naula_test_hooks PUBLIC include src)
+target_compile_definitions(naula_test_hooks PRIVATE NAULA_TEST_HOOKS)
+target_link_libraries(naula_test_hooks PUBLIC naula_cjson ${naula_transport_libraries})
+set_target_properties(naula_test_hooks PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+naula_strict_warnings(naula_test_hooks)
 
 # naula carries no allocator: every binary links exactly one of these two, so a test can fail an allocation.
 add_library(naula_allocator OBJECT src/memory_malloc.c)
