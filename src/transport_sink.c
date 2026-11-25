@@ -1,6 +1,7 @@
 #include "naula/transport.h"
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -59,6 +60,12 @@ void naula_fetch_refuse(naula_fetch_answer *answer, const char *fix, const char 
     va_end(arguments);
     answer->outcome = NAULA_FETCH_REFUSED;
     answer->fix = fix;
+}
+
+void naula_fetch_mark_host_unresolved(naula_fetch_answer *answer) {
+    if (answer->size >= offsetof(naula_fetch_answer, host_unresolved) + sizeof answer->host_unresolved) {
+        answer->host_unresolved = 1;
+    }
 }
 
 void naula_fetch_out_of_memory(naula_fetch_answer *answer) {

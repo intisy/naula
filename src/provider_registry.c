@@ -74,10 +74,14 @@ naula_status naula_providers_open(naula_providers **providers) {
         return NAULA_OUT_OF_MEMORY;
     }
     memset(opened, 0, sizeof *opened);
-    naula_status status = naula_providers_register(opened, naula_provider_github(), NULL);
-    if (status != NAULA_OK) {
-        naula_providers_close(opened);
-        return status;
+    const naula_provider *built_in[] = {naula_provider_github(), naula_provider_gitea(), naula_provider_forgejo(),
+                                        naula_provider_web()};
+    for (size_t index = 0; index < sizeof built_in / sizeof built_in[0]; index++) {
+        naula_status status = naula_providers_register(opened, built_in[index], NULL);
+        if (status != NAULA_OK) {
+            naula_providers_close(opened);
+            return status;
+        }
     }
     *providers = opened;
     return NAULA_OK;

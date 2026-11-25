@@ -1,0 +1,91 @@
+{
+ "url": "https://codeberg.org/api/v1/repos/Codeberg/pages-server/git/commits/28cde84643972ecdacd43a1a4c95bf52d017101f",
+ "sha": "28cde84643972ecdacd43a1a4c95bf52d017101f",
+ "created": "2026-04-21T11:19:07+02:00",
+ "html_url": "https://codeberg.org/Codeberg/pages-server/commit/28cde84643972ecdacd43a1a4c95bf52d017101f",
+ "commit": {
+  "url": "https://codeberg.org/api/v1/repos/Codeberg/pages-server/git/commits/28cde84643972ecdacd43a1a4c95bf52d017101f",
+  "author": {
+   "name": "Andreas Shimokawa",
+   "email": "shimokawa@fsfe.org",
+   "date": "2026-04-21T11:19:07+02:00"
+  },
+  "committer": {
+   "name": "Andreas Shimokawa",
+   "email": "shimokawa@fsfe.org",
+   "date": "2026-04-21T11:19:07+02:00"
+  },
+  "message": "fix crash when most active IP list cannot be saturated\n\n(This could have been cleaner by first using Min() or something)\n\nfixes #550\n",
+  "tree": {
+   "url": "https://codeberg.org/api/v1/repos/Codeberg/pages-server/git/trees/28cde84643972ecdacd43a1a4c95bf52d017101f",
+   "sha": "28cde84643972ecdacd43a1a4c95bf52d017101f",
+   "created": "2026-04-21T11:19:07+02:00"
+  },
+  "verification": {
+   "verified": false,
+   "reason": "gpg.error.not_signed_commit",
+   "signature": "",
+   "signer": null,
+   "payload": ""
+  }
+ },
+ "author": {
+  "id": 173,
+  "login": "ashimokawa",
+  "login_name": "",
+  "source_id": 0,
+  "full_name": "Andreas Shimokawa",
+  "email": "ashimokawa@noreply.codeberg.org",
+  "avatar_url": "https://codeberg.org/avatars/08a6e264d4a8e159718256c6dfd392b242e9ec8f7e7bf8993bb3afba7d13fe7b",
+  "html_url": "https://codeberg.org/ashimokawa",
+  "language": "",
+  "is_admin": false,
+  "last_login": "0001-01-01T00:00:00Z",
+  "created": "2018-11-13T11:49:01+01:00",
+  "restricted": false,
+  "active": false,
+  "prohibit_login": false,
+  "location": "",
+  "pronouns": "he/him",
+  "website": "https://ashimokawa.codeberg.page",
+  "description": "Uses\r\n- Debian GNU/Linux\r\n- COSMIC Desktop\r\n\r\nLikes\r\n- Fanless silent hardware\r\n- Efficient software\r\n- C and PHP, yes PHP\r\n\r\nFounder of\r\n- Gadgetbridge\r\n- Codeberg e.V.",
+  "visibility": "public",
+  "followers_count": 52,
+  "following_count": 4,
+  "starred_repos_count": 139,
+  "username": "ashimokawa"
+ },
+ "committer": {
+  "id": 173,
+  "login": "ashimokawa",
+  "login_name": "",
+  "source_id": 0,
+  "full_name": "Andreas Shimokawa",
+  "email": "ashimokawa@noreply.codeberg.org",
+  "avatar_url": "https://codeberg.org/avatars/08a6e264d4a8e159718256c6dfd392b242e9ec8f7e7bf8993bb3afba7d13fe7b",
+  "html_url": "https://codeberg.org/ashimokawa",
+  "language": "",
+  "is_admin": false,
+  "last_login": "0001-01-01T00:00:00Z",
+  "created": "2018-11-13T11:49:01+01:00",
+  "restricted": false,
+  "active": false,
+  "prohibit_login": false,
+  "location": "",
+  "pronouns": "he/him",
+  "website": "https://ashimokawa.codeberg.page",
+  "description": "Uses\r\n- Debian GNU/Linux\r\n- COSMIC Desktop\r\n\r\nLikes\r\n- Fanless silent hardware\r\n- Efficient software\r\n- C and PHP, yes PHP\r\n\r\nFounder of\r\n- Gadgetbridge\r\n- Codeberg e.V.",
+  "visibility": "public",
+  "followers_count": 52,
+  "following_count": 4,
+  "starred_repos_count": 139,
+  "username": "ashimokawa"
+ },
+ "parents": [
+  {
+   "url": "https://codeberg.org/api/v1/repos/Codeberg/pages-server/git/commits/242c38caf5c05ad7765b8a74cc49dcd59d4e62fd",
+   "sha": "242c38caf5c05ad7765b8a74cc49dcd59d4e62fd",
+   "created": "0001-01-01T00:00:00Z"
+  }
+ ]
+}
