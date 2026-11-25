@@ -71,8 +71,8 @@ static naula_status build_root(const target *at, char *root, naula_refusal *refu
         snprintf(root, FORGE_ROOT_SIZE, "%s", api_root_override);
         return NAULA_OK;
     }
-    if (!forge_is_host_text(at->host)) {
-        return forge_refuse_input(&at->edition->flavor, refusal, "the host");
+    if (!naula_forge_is_host_text(at->host)) {
+        return naula_forge_refuse_input(&at->edition->flavor, refusal, "the host");
     }
     snprintf(root, FORGE_ROOT_SIZE, "https://%s/api/v1", at->host);
     return NAULA_OK;
@@ -88,9 +88,9 @@ static naula_status get(const target *at, const char *route, size_t capacity, fo
         return status;
     }
     if (snprintf(url, sizeof url, "%s/%s", root, route) >= (int)sizeof url) {
-        return forge_refuse_input(&at->edition->flavor, refusal, "the request address (too long)");
+        return naula_forge_refuse_input(&at->edition->flavor, refusal, "the request address (too long)");
     }
-    return forge_fetch(&at->edition->flavor, url, at->token, capacity, reply, refusal);
+    return naula_forge_fetch(&at->edition->flavor, url, at->token, capacity, reply, refusal);
 }
 
 static naula_repository fresh_repository(void) {
@@ -104,31 +104,31 @@ static naula_status lookup_target(const target *at, naula_repository *out, naula
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
     const forge_flavor *flavor = &at->edition->flavor;
-    if (!forge_covers_first_shape(out) || at->number == 0) {
-        return forge_refuse_input(flavor, refusal, "the repository number or the result struct");
+    if (!naula_forge_covers_first_shape(out) || at->number == 0) {
+        return naula_forge_refuse_input(flavor, refusal, "the repository number or the result struct");
     }
     snprintf(route, sizeof route, routes.by_number, (unsigned long long)at->number);
     naula_status status = get(at, route, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
     if (status != NAULA_OK) {
         return status;
     }
-    cJSON *json = forge_parse_reply(flavor, &reply, &status, refusal);
+    cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
     uint64_t echoed = 0;
-    if (json != NULL && !forge_read_exact_number(json, "id", &echoed)) {
-        status = forge_refuse_malformed(flavor, refusal, "a repository with no number that can be read exactly");
+    if (json != NULL && !naula_forge_read_exact_number(json, "id", &echoed)) {
+        status = naula_forge_refuse_malformed(flavor, refusal, "a repository with no number that can be read exactly");
     } else if (json != NULL && echoed != at->number) {
         naula_refuse(refusal, "number_mismatch", "check the number in the id",
                      "%s answered another repository than the one asked for (%s)", flavor->label, route);
         status = NAULA_REFUSED;
     } else if (json != NULL) {
-        status = forge_fill_repository(flavor, json, out, refusal);
+        status = naula_forge_fill_repository(flavor, json, out, refusal);
     }
     if (status == NAULA_OK) {
         out->etag = reply.etag;
         reply.etag = NULL;
     }
     cJSON_Delete(json);
-    forge_reply_release(&reply);
+    naula_forge_reply_release(&reply);
     return status;
 }
 
@@ -145,8 +145,8 @@ static naula_status gitea_find(void *context, const char *host, const char *acco
     naula_refusal absent;
     target at = {context, host, 0, token};
     const forge_flavor *flavor = &at.edition->flavor;
-    if (!forge_is_name_segment(account) || !forge_is_name_segment(name)) {
-        return forge_refuse_input(flavor, refusal, "the account or the name");
+    if (!naula_forge_is_name_segment(account) || !naula_forge_is_name_segment(name)) {
+        return naula_forge_refuse_input(flavor, refusal, "the account or the name");
     }
     *number = 0;
     memset(&absent, 0, sizeof absent);
@@ -162,22 +162,22 @@ static naula_status gitea_find(void *context, const char *host, const char *acco
         }
         return status;
     }
-    cJSON *json = forge_parse_reply(flavor, &reply, &status, refusal);
-    if (json != NULL && !forge_read_exact_number(json, "id", number)) {
-        status = forge_refuse_malformed(flavor, refusal, "a repository with no number that can be read exactly");
-    } else if (json != NULL && !forge_answers_to_the_name(json, account, name)) {
+    cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
+    if (json != NULL && !naula_forge_read_exact_number(json, "id", number)) {
+        status = naula_forge_refuse_malformed(flavor, refusal, "a repository with no number that can be read exactly");
+    } else if (json != NULL && !naula_forge_answers_to_the_name(json, account, name)) {
         *number = 0;
     }
     cJSON_Delete(json);
-    forge_reply_release(&reply);
+    naula_forge_reply_release(&reply);
     return status;
 }
 
 static int build_repository_prefix(const naula_repository *repository, char *prefix, size_t capacity) {
     char account[NAME_SIZE];
     char name[NAME_SIZE];
-    if (forge_encode_text(repository->account, 0, account, sizeof account) == 0 ||
-        forge_encode_text(repository->name, 0, name, sizeof name) == 0) {
+    if (naula_forge_encode_text(repository->account, 0, account, sizeof account) == 0 ||
+        naula_forge_encode_text(repository->name, 0, name, sizeof name) == 0) {
         return 0;
     }
     return snprintf(prefix, capacity, routes.by_name, account, name) < (int)capacity;
@@ -218,16 +218,16 @@ static naula_status build_raw_route(const naula_repository *repository, const ch
     char prefix[FORGE_ROUTE_SIZE / 4];
     char encoded_path[FORGE_ROUTE_SIZE / 2];
     char encoded_ref[FORGE_ROUTE_SIZE / 4];
-    if (path == NULL || path[0] == '\0' || forge_encode_text(path, 1, encoded_path, sizeof encoded_path) == 0 ||
+    if (path == NULL || path[0] == '\0' || naula_forge_encode_text(path, 1, encoded_path, sizeof encoded_path) == 0 ||
         !build_repository_prefix(repository, prefix, sizeof prefix)) {
-        return forge_refuse_input(flavor, refusal, "the path");
+        return naula_forge_refuse_input(flavor, refusal, "the path");
     }
     if (ref == NULL) {
         snprintf(route, FORGE_ROUTE_SIZE, routes.raw_file, prefix, encoded_path);
         return NAULA_OK;
     }
-    if (ref[0] == '\0' || forge_encode_text(ref, 0, encoded_ref, sizeof encoded_ref) == 0) {
-        return forge_refuse_input(flavor, refusal, "the ref");
+    if (ref[0] == '\0' || naula_forge_encode_text(ref, 0, encoded_ref, sizeof encoded_ref) == 0) {
+        return naula_forge_refuse_input(flavor, refusal, "the ref");
     }
     snprintf(route, FORGE_ROUTE_SIZE, routes.raw_file, prefix, encoded_path);
     size_t used = strlen(route);
@@ -257,7 +257,7 @@ static naula_status read_raw(const target *at, const naula_repository *repositor
     status = get(at, route, FORGE_FILE_BODY_CAPACITY, &reply, refusal);
     if (status == NAULA_OK) {
         status = keep_body(&reply, bytes, length);
-        forge_reply_release(&reply);
+        naula_forge_reply_release(&reply);
     }
     return status;
 }
@@ -302,21 +302,21 @@ static naula_status compare_total(const target *at, const char *prefix, const ch
     char encoded_head[FORGE_ROUTE_SIZE / 4];
     forge_reply reply;
     const forge_flavor *flavor = &at->edition->flavor;
-    if (forge_encode_text(base, 1, encoded_base, sizeof encoded_base) == 0 ||
-        forge_encode_text(head, 1, encoded_head, sizeof encoded_head) == 0 ||
+    if (naula_forge_encode_text(base, 1, encoded_base, sizeof encoded_base) == 0 ||
+        naula_forge_encode_text(head, 1, encoded_head, sizeof encoded_head) == 0 ||
         snprintf(route, sizeof route, routes.compare, prefix, encoded_base, encoded_head) >= (int)sizeof route) {
-        return forge_refuse_input(flavor, refusal, "the commit or the ref");
+        return naula_forge_refuse_input(flavor, refusal, "the commit or the ref");
     }
     naula_status status = get(at, route, FORGE_HISTORY_BODY_CAPACITY, &reply, refusal);
     if (status != NAULA_OK) {
         return status;
     }
-    cJSON *json = forge_parse_reply(flavor, &reply, &status, refusal);
+    cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
     if (json != NULL && !read_count(json, "total_commits", total)) {
-        status = forge_refuse_malformed(flavor, refusal, "a comparison with no commit count");
+        status = naula_forge_refuse_malformed(flavor, refusal, "a comparison with no commit count");
     }
     cJSON_Delete(json);
-    forge_reply_release(&reply);
+    naula_forge_reply_release(&reply);
     return status;
 }
 
@@ -324,13 +324,13 @@ static naula_status read_commit(const target *at, const char *prefix, const char
                                 cJSON **json, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     char encoded[FORGE_ROUTE_SIZE / 4];
-    if (forge_encode_text(name, 1, encoded, sizeof encoded) == 0 ||
+    if (naula_forge_encode_text(name, 1, encoded, sizeof encoded) == 0 ||
         snprintf(route, sizeof route, routes.commit, prefix, encoded) >= (int)sizeof route) {
-        return forge_refuse_input(&at->edition->flavor, refusal, "the commit or the ref");
+        return naula_forge_refuse_input(&at->edition->flavor, refusal, "the commit or the ref");
     }
     naula_status status = get(at, route, FORGE_HISTORY_BODY_CAPACITY, reply, refusal);
     if (status == NAULA_OK) {
-        *json = forge_parse_reply(&at->edition->flavor, reply, &status, refusal);
+        *json = naula_forge_parse_reply(&at->edition->flavor, reply, &status, refusal);
     }
     return status;
 }
@@ -340,14 +340,14 @@ static naula_status tip_is(const target *at, const char *prefix, const char *ref
     forge_reply reply = {NULL, 0, NULL};
     cJSON *json = NULL;
     naula_status status = read_commit(at, prefix, ref, &reply, &json, refusal);
-    const char *sha = json == NULL ? NULL : forge_text_member(json, "sha");
+    const char *sha = json == NULL ? NULL : naula_forge_text_member(json, "sha");
     if (json != NULL && sha == NULL) {
-        status = forge_refuse_malformed(&at->edition->flavor, refusal, "a commit with no sha");
+        status = naula_forge_refuse_malformed(&at->edition->flavor, refusal, "a commit with no sha");
     } else if (sha != NULL) {
         *same = strncmp(sha, commit, strlen(commit)) == 0;
     }
     cJSON_Delete(json);
-    forge_reply_release(&reply);
+    naula_forge_reply_release(&reply);
     return status;
 }
 
@@ -380,12 +380,12 @@ static naula_status gitea_contains(void *context, const char *host, uint64_t num
     target at = {context, host, number, token};
     naula_repository repository = fresh_repository();
     *contained = 0;
-    if (number == 0 || commit == NULL || !forge_is_commit_text(commit) || ref == NULL || ref[0] == '\0') {
-        return forge_refuse_input(&at.edition->flavor, refusal, "the number, the commit or the ref");
+    if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit) || ref == NULL || ref[0] == '\0') {
+        return naula_forge_refuse_input(&at.edition->flavor, refusal, "the number, the commit or the ref");
     }
     naula_status status = lookup_target(&at, &repository, refusal);
     if (status == NAULA_OK && !build_repository_prefix(&repository, prefix, sizeof prefix)) {
-        status = forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
+        status = naula_forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
     }
     if (status == NAULA_OK) {
         status = read_contained(&at, prefix, ref, commit, contained, refusal);
@@ -407,23 +407,23 @@ static naula_status gitea_parent_count(void *context, const char *host, uint64_t
     target at = {context, host, number, token};
     naula_repository repository = fresh_repository();
     *count = 0;
-    if (number == 0 || commit == NULL || !forge_is_commit_text(commit)) {
-        return forge_refuse_input(&at.edition->flavor, refusal, "the number or the commit");
+    if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit)) {
+        return naula_forge_refuse_input(&at.edition->flavor, refusal, "the number or the commit");
     }
     naula_status status = lookup_target(&at, &repository, refusal);
     if (status == NAULA_OK && !build_repository_prefix(&repository, prefix, sizeof prefix)) {
-        status = forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
+        status = naula_forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
     }
     if (status == NAULA_OK) {
         status = read_commit(&at, prefix, commit, &reply, &json, refusal);
         const cJSON *parents = json == NULL ? NULL : cJSON_GetObjectItemCaseSensitive(json, "parents");
         if (json != NULL && !cJSON_IsArray(parents)) {
-            status = forge_refuse_malformed(&at.edition->flavor, refusal, "a commit with no parents list");
+            status = naula_forge_refuse_malformed(&at.edition->flavor, refusal, "a commit with no parents list");
         } else if (parents != NULL) {
             *count = (size_t)cJSON_GetArraySize(parents);
         }
         cJSON_Delete(json);
-        forge_reply_release(&reply);
+        naula_forge_reply_release(&reply);
         status = settle_read(&at, &repository, status, "missing_commit", "commit",
                              "check the commit exists in the repository", refusal);
         if (status != NAULA_OK) {
@@ -443,8 +443,8 @@ static naula_status read_pages(const target *at, const char *format, const char 
         snprintf(route, sizeof route, format, account, PAGE_SIZE, page);
         naula_status status = get(at, route, FORGE_HISTORY_BODY_CAPACITY, &reply, refusal);
         if (status == NAULA_OK) {
-            status = forge_append_page(&at->edition->flavor, list, &reply, &page_count, refusal);
-            forge_reply_release(&reply);
+            status = naula_forge_append_page(&at->edition->flavor, list, &reply, &page_count, refusal);
+            naula_forge_reply_release(&reply);
         }
         if (status != NAULA_OK || page_count == 0) {
             return status;
@@ -462,8 +462,8 @@ static naula_status gitea_list_repos(void *context, const char *host, const char
     target at = {context, host, 0, token};
     *out = NULL;
     *count = 0;
-    if (!forge_is_name_segment(account)) {
-        return forge_refuse_input(&at.edition->flavor, refusal, "the account");
+    if (!naula_forge_is_name_segment(account)) {
+        return naula_forge_refuse_input(&at.edition->flavor, refusal, "the account");
     }
     memset(&absent, 0, sizeof absent);
     absent.size = sizeof absent;
@@ -493,7 +493,8 @@ static naula_status gitea_release_index(void *context, const char *host, uint64_
     (void)token;
     *bytes = NULL;
     *length = 0;
-    return forge_refuse_unsupported(&edition->flavor, refusal, "release_index", "read the index from a web or url home");
+    return naula_forge_refuse_unsupported(&edition->flavor, refusal, "release_index",
+                                          "read the index from a web or url home");
 }
 
 static naula_status gitea_describe(void *context, uint32_t *supported, int *anonymous_lookup) {

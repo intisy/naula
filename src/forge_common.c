@@ -16,7 +16,7 @@
 #define COMMIT_HEX_MINIMUM 7u
 #define COMMIT_HEX_MAXIMUM 64u
 
-void forge_reply_release(forge_reply *reply) {
+void naula_forge_reply_release(forge_reply *reply) {
     naula_memory_release(reply->body);
     naula_memory_release(reply->etag);
     memset(reply, 0, sizeof *reply);
@@ -36,7 +36,7 @@ static int is_token_text(const char *token) {
     return 1;
 }
 
-int forge_is_host_text(const char *host) {
+int naula_forge_is_host_text(const char *host) {
     size_t length = strlen(host);
     if (length == 0 || length > 255) {
         return 0;
@@ -58,7 +58,7 @@ static int is_name_character(char character) {
            (character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-';
 }
 
-int forge_is_name_segment(const char *text) {
+int naula_forge_is_name_segment(const char *text) {
     size_t length = strlen(text);
     if (length == 0 || strcmp(text, ".") == 0 || strcmp(text, "..") == 0) {
         return 0;
@@ -71,7 +71,7 @@ int forge_is_name_segment(const char *text) {
     return 1;
 }
 
-int forge_is_commit_text(const char *text) {
+int naula_forge_is_commit_text(const char *text) {
     size_t length = strlen(text);
     if (length < COMMIT_HEX_MINIMUM || length > COMMIT_HEX_MAXIMUM) {
         return 0;
@@ -85,7 +85,7 @@ int forge_is_commit_text(const char *text) {
     return 1;
 }
 
-int forge_equals_ignoring_case(const char *left, const char *right) {
+int naula_forge_equals_ignoring_case(const char *left, const char *right) {
     for (; *left != '\0' && *right != '\0'; left++, right++) {
         if (*left != *right && !(((*left | 0x20) == (*right | 0x20)) && ((*left | 0x20) >= 'a' && (*left | 0x20) <= 'z'))) {
             return 0;
@@ -94,7 +94,7 @@ int forge_equals_ignoring_case(const char *left, const char *right) {
     return *left == *right;
 }
 
-size_t forge_encode_text(const char *text, int keep_slash, char *out, size_t capacity) {
+size_t naula_forge_encode_text(const char *text, int keep_slash, char *out, size_t capacity) {
     static const char hex[] = "0123456789ABCDEF";
     size_t length = 0;
     for (const unsigned char *at = (const unsigned char *)text; *at != '\0'; at++) {
@@ -115,19 +115,19 @@ size_t forge_encode_text(const char *text, int keep_slash, char *out, size_t cap
     return length + 1;
 }
 
-naula_status forge_refuse_input(const forge_flavor *flavor, naula_refusal *refusal, const char *what) {
+naula_status naula_forge_refuse_input(const forge_flavor *flavor, naula_refusal *refusal, const char *what) {
     naula_refuse(refusal, "invalid_request", "pass a value the provider can address", "%s: %s is not usable",
                  flavor->label, what);
     return NAULA_REFUSED;
 }
 
-naula_status forge_refuse_malformed(const forge_flavor *flavor, naula_refusal *refusal, const char *what) {
+naula_status naula_forge_refuse_malformed(const forge_flavor *flavor, naula_refusal *refusal, const char *what) {
     naula_refuse(refusal, "malformed_answer", flavor->host_fix, "%s answered %s", flavor->label, what);
     return NAULA_MALFORMED;
 }
 
-naula_status forge_refuse_unsupported(const forge_flavor *flavor, naula_refusal *refusal, const char *operation,
-                                      const char *fix) {
+naula_status naula_forge_refuse_unsupported(const forge_flavor *flavor, naula_refusal *refusal, const char *operation,
+                                            const char *fix) {
     naula_refuse(refusal, "unsupported_operation", fix, "the %s provider does not support %s", flavor->label,
                  operation);
     return NAULA_REFUSED;
@@ -213,13 +213,13 @@ static naula_status fetch_with_authorization(const forge_flavor *flavor, const c
     answer.etag = NULL;
     naula_memory_release(answer.last_modified);
     if (status != NAULA_OK) {
-        forge_reply_release(reply);
+        naula_forge_reply_release(reply);
     }
     return status;
 }
 
-naula_status forge_fetch(const forge_flavor *flavor, const char *url, const char *token, size_t capacity,
-                         forge_reply *reply, naula_refusal *refusal) {
+naula_status naula_forge_fetch(const forge_flavor *flavor, const char *url, const char *token, size_t capacity,
+                               forge_reply *reply, naula_refusal *refusal) {
     memset(reply, 0, sizeof *reply);
     if (token != NULL && !is_token_text(token)) {
         naula_refuse(refusal, "invalid_token", "pass the token itself, on one line with no spaces",
@@ -229,16 +229,16 @@ naula_status forge_fetch(const forge_flavor *flavor, const char *url, const char
     return fetch_with_authorization(flavor, url, token, capacity, reply, refusal);
 }
 
-cJSON *forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
-                         naula_refusal *refusal) {
+cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
+                               naula_refusal *refusal) {
     cJSON *json = cJSON_ParseWithLength((const char *)reply->body, reply->length);
     if (json == NULL) {
-        *status = forge_refuse_malformed(flavor, refusal, "something that is not JSON");
+        *status = naula_forge_refuse_malformed(flavor, refusal, "something that is not JSON");
     }
     return json;
 }
 
-int forge_read_exact_number(const cJSON *object, const char *member, uint64_t *number) {
+int naula_forge_read_exact_number(const cJSON *object, const char *member, uint64_t *number) {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, member);
     if (!cJSON_IsNumber(item) || item->valuedouble < 1 || item->valuedouble > LARGEST_EXACT_INTEGER ||
         floor(item->valuedouble) != item->valuedouble) {
@@ -248,7 +248,7 @@ int forge_read_exact_number(const cJSON *object, const char *member, uint64_t *n
     return 1;
 }
 
-const char *forge_text_member(const cJSON *object, const char *member) {
+const char *naula_forge_text_member(const cJSON *object, const char *member) {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, member);
     return cJSON_IsString(item) ? item->valuestring : NULL;
 }
@@ -275,22 +275,22 @@ void naula_repository_list_release(naula_repository *repositories, size_t count)
     naula_memory_release(repositories);
 }
 
-naula_status forge_fill_repository(const forge_flavor *flavor, const cJSON *json, naula_repository *out,
-                                   naula_refusal *refusal) {
+naula_status naula_forge_fill_repository(const forge_flavor *flavor, const cJSON *json, naula_repository *out,
+                                         naula_refusal *refusal) {
     const cJSON *owner = cJSON_GetObjectItemCaseSensitive(json, "owner");
-    const char *account = cJSON_IsObject(owner) ? forge_text_member(owner, "login") : NULL;
-    const char *name = forge_text_member(json, "name");
-    const char *default_branch = forge_text_member(json, "default_branch");
-    const char *clone_url = forge_text_member(json, "clone_url");
+    const char *account = cJSON_IsObject(owner) ? naula_forge_text_member(owner, "login") : NULL;
+    const char *name = naula_forge_text_member(json, "name");
+    const char *default_branch = naula_forge_text_member(json, "default_branch");
+    const char *clone_url = naula_forge_text_member(json, "clone_url");
     const cJSON *parent = cJSON_GetObjectItemCaseSensitive(json, "parent");
     uint32_t size = out->size;
     memset(out, 0, sizeof *out);
     out->size = size;
-    if (!forge_read_exact_number(json, "id", &out->number) || account == NULL || name == NULL) {
-        return forge_refuse_malformed(flavor, refusal, "a repository with no readable number, owner or name");
+    if (!naula_forge_read_exact_number(json, "id", &out->number) || account == NULL || name == NULL) {
+        return naula_forge_refuse_malformed(flavor, refusal, "a repository with no readable number, owner or name");
     }
-    if (cJSON_IsObject(parent) && !forge_read_exact_number(parent, "id", &out->fork_parent)) {
-        return forge_refuse_malformed(flavor, refusal, "a fork whose parent has no readable number");
+    if (cJSON_IsObject(parent) && !naula_forge_read_exact_number(parent, "id", &out->fork_parent)) {
+        return naula_forge_refuse_malformed(flavor, refusal, "a fork whose parent has no readable number");
     }
     out->archived = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, "archived")) ? 1 : 0;
     out->account = copy_text(account);
@@ -305,16 +305,17 @@ naula_status forge_fill_repository(const forge_flavor *flavor, const cJSON *json
     return NAULA_OK;
 }
 
-int forge_covers_first_shape(const naula_repository *out) {
+int naula_forge_covers_first_shape(const naula_repository *out) {
     return out->size >= offsetof(naula_repository, etag) + sizeof out->etag;
 }
 
-int forge_answers_to_the_name(const cJSON *json, const char *account, const char *name) {
+int naula_forge_answers_to_the_name(const cJSON *json, const char *account, const char *name) {
     const cJSON *owner = cJSON_GetObjectItemCaseSensitive(json, "owner");
-    const char *answered_account = cJSON_IsObject(owner) ? forge_text_member(owner, "login") : NULL;
-    const char *answered_name = forge_text_member(json, "name");
-    return answered_account != NULL && answered_name != NULL && forge_equals_ignoring_case(answered_account, account) &&
-           forge_equals_ignoring_case(answered_name, name);
+    const char *answered_account = cJSON_IsObject(owner) ? naula_forge_text_member(owner, "login") : NULL;
+    const char *answered_name = naula_forge_text_member(json, "name");
+    return answered_account != NULL && answered_name != NULL &&
+           naula_forge_equals_ignoring_case(answered_account, account) &&
+           naula_forge_equals_ignoring_case(answered_name, name);
 }
 
 static naula_status append_repository(const forge_flavor *flavor, forge_repository_list *list, const cJSON *json,
@@ -330,22 +331,22 @@ static naula_status append_repository(const forge_flavor *flavor, forge_reposito
     }
     naula_repository *next = &list->items[list->count];
     next->size = sizeof *next;
-    naula_status status = forge_fill_repository(flavor, json, next, refusal);
+    naula_status status = naula_forge_fill_repository(flavor, json, next, refusal);
     if (status == NAULA_OK) {
         list->count++;
     }
     return status;
 }
 
-naula_status forge_append_page(const forge_flavor *flavor, forge_repository_list *list, const forge_reply *reply,
-                               size_t *page_count, naula_refusal *refusal) {
+naula_status naula_forge_append_page(const forge_flavor *flavor, forge_repository_list *list, const forge_reply *reply,
+                                     size_t *page_count, naula_refusal *refusal) {
     naula_status status = NAULA_OK;
-    cJSON *json = forge_parse_reply(flavor, reply, &status, refusal);
+    cJSON *json = naula_forge_parse_reply(flavor, reply, &status, refusal);
     if (json == NULL) {
         return status;
     }
     if (!cJSON_IsArray(json)) {
-        status = forge_refuse_malformed(flavor, refusal, "a page that is not a list");
+        status = naula_forge_refuse_malformed(flavor, refusal, "a page that is not a list");
     }
     *page_count = status == NAULA_OK ? (size_t)cJSON_GetArraySize(json) : 0;
     for (const cJSON *item = status == NAULA_OK ? json->child : NULL; item != NULL && status == NAULA_OK;

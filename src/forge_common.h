@@ -31,37 +31,36 @@ typedef struct forge_repository_list {
     size_t capacity;
 } forge_repository_list;
 
-void forge_reply_release(forge_reply *reply);
+void naula_forge_reply_release(forge_reply *reply);
 
-int forge_is_host_text(const char *host);
-int forge_is_name_segment(const char *text);
-int forge_is_commit_text(const char *text);
-int forge_equals_ignoring_case(const char *left, const char *right);
-size_t forge_encode_text(const char *text, int keep_slash, char *out, size_t capacity);
+int naula_forge_is_host_text(const char *host);
+int naula_forge_is_name_segment(const char *text);
+int naula_forge_is_commit_text(const char *text);
+int naula_forge_equals_ignoring_case(const char *left, const char *right);
+size_t naula_forge_encode_text(const char *text, int keep_slash, char *out, size_t capacity);
 
-naula_status forge_refuse_input(const forge_flavor *flavor, naula_refusal *refusal, const char *what);
-naula_status forge_refuse_malformed(const forge_flavor *flavor, naula_refusal *refusal, const char *what);
-naula_status forge_refuse_unsupported(const forge_flavor *flavor, naula_refusal *refusal, const char *operation,
-                                      const char *fix);
+naula_status naula_forge_refuse_input(const forge_flavor *flavor, naula_refusal *refusal, const char *what);
+naula_status naula_forge_refuse_malformed(const forge_flavor *flavor, naula_refusal *refusal, const char *what);
+naula_status naula_forge_refuse_unsupported(const forge_flavor *flavor, naula_refusal *refusal, const char *operation,
+                                            const char *fix);
 
 /** One GET of an absolute url, the token sent as `Authorization: token <token>` when given. */
-naula_status forge_fetch(const forge_flavor *flavor, const char *url, const char *token, size_t capacity,
-                         forge_reply *reply, naula_refusal *refusal);
+naula_status naula_forge_fetch(const forge_flavor *flavor, const char *url, const char *token, size_t capacity,
+                               forge_reply *reply, naula_refusal *refusal);
 
-cJSON *forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
-                         naula_refusal *refusal);
-int forge_read_exact_number(const cJSON *object, const char *member, uint64_t *number);
-const char *forge_text_member(const cJSON *object, const char *member);
+cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
+                               naula_refusal *refusal);
+int naula_forge_read_exact_number(const cJSON *object, const char *member, uint64_t *number);
+const char *naula_forge_text_member(const cJSON *object, const char *member);
 
-int forge_covers_first_shape(const naula_repository *out);
-naula_status forge_fill_repository(const forge_flavor *flavor, const cJSON *json, naula_repository *out,
-                                   naula_refusal *refusal);
+int naula_forge_covers_first_shape(const naula_repository *out);
+naula_status naula_forge_fill_repository(const forge_flavor *flavor, const cJSON *json, naula_repository *out,
+                                         naula_refusal *refusal);
 
 /** Whether a repository answer belongs to account/name, which a host that follows renames with a redirect may not. */
-int forge_answers_to_the_name(const cJSON *json, const char *account, const char *name);
+int naula_forge_answers_to_the_name(const cJSON *json, const char *account, const char *name);
 
-/** Appends every repository of a list answer, and sets page_count to how many the page held. */
-naula_status forge_append_page(const forge_flavor *flavor, forge_repository_list *list, const forge_reply *reply,
-                               size_t *page_count, naula_refusal *refusal);
+naula_status naula_forge_append_page(const forge_flavor *flavor, forge_repository_list *list, const forge_reply *reply,
+                                     size_t *page_count, naula_refusal *refusal);
 
 #endif

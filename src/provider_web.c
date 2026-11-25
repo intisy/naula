@@ -45,27 +45,27 @@ static naula_status build_url(const char *domain, const char *hex, char *url, na
     if (root_override[0] != '\0') {
         snprintf(root, sizeof root, "%s", root_override);
     } else if (snprintf(root, sizeof root, "https://%s", domain) >= (int)sizeof root) {
-        return forge_refuse_input(&flavor, refusal, "the domain");
+        return naula_forge_refuse_input(&flavor, refusal, "the domain");
     }
     return snprintf(url, URL_SIZE, DOCUMENT_ROUTE, root, hex) < URL_SIZE
                ? NAULA_OK
-               : forge_refuse_input(&flavor, refusal, "the request address (too long)");
+               : naula_forge_refuse_input(&flavor, refusal, "the request address (too long)");
 }
 
 /** A document is read for one repo and used for that repo only, so one that names another id is not this repo's. */
 static naula_status check_document(const forge_reply *reply, const char *hex, naula_refusal *refusal) {
     naula_status status = NAULA_OK;
-    cJSON *json = forge_parse_reply(&flavor, reply, &status, refusal);
+    cJSON *json = naula_forge_parse_reply(&flavor, reply, &status, refusal);
     if (json == NULL) {
         return status;
     }
-    const char *text = cJSON_IsObject(json) ? forge_text_member(json, "id") : NULL;
+    const char *text = cJSON_IsObject(json) ? naula_forge_text_member(json, "id") : NULL;
     naula_id id;
     memset(&id, 0, sizeof id);
     id.size = sizeof id;
     if (text == NULL || !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(json, "homes")) ||
         naula_id_parse(text, strlen(text), &id, NULL) != NAULA_OK || id.kind != NAULA_ID_GIT) {
-        status = forge_refuse_malformed(&flavor, refusal, "a document with no readable id and homes");
+        status = naula_forge_refuse_malformed(&flavor, refusal, "a document with no readable id and homes");
     } else if (strcmp(id.commit, hex) != 0) {
         naula_refuse(refusal, "document_for_another_id", "check that the domain serves the repo the home names",
                      "the document at this domain names %s, not git:%s", text, hex);
@@ -82,14 +82,14 @@ naula_status naula_web_document(const char *domain, const char *hex, uint8_t **b
     forge_reply reply;
     *bytes = NULL;
     *length = 0;
-    if (domain == NULL || !forge_is_host_text(domain) || hex == NULL || !is_hex_identity(hex)) {
-        return forge_refuse_input(&flavor, refusal, "the domain or the identity");
+    if (domain == NULL || !naula_forge_is_host_text(domain) || hex == NULL || !is_hex_identity(hex)) {
+        return naula_forge_refuse_input(&flavor, refusal, "the domain or the identity");
     }
     naula_status status = build_url(domain, hex, url, refusal);
     if (status != NAULA_OK) {
         return status;
     }
-    status = forge_fetch(&flavor, url, NULL, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
+    status = naula_forge_fetch(&flavor, url, NULL, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
     if (status == NAULA_OK) {
         status = check_document(&reply, hex, refusal);
     }
@@ -98,12 +98,13 @@ naula_status naula_web_document(const char *domain, const char *hex, uint8_t **b
         *length = reply.length;
         reply.body = NULL;
     }
-    forge_reply_release(&reply);
+    naula_forge_reply_release(&reply);
     return status;
 }
 
 static naula_status unsupported(const char *operation, naula_refusal *refusal) {
-    return forge_refuse_unsupported(&flavor, refusal, operation, "read the identity document with naula_web_document");
+    return naula_forge_refuse_unsupported(&flavor, refusal, operation,
+                                          "read the identity document with naula_web_document");
 }
 
 static naula_status web_describe(void *context, uint32_t *supported, int *anonymous_lookup) {
