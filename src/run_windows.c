@@ -147,7 +147,14 @@ static int prepare(run_handles *handles) {
            prepare_attributes(handles);
 }
 
-static int create(wchar_t *line, const wchar_t *directory, run_handles *handles, PROCESS_INFORMATION *information) {
+typedef struct run_inputs {
+    wchar_t *line;
+    wchar_t *application;
+    wchar_t *environment;
+    wchar_t *wide_directory;
+} run_inputs;
+
+static int create(const run_inputs *inputs, run_handles *handles, PROCESS_INFORMATION *information) {
     STARTUPINFOEXW startup;
     memset(&startup, 0, sizeof startup);
     startup.StartupInfo.cb = sizeof startup;
@@ -156,8 +163,9 @@ static int create(wchar_t *line, const wchar_t *directory, run_handles *handles,
     startup.StartupInfo.hStdOutput = handles->output_write;
     startup.StartupInfo.hStdError = handles->error_write;
     startup.lpAttributeList = handles->attributes;
-    return CreateProcessW(NULL, line, NULL, NULL, TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, directory,
-                          &startup.StartupInfo, information) != 0;
+    return CreateProcessW(inputs->application, inputs->line, NULL, NULL, TRUE,
+                          CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                          inputs->environment, inputs->wide_directory, &startup.StartupInfo, information) != 0;
 }
 
 /** Reads what the pipe holds now into buffer; sets *read_any when it took bytes. */
@@ -213,11 +221,10 @@ static naula_status refuse_create_failure(DWORD error, const char *program, cons
     return NAULA_REFUSED;
 }
 
-static naula_status run_prepared(wchar_t *line, const wchar_t *wide_directory, const char *const *arguments,
-                                 const char *directory, run_handles *handles, naula_run_result *result,
-                                 naula_refusal *refusal) {
+static naula_status run_prepared(const run_inputs *inputs, const char *const *arguments, const char *directory,
+                                 run_handles *handles, naula_run_result *result, naula_refusal *refusal) {
     PROCESS_INFORMATION information = {NULL, NULL, 0, 0};
-    if (!create(line, wide_directory, handles, &information)) {
+    if (!create(inputs, handles, &information)) {
         return refuse_create_failure(GetLastError(), arguments[0], directory, refusal);
     }
     close_handle(&handles->output_write);
@@ -236,39 +243,203 @@ static naula_status run_prepared(wchar_t *line, const wchar_t *wide_directory, c
     return run_finish(result, &output, &error, exit_code);
 }
 
-static naula_status run_with_command_line(const char *const *arguments, const char *directory, naula_run_result *result,
-                                          naula_refusal *refusal) {
-    run_buffer text = {NULL, 0, 0};
-    if (!build_command_line(arguments, &text)) {
-        run_buffer_discard(&text);
-        return NAULA_OUT_OF_MEMORY;
+static int has_separator(const wchar_t *name) {
+    return wcspbrk(name, L"\\/:") != NULL;
+}
+
+static wchar_t *copy_wide(const wchar_t *text) {
+    wchar_t *copy = naula_memory_allocate((wcslen(text) + 1) * sizeof *copy);
+    if (copy != NULL) {
+        wcscpy(copy, text);
     }
-    int out_of_memory = 0;
-    wchar_t *line = widen(text.bytes, &out_of_memory);
-    wchar_t *wide_directory = directory == NULL || out_of_memory ? NULL : widen(directory, &out_of_memory);
+    return copy;
+}
+
+static wchar_t *search_path(const wchar_t *path, const wchar_t *name, int *out_of_memory) {
+    DWORD capacity = MAX_PATH;
+    for (;;) {
+        wchar_t *found = naula_memory_allocate(capacity * sizeof *found);
+        if (found == NULL) {
+            *out_of_memory = 1;
+            return NULL;
+        }
+        DWORD length = SearchPathW(path, name, L".exe", capacity, found, NULL);
+        if (length > 0 && length < capacity) {
+            return found;
+        }
+        naula_memory_release(found);
+        if (length == 0) {
+            return NULL;
+        }
+        capacity = length + 1;
+    }
+}
+
+/**
+ * The full path of the program, searched on PATH only; NULL when absent.
+ *
+ * @implNote SearchPathW given an explicit path never looks in the current directory, which a bare CreateProcessW
+ * does first, so a program planted beside the caller cannot stand in for a tool.
+ */
+static wchar_t *resolve_program(const wchar_t *name, int *out_of_memory) {
+    if (has_separator(name)) {
+        wchar_t *copy = copy_wide(name);
+        *out_of_memory = copy == NULL;
+        return copy;
+    }
+    DWORD path_length = GetEnvironmentVariableW(L"PATH", NULL, 0);
+    wchar_t *path = path_length == 0 ? NULL : naula_memory_allocate(path_length * sizeof *path);
+    *out_of_memory = path_length != 0 && path == NULL;
+    wchar_t *found = NULL;
+    if (path != NULL && GetEnvironmentVariableW(L"PATH", path, path_length) != 0) {
+        found = search_path(path, name, out_of_memory);
+    }
+    naula_memory_release(path);
+    return found;
+}
+
+static int overrides(const wchar_t *entry, const wchar_t *addition) {
+    size_t length = 0;
+    while (addition[length] != L'\0' && addition[length] != L'=') {
+        length++;
+    }
+    return entry[0] != L'=' && wcslen(entry) > length && entry[length] == L'=' && _wcsnicmp(entry, addition, length) == 0;
+}
+
+static int is_overridden(const wchar_t *entry, wchar_t *const *additions, size_t count) {
+    for (size_t index = 0; index < count; index++) {
+        if (overrides(entry, additions[index])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int append_wide(run_buffer *block, const wchar_t *text) {
+    return run_buffer_append(block, (const char *)text, (wcslen(text) + 1) * sizeof *text);
+}
+
+/** This process's environment with the additions replacing same-named entries, as a block to release. */
+static wchar_t *merged_environment(wchar_t *const *additions, size_t count) {
+    wchar_t *inherited = GetEnvironmentStringsW();
+    run_buffer block = {NULL, 0, 0};
+    int complete = inherited != NULL;
+    for (const wchar_t *entry = inherited; complete && *entry != L'\0'; entry += wcslen(entry) + 1) {
+        complete = is_overridden(entry, additions, count) || append_wide(&block, entry);
+    }
+    for (size_t index = 0; complete && index < count; index++) {
+        complete = append_wide(&block, additions[index]);
+    }
+    static const wchar_t terminator = L'\0';
+    complete = complete && run_buffer_append(&block, (const char *)&terminator, sizeof terminator);
+    if (inherited != NULL) {
+        FreeEnvironmentStringsW(inherited);
+    }
+    if (!complete) {
+        run_buffer_discard(&block);
+        return NULL;
+    }
+    return (wchar_t *)block.bytes;
+}
+
+static size_t list_length(const char *const *list) {
+    size_t count = 0;
+    while (list != NULL && list[count] != NULL) {
+        count++;
+    }
+    return count;
+}
+
+static void release_wide_list(wchar_t **list, size_t count) {
+    for (size_t index = 0; list != NULL && index < count; index++) {
+        naula_memory_release(list[index]);
+    }
+    naula_memory_release(list);
+}
+
+/** The entries as UTF-16; NULL with *out_of_memory set, or with *valid cleared when one is not UTF-8. */
+static wchar_t **widen_list(const char *const *list, size_t count, int *out_of_memory, int *valid) {
+    wchar_t **wide = naula_memory_allocate((count + 1) * sizeof *wide);
+    size_t made = 0;
+    *out_of_memory = wide == NULL;
+    while (wide != NULL && made < count) {
+        wide[made] = widen(list[made], out_of_memory);
+        if (wide[made] == NULL) {
+            *valid = *out_of_memory;
+            release_wide_list(wide, made);
+            return NULL;
+        }
+        made++;
+    }
+    return wide;
+}
+
+static void release_inputs(run_inputs *inputs) {
+    naula_memory_release(inputs->line);
+    naula_memory_release(inputs->application);
+    naula_memory_release(inputs->environment);
+    naula_memory_release(inputs->wide_directory);
+}
+
+static int build_environment(const char *const *environment, run_inputs *inputs, int *out_of_memory, int *valid) {
+    size_t count = list_length(environment);
+    wchar_t **additions = widen_list(environment, count, out_of_memory, valid);
+    if (additions == NULL) {
+        return 0;
+    }
+    inputs->environment = merged_environment(additions, count);
+    release_wide_list(additions, count);
+    *out_of_memory = inputs->environment == NULL;
+    return inputs->environment != NULL;
+}
+
+static naula_status build_inputs(const char *const *arguments, const char *directory, const char *const *environment,
+                                 run_inputs *inputs, naula_refusal *refusal) {
+    memset(inputs, 0, sizeof *inputs);
+    run_buffer text = {NULL, 0, 0};
+    int out_of_memory = !build_command_line(arguments, &text);
+    int valid = 1;
+    inputs->line = out_of_memory ? NULL : widen(text.bytes, &out_of_memory);
     run_buffer_discard(&text);
-    naula_status status = NAULA_OUT_OF_MEMORY;
-    if (!out_of_memory && line != NULL && (directory == NULL || wide_directory != NULL)) {
+    wchar_t *name = inputs->line == NULL ? NULL : widen(arguments[0], &out_of_memory);
+    inputs->application = name == NULL ? NULL : resolve_program(name, &out_of_memory);
+    naula_memory_release(name);
+    if (!out_of_memory && name != NULL && inputs->application == NULL) {
+        naula_refuse(refusal, "program-not-found", "install it and put it on PATH", "%s was not found", arguments[0]);
+        return NAULA_NOT_FOUND;
+    }
+    if (!out_of_memory && directory != NULL) {
+        inputs->wide_directory = widen(directory, &out_of_memory);
+    }
+    int built = !out_of_memory && build_environment(environment, inputs, &out_of_memory, &valid);
+    if (built && (directory == NULL || inputs->wide_directory != NULL)) {
+        return NAULA_OK;
+    }
+    if (!out_of_memory) {
+        naula_refuse(refusal, "run-failed", "pass UTF-8 text", "an argument, the directory or an environment entry is not UTF-8");
+    }
+    return out_of_memory ? NAULA_OUT_OF_MEMORY : NAULA_MALFORMED;
+}
+
+naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
+                       naula_run_result *result, naula_refusal *refusal) {
+    naula_status status = run_begin(arguments, result, refusal);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    run_inputs inputs;
+    status = build_inputs(arguments, directory, environment, &inputs, refusal);
+    if (status == NAULA_OK) {
         run_handles handles;
         if (prepare(&handles)) {
-            status = run_prepared(line, wide_directory, arguments, directory, &handles, result, refusal);
+            status = run_prepared(&inputs, arguments, directory, &handles, result, refusal);
         } else {
             naula_refuse(refusal, "run-failed", "close some programs and try again", "cannot prepare to run %s",
                          arguments[0]);
             status = NAULA_REFUSED;
         }
         release_handles(&handles);
-    } else if (!out_of_memory) {
-        naula_refuse(refusal, "run-failed", "pass UTF-8 text", "an argument or the directory is not UTF-8");
-        status = NAULA_MALFORMED;
     }
-    naula_memory_release(line);
-    naula_memory_release(wide_directory);
+    release_inputs(&inputs);
     return status;
-}
-
-naula_status naula_run(const char *const *arguments, const char *directory, naula_run_result *result,
-                       naula_refusal *refusal) {
-    naula_status begun = run_begin(arguments, result, refusal);
-    return begun != NAULA_OK ? begun : run_with_command_line(arguments, directory, result, refusal);
 }

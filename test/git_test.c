@@ -11,8 +11,17 @@
 #include "naula/run.h"
 
 #if defined(_WIN32)
+#include <direct.h>
 #include <fcntl.h>
 #include <io.h>
+#define GETCWD _getcwd
+#define CHDIR _chdir
+#define NAULA_PROGRAM_SUFFIX ".exe"
+#else
+#include <unistd.h>
+#define GETCWD getcwd
+#define CHDIR chdir
+#define NAULA_PROGRAM_SUFFIX ""
 #endif
 
 #ifndef NAULA_FIXTURE_ROOT
@@ -37,7 +46,7 @@ static int resolve(const char *repository, const char *name, revision *found) {
     naula_run_result result;
     naula_refusal refusal;
     memset(found, 0, sizeof *found);
-    if (naula_run(arguments, repository, &result, &refusal) != NAULA_OK || result.exit_code != 0) {
+    if (naula_run(arguments, repository, NULL, &result, &refusal) != NAULA_OK || result.exit_code != 0) {
         fprintf(stderr, "cannot resolve %s in %s\n", name, repository);
         check_failures++;
         naula_run_result_release(&result);
@@ -119,12 +128,12 @@ static void fork_exception_refuses_a_commit_off_the_line(void) {
 
 static void id_kept_across_a_fast_forward(void) {
     naula_refusal refusal;
-    CHECK(naula_git_check_id_kept(LINEAR, "previous", "main", NULL, &refusal) == NAULA_OK);
+    CHECK(naula_git_check_id_kept(LINEAR, "previous", NULL, "main", NULL, &refusal) == NAULA_OK);
 }
 
 static void id_changed_by_a_rebase_across_the_root_is_refused(void) {
     naula_refusal refusal;
-    CHECK(naula_git_check_id_kept(LINEAR, "main", "rewritten", NULL, &refusal) == NAULA_REFUSED);
+    CHECK(naula_git_check_id_kept(LINEAR, "main", NULL, "rewritten", NULL, &refusal) == NAULA_REFUSED);
     check_text(refusal.code, "id-changed", "changed refusal");
 }
 
@@ -134,7 +143,40 @@ static void id_change_allowed_when_the_new_tip_states_the_fork_exception(void) {
     naula_refusal refusal;
     CHECK(resolve(LINEAR, "rewritten", &own));
     state_id(&own, text);
-    CHECK(naula_git_check_id_kept(LINEAR, "main", "rewritten", text, &refusal) == NAULA_OK);
+    CHECK(naula_git_check_id_kept(LINEAR, "main", NULL, "rewritten", text, &refusal) == NAULA_OK);
+}
+
+static void id_kept_when_the_stated_id_is_unchanged(void) {
+    revision own;
+    char text[80];
+    naula_refusal refusal;
+    CHECK(resolve(LINEAR, "main~1", &own));
+    state_id(&own, text);
+    CHECK(naula_git_check_id_kept(LINEAR, "main", text, "main", text, &refusal) == NAULA_OK);
+}
+
+static void id_change_refused_when_a_stated_id_is_dropped(void) {
+    revision own;
+    char text[80];
+    naula_refusal refusal;
+    CHECK(resolve(LINEAR, "main~1", &own));
+    state_id(&own, text);
+    CHECK(naula_git_check_id_kept(LINEAR, "main", text, "main", NULL, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "id-changed", "dropped stated id");
+}
+
+static void id_change_refused_when_a_stated_id_is_replaced(void) {
+    revision first;
+    revision second;
+    char first_text[80];
+    char second_text[80];
+    naula_refusal refusal;
+    CHECK(resolve(LINEAR, "main~1", &first));
+    CHECK(resolve(LINEAR, "main", &second));
+    state_id(&first, first_text);
+    state_id(&second, second_text);
+    CHECK(naula_git_check_id_kept(LINEAR, "main", first_text, "main", second_text, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "id-changed", "replaced stated id");
 }
 
 static void parents_and_ancestry(void) {
@@ -169,7 +211,7 @@ static void fetch_commits_with_tree_filter_reads_no_trees(void) {
     const char *listing[] = {"git", "rev-list", "--objects", "--missing=print", "FETCH_HEAD", NULL};
     file_url(REMOTE, url, sizeof url);
     CHECK(naula_git_fetch_commits(FETCHED, url, "main", &refusal) == NAULA_OK);
-    CHECK(naula_run(listing, FETCHED, &result, &refusal) == NAULA_OK);
+    CHECK(naula_run(listing, FETCHED, NULL, &result, &refusal) == NAULA_OK);
     CHECK(result.exit_code == 0);
     CHECK(strstr(result.output, "?") != NULL);
     naula_run_result_release(&result);
@@ -186,7 +228,7 @@ static void run_passes_an_argument_with_spaces_and_quotes(void) {
     const char *expected = "[a b]\n[he said \"hi\"]\n[trailing\\]\n[dir with space\\]\n[]\n[plain]\n[two\\\\\"quotes]\n";
     naula_run_result result;
     naula_refusal refusal;
-    CHECK(naula_run(arguments, NULL, &result, &refusal) == NAULA_OK);
+    CHECK(naula_run(arguments, NULL, NULL, &result, &refusal) == NAULA_OK);
     CHECK(result.exit_code == 0);
     check_text(result.output, expected, "echoed arguments");
     naula_run_result_release(&result);
@@ -196,7 +238,7 @@ static void run_collects_large_output_on_both_streams(void) {
     const char *arguments[] = {own_program, "--flood", NULL};
     naula_run_result result;
     naula_refusal refusal;
-    CHECK(naula_run(arguments, NULL, &result, &refusal) == NAULA_OK);
+    CHECK(naula_run(arguments, NULL, NULL, &result, &refusal) == NAULA_OK);
     CHECK(result.exit_code == 3);
     CHECK(result.output_length == FLOOD_BYTES);
     CHECK(strlen(result.error) == FLOOD_BYTES);
@@ -207,9 +249,73 @@ static void run_says_a_missing_program_is_not_found(void) {
     const char *arguments[] = {"naula-no-such-program", NULL};
     naula_run_result result;
     naula_refusal refusal;
-    CHECK(naula_run(arguments, NULL, &result, &refusal) == NAULA_NOT_FOUND);
+    CHECK(naula_run(arguments, NULL, NULL, &result, &refusal) == NAULA_NOT_FOUND);
     check_text(refusal.code, "program-not-found", "missing program");
     naula_run_result_release(&result);
+}
+
+static void run_gives_the_child_the_added_environment(void) {
+    const char *arguments[] = {own_program, "--print-environment", "NAULA_TEST_ADDED", NULL};
+    const char *added[] = {"NAULA_TEST_ADDED=with value", NULL};
+    naula_run_result result;
+    naula_refusal refusal;
+    CHECK(naula_run(arguments, NULL, added, &result, &refusal) == NAULA_OK);
+    check_text(result.output, "with value\n", "added variable");
+    naula_run_result_release(&result);
+}
+
+static void git_children_never_wait_for_a_person(void) {
+    const char *arguments[] = {own_program, "--print-environment", "GIT_TERMINAL_PROMPT", NULL};
+    naula_git_environment_entries entries;
+    naula_run_result result;
+    naula_refusal refusal;
+    naula_git_environment(&entries);
+    CHECK(naula_run(arguments, NULL, entries.list, &result, &refusal) == NAULA_OK);
+    check_text(result.output, "0\n", "GIT_TERMINAL_PROMPT");
+    naula_run_result_release(&result);
+}
+
+static int copy_file(const char *from, const char *to) {
+    FILE *source = fopen(from, "rb");
+    FILE *target = source == NULL ? NULL : fopen(to, "wb");
+    char block[4096];
+    size_t got;
+    int copied = source != NULL && target != NULL;
+    while (copied && (got = fread(block, 1, sizeof block, source)) > 0) {
+        copied = fwrite(block, 1, got, target) == got;
+    }
+    if (source != NULL) {
+        fclose(source);
+    }
+    if (target != NULL) {
+        fclose(target);
+    }
+    return copied;
+}
+
+static void run_never_runs_a_program_from_the_current_directory(void) {
+    const char *folder = NAULA_FIXTURE_ROOT "/home";
+    const char *fake = NAULA_FIXTURE_ROOT "/home/naula-fake-tool" NAULA_PROGRAM_SUFFIX;
+    const char *arguments[] = {"naula-fake-tool", "--print-arguments", NULL};
+    char previous[1024];
+    naula_run_result result;
+    naula_refusal refusal;
+    CHECK(copy_file(own_program, fake));
+    CHECK(GETCWD(previous, sizeof previous) != NULL);
+    CHECK(CHDIR(folder) == 0);
+    CHECK(naula_run(arguments, NULL, NULL, &result, &refusal) == NAULA_NOT_FOUND);
+    check_text(refusal.code, "program-not-found", "planted program");
+    CHECK(CHDIR(previous) == 0);
+    naula_run_result_release(&result);
+}
+
+static int print_environment(const char *name) {
+#if defined(_WIN32)
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    const char *value = getenv(name);
+    printf("%s\n", value == NULL ? "(unset)" : value);
+    return 0;
 }
 
 static int print_arguments(int count, char **values) {
@@ -236,6 +342,9 @@ int main(int count, char **values) {
     if (count > 1 && strcmp(values[1], "--print-arguments") == 0) {
         return print_arguments(count, values);
     }
+    if (count > 2 && strcmp(values[1], "--print-environment") == 0) {
+        return print_environment(values[2]);
+    }
     if (count > 1 && strcmp(values[1], "--flood") == 0) {
         return flood();
     }
@@ -249,11 +358,17 @@ int main(int count, char **values) {
     id_kept_across_a_fast_forward();
     id_changed_by_a_rebase_across_the_root_is_refused();
     id_change_allowed_when_the_new_tip_states_the_fork_exception();
+    id_kept_when_the_stated_id_is_unchanged();
+    id_change_refused_when_a_stated_id_is_dropped();
+    id_change_refused_when_a_stated_id_is_replaced();
     parents_and_ancestry();
     check_version_accepts_the_installed_git();
     fetch_commits_with_tree_filter_reads_no_trees();
     run_passes_an_argument_with_spaces_and_quotes();
     run_collects_large_output_on_both_streams();
     run_says_a_missing_program_is_not_found();
+    run_gives_the_child_the_added_environment();
+    git_children_never_wait_for_a_person();
+    run_never_runs_a_program_from_the_current_directory();
     return check_summary("git_test");
 }

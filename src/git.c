@@ -8,11 +8,23 @@
 #include "naula/run.h"
 
 #define MINIMUM_GIT_MAJOR 2
-#define MINIMUM_GIT_MINOR 20
+#define MINIMUM_GIT_MINOR 24
 #define SHA1_HEX_LENGTH 40
 #define SHA256_HEX_LENGTH 64
 
 static const char *const git_program = "git";
+
+void naula_git_environment(naula_git_environment_entries *entries) {
+    size_t count = 0;
+    entries->list[count++] = "GIT_TERMINAL_PROMPT=0";
+    entries->list[count++] = "GCM_INTERACTIVE=never";
+    entries->list[count++] = "GIT_ASKPASS=";
+    entries->list[count++] = "SSH_ASKPASS=";
+    if (getenv("GIT_SSH_COMMAND") == NULL) {
+        entries->list[count++] = "GIT_SSH_COMMAND=ssh -o BatchMode=yes";
+    }
+    entries->list[count] = NULL;
+}
 
 static void refuse_git_failed(naula_refusal *refusal, const char *what, const naula_run_result *result) {
     naula_refuse(refusal, "git-failed", "run the same git command by hand to see why", "git %s exited %d: %s", what,
@@ -22,16 +34,18 @@ static void refuse_git_failed(naula_refusal *refusal, const char *what, const na
 /** Runs git with `arguments` after the program name; a git that cannot start is the `git-missing` refusal. */
 static naula_status run_git(const char *repository, const char *const *arguments, naula_run_result *result,
                             naula_refusal *refusal) {
-    const char *command[16];
+    const char *command[24];
     size_t count = 0;
     command[count++] = git_program;
-    for (size_t index = 0; arguments[index] != NULL && count < 15; index++) {
+    for (size_t index = 0; arguments[index] != NULL && count < 23; index++) {
         command[count++] = arguments[index];
     }
     command[count] = NULL;
-    naula_status status = naula_run(command, repository, result, refusal);
+    naula_git_environment_entries environment;
+    naula_git_environment(&environment);
+    naula_status status = naula_run(command, repository, environment.list, result, refusal);
     if (status == NAULA_NOT_FOUND) {
-        naula_refuse(refusal, "git-missing", "install git 2.20 or newer and put it on PATH", "no git program was found");
+        naula_refuse(refusal, "git-missing", "install git 2.24 or newer and put it on PATH", "no git program was found");
         return NAULA_REFUSED;
     }
     return status;
@@ -91,7 +105,7 @@ naula_status naula_git_check_version(naula_refusal *refusal) {
     int read = result.exit_code == 0 ? sscanf(result.output, "git version %d.%d", &major, &minor) : 0;
     int recent = major > MINIMUM_GIT_MAJOR || (major == MINIMUM_GIT_MAJOR && minor >= MINIMUM_GIT_MINOR);
     if (read != 2 || !recent) {
-        naula_refuse(refusal, "git-too-old", "install git 2.20 or newer", "this git is too old or unreadable: %.200s",
+        naula_refuse(refusal, "git-too-old", "install git 2.24 or newer", "this git is too old or unreadable: %.200s",
                      result.output);
         status = NAULA_REFUSED;
     }
@@ -103,7 +117,7 @@ naula_status naula_git_first_parent_root(const char *repository, const char *ref
     if (!is_revision_name(ref)) {
         return refuse_revision(ref, refusal);
     }
-    const char *arguments[] = {"rev-list", "--first-parent", "--max-parents=0", ref, NULL};
+    const char *arguments[] = {"rev-list", "--first-parent", "--max-parents=0", "--end-of-options", ref, NULL};
     naula_run_result result;
     naula_status status = run_git_succeeding(repository, arguments, "rev-list", &result, refusal);
     if (status != NAULA_OK) {
@@ -130,7 +144,7 @@ naula_status naula_git_is_ancestor(const char *repository, const char *commit, c
     if (!is_revision_name(ref)) {
         return refuse_revision(ref, refusal);
     }
-    const char *arguments[] = {"merge-base", "--is-ancestor", commit, ref, NULL};
+    const char *arguments[] = {"merge-base", "--is-ancestor", "--end-of-options", commit, ref, NULL};
     naula_run_result result;
     naula_status status = run_git(repository, arguments, &result, refusal);
     if (status != NAULA_OK) {
@@ -150,7 +164,7 @@ naula_status naula_git_parent_count(const char *repository, const char *commit, 
     if (!is_revision_name(commit)) {
         return refuse_revision(commit, refusal);
     }
-    const char *arguments[] = {"rev-list", "--parents", "-n", "1", commit, NULL};
+    const char *arguments[] = {"rev-list", "--parents", "-n", "1", "--end-of-options", commit, NULL};
     naula_run_result result;
     naula_status status = run_git_succeeding(repository, arguments, "rev-list", &result, refusal);
     if (status != NAULA_OK) {
@@ -182,7 +196,7 @@ static int line_equals(const char *lines, const char *wanted, size_t length) {
 
 static naula_status is_on_first_parent_line(const char *repository, const char *ref, const char *commit, int *on_line,
                                             naula_refusal *refusal) {
-    const char *arguments[] = {"rev-list", "--first-parent", ref, NULL};
+    const char *arguments[] = {"rev-list", "--first-parent", "--end-of-options", ref, NULL};
     naula_run_result result;
     naula_status status = run_git_succeeding(repository, arguments, "rev-list", &result, refusal);
     if (status != NAULA_OK) {
@@ -250,24 +264,27 @@ naula_status naula_git_repository_id(const char *repository, const char *ref, co
     return status;
 }
 
-naula_status naula_git_check_id_kept(const char *repository, const char *previous_tip, const char *new_tip,
-                                     const char *stated_id, naula_refusal *refusal) {
-    char previous_root[65];
-    naula_status status = naula_git_first_parent_root(repository, previous_tip, previous_root, refusal);
+naula_status naula_git_check_id_kept(const char *repository, const char *previous_tip, const char *previous_stated_id,
+                                     const char *new_tip, const char *new_stated_id, naula_refusal *refusal) {
+    naula_id previous;
+    naula_status status = naula_git_repository_id(repository, previous_tip, previous_stated_id, &previous, refusal);
     if (status != NAULA_OK) {
         return status;
     }
-    naula_id id;
-    status = naula_git_repository_id(repository, new_tip, stated_id, &id, refusal);
+    naula_id next;
+    status = naula_git_repository_id(repository, new_tip, new_stated_id, &next, refusal);
     if (status != NAULA_OK) {
+        naula_id_release(&previous);
         return status;
     }
-    int kept = stated_id != NULL || strcmp(id.commit, previous_root) == 0;
+    int takes_fork_exception = previous_stated_id == NULL && new_stated_id != NULL;
+    int kept = takes_fork_exception || naula_id_compare(&previous, &next) == 0;
     if (!kept) {
-        naula_refuse(refusal, "id-changed", "keep the first-parent root, or state the fork exception in repo.json",
-                     "the id was git:%s and would become git:%s", previous_root, id.commit);
+        naula_refuse(refusal, "id-changed", "keep the id, or state the fork exception in repo.json",
+                     "the id was git:%s and would become git:%s", previous.commit, next.commit);
     }
-    naula_id_release(&id);
+    naula_id_release(&previous);
+    naula_id_release(&next);
     return kept ? NAULA_OK : NAULA_REFUSED;
 }
 
@@ -280,7 +297,7 @@ naula_status naula_git_fetch_commits(const char *repository, const char *url, co
                      url == NULL ? "" : url);
         return NAULA_MALFORMED;
     }
-    const char *arguments[] = {"fetch", "--quiet", "--no-tags", "--filter=tree:0", url, ref, NULL};
+    const char *arguments[] = {"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=60", "fetch", "--quiet", "--no-tags", "--filter=tree:0", url, ref, NULL};
     naula_run_result result;
     naula_status status = run_git_succeeding(repository, arguments, "fetch", &result, refusal);
     if (status == NAULA_OK) {

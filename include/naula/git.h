@@ -11,8 +11,19 @@ extern "C" {
 #endif
 
 /**
- * Refuses with `git-missing` when no `git` runs, and with `git-too-old` below 2.20, the first release whose
- * `fetch --filter=tree:0` leaves out every tree. The other calls here need that git and do not check again.
+ * The variables every git child gets so it can never wait for a person: no terminal, credential manager or askpass
+ * prompt, and ssh in batch mode unless the caller already set GIT_SSH_COMMAND. NULL-terminated, for naula_run.
+ */
+typedef struct naula_git_environment_entries {
+    const char *list[8];
+} naula_git_environment_entries;
+
+void naula_git_environment(naula_git_environment_entries *entries);
+
+/**
+ * Refuses with `git-missing` when no `git` runs, and with `git-too-old` below 2.24, the first release that takes
+ * `--end-of-options` (2.20 already had `fetch --filter=tree:0` leaving out every tree). The other calls here need
+ * that git and do not check again.
  */
 naula_status naula_git_check_version(naula_refusal *refusal);
 
@@ -35,14 +46,12 @@ naula_status naula_git_repository_id(const char *repository, const char *ref, co
                                      naula_refusal *refusal);
 
 /**
- * Refuses with `id-changed` when the root of `new_tip` is not the root of `previous_tip`, unless `stated_id` is not
- * NULL and passes naula_git_repository_id at `new_tip`.
- *
- * @implNote Only the root of `previous_tip` is known, so a previous tip that itself stated a fork id and a new tip
- * that drops the statement read as the same id.
+ * Refuses with `id-changed` when the id at `new_tip` is not the id at `previous_tip`, each being its tip's stated
+ * fork id (NULL when none) or else its first-parent root. A tip with no stated id may take one: that is the fork
+ * exception, allowed once it passes naula_git_repository_id at `new_tip`. Dropping or changing a stated id is refused.
  */
-naula_status naula_git_check_id_kept(const char *repository, const char *previous_tip, const char *new_tip,
-                                     const char *stated_id, naula_refusal *refusal);
+naula_status naula_git_check_id_kept(const char *repository, const char *previous_tip, const char *previous_stated_id,
+                                     const char *new_tip, const char *new_stated_id, naula_refusal *refusal);
 
 /** Fetches the commits of `ref` from `url` into `repository` without any tree, leaving them at FETCH_HEAD. */
 naula_status naula_git_fetch_commits(const char *repository, const char *url, const char *ref, naula_refusal *refusal);

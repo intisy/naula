@@ -51,4 +51,4 @@ add_test(NAME git_fixtures_remove COMMAND ${CMAKE_COMMAND} -E remove_directory $
 set_tests_properties(git_fixtures_build PROPERTIES FIXTURES_SETUP git_fixtures TIMEOUT 120)
 set_tests_properties(git_fixtures_remove PROPERTIES FIXTURES_CLEANUP git_fixtures)
 set_tests_properties(git_test PROPERTIES FIXTURES_REQUIRED git_fixtures
-    ENVIRONMENT "HOME=${NAULA_FIXTURE_ROOT}/home;USERPROFILE=${NAULA_FIXTURE_ROOT}/home;GIT_CONFIG_GLOBAL=${NAULA_FIXTURE_ROOT}/home/gitconfig;GIT_CONFIG_NOSYSTEM=1")
+    ENVIRONMENT "HOME=${NAULA_FIXTURE_ROOT}/home;USERPROFILE=${NAULA_FIXTURE_ROOT}/home;XDG_CONFIG_HOME=${NAULA_FIXTURE_ROOT}/home/xdg;GIT_CONFIG_GLOBAL=${NAULA_FIXTURE_ROOT}/home/gitconfig;GIT_CONFIG_NOSYSTEM=1")

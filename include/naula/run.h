@@ -24,12 +24,14 @@ typedef struct naula_run_result {
 
 /**
  * Runs `arguments[0]` with the NULL-terminated `arguments`, found on PATH, in `directory` (NULL keeps the caller's),
- * and waits for it, standard input empty. No shell is involved, so an argument reaches the program as written, and no
+ * and waits for it, standard input empty. `environment` is NULL or a NULL-terminated list of `NAME=value` entries
+ * the child sees on top of this process's environment, replacing a variable of the same name; a value may be empty.
+ * The program is looked for on PATH only, never in the current directory. No shell is involved, so an argument reaches the program as written, and no
  * console window opens. NAULA_NOT_FOUND with code `program-not-found` says the program does not exist; a program
  * that ran and failed is NAULA_OK with its `exit_code`. Release the result with naula_run_result_release.
  */
-naula_status naula_run(const char *const *arguments, const char *directory, naula_run_result *result,
-                       naula_refusal *refusal);
+naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
+                       naula_run_result *result, naula_refusal *refusal);
 
 void naula_run_result_release(naula_run_result *result);
 
