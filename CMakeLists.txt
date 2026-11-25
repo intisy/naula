@@ -31,7 +31,7 @@ if(WIN32)
 else()
     find_package(Threads REQUIRED)
     set(naula_transport_platform_source src/transport_curl.c)
-    set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads)
+    set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
 set(naula_sources src/status.c src/id.c src/sha256.c src/home.c src/provider_registry.c src/provider_github.c src/transport.c src/transport_sink.c ${naula_transport_platform_source})
 
