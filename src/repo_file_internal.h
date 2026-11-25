@@ -31,6 +31,8 @@ naula_status repo_file_read_text(const cJSON *object, const member_path *path, c
 naula_status repo_file_require(const cJSON *object, const member_path *path, const char *name, const char *fix,
                                naula_refusal *refusal);
 
+/** One path segment that git and every system can hold: not `.git`, no trailing dot, no Windows device name. */
+int repo_file_is_folder_name(const char *text);
 int repo_file_is_import_name(const char *text);
 int repo_file_is_commit(const char *text);
 int repo_file_is_relative_path(const char *text);
@@ -51,6 +53,9 @@ naula_org_declaration *repo_file_new_org(void);
 void repo_file_release_reference(naula_reference *reference);
 void repo_file_release_org(naula_org_declaration *org);
 void repo_file_start(naula_repo_file *file);
+
+/** Answers NAULA_MALFORMED with `repo-file-not-json` for bytes that are not JSON, NAULA_OUT_OF_MEMORY for no memory. */
+naula_status repo_file_parse_json(const uint8_t *bytes, size_t length, cJSON **json, naula_refusal *refusal);
 
 int repo_file_size_holds_first_shape(const naula_repo_file *file);
 

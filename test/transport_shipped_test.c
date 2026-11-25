@@ -6,6 +6,7 @@
 #include "http_fixture.h"
 #include "naula/memory.h"
 #include "naula/transport.h"
+#include "naula/json.h"
 
 static naula_fetch_answer empty_answer(void) {
     naula_fetch_answer answer;
@@ -50,6 +51,7 @@ static void plain_http_is_refused_without_the_hook(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     plain_http_is_refused_without_the_hook();
     return check_summary("transport_shipped_test");
 }

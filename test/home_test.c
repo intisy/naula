@@ -4,6 +4,7 @@
 #include "check.h"
 #include "cJSON.h"
 #include "naula/home.h"
+#include "naula/json.h"
 
 static naula_status parse_home(const char *json_text, naula_home *home, naula_refusal *refusal) {
     cJSON *json = cJSON_Parse(json_text);
@@ -157,6 +158,7 @@ static void a_place_without_a_readable_number_is_refused(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     a_github_account_home_parses();
     a_forgejo_home_keeps_its_host();
     a_web_home_parses();

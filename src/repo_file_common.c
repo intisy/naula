@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "json_document.h"
 #include "naula/memory.h"
 #include "repo_file_internal.h"
 
@@ -123,6 +124,9 @@ static int is_lowercase_or_digit(char character) {
 
 int repo_file_is_import_name(const char *text) {
     size_t length = strlen(text);
+    if (!repo_file_is_folder_name(text)) {
+        return 0;
+    }
     if (length == 0 || !is_lowercase_or_digit(text[0]) || !is_lowercase_or_digit(text[length - 1])) {
         return 0;
     }
@@ -153,8 +157,35 @@ static int is_path_character(char character) {
            character == '_' || character == '-';
 }
 
+static int is_named(const char *segment, size_t length, const char *name) {
+    if (length != strlen(name)) {
+        return 0;
+    }
+    for (size_t index = 0; index < length; index++) {
+        char character = segment[index] >= 'A' && segment[index] <= 'Z' ? (char)(segment[index] - 'A' + 'a')
+                                                                          : segment[index];
+        if (character != name[index]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/** Windows opens the device for these names with any extension, so such a folder can never be created there. */
+static int is_device_name(const char *segment, size_t length) {
+    const char *dot = memchr(segment, '.', length);
+    size_t base = dot == NULL ? length : (size_t)(dot - segment);
+    if (is_named(segment, base, "con") || is_named(segment, base, "prn") || is_named(segment, base, "aux") ||
+        is_named(segment, base, "nul")) {
+        return 1;
+    }
+    int is_port = base == 4 && (is_named(segment, 3, "com") || is_named(segment, 3, "lpt"));
+    return is_port && segment[3] >= '1' && segment[3] <= '9';
+}
+
 static int is_path_segment(const char *segment, size_t length) {
-    if (length == 0 || (length == 1 && segment[0] == '.') || (length == 2 && segment[0] == '.' && segment[1] == '.')) {
+    if (length == 0 || segment[length - 1] == '.' || is_named(segment, length, ".git") ||
+        is_device_name(segment, length)) {
         return 0;
     }
     for (size_t index = 0; index < length; index++) {
@@ -163,6 +194,10 @@ static int is_path_segment(const char *segment, size_t length) {
         }
     }
     return 1;
+}
+
+int repo_file_is_folder_name(const char *text) {
+    return is_path_segment(text, strlen(text));
 }
 
 int repo_file_is_relative_path(const char *text) {
@@ -373,4 +408,14 @@ void naula_repo_file_release(naula_repo_file *file) {
     repo_file_release_org(file->org);
     cJSON_Delete(file->access);
     repo_file_start(file);
+}
+
+naula_status repo_file_parse_json(const uint8_t *bytes, size_t length, cJSON **json, naula_refusal *refusal) {
+    const char *reason = NULL;
+    naula_status status = naula_json_parse(bytes, length, json, &reason);
+    if (status == NAULA_MALFORMED) {
+        naula_refuse(refusal, "repo-file-not-json", "write repo.json as one JSON object in UTF-8", "repo.json %s",
+                     reason);
+    }
+    return status;
 }

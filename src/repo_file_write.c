@@ -387,6 +387,9 @@ static naula_status check_written(const text_builder *builder) {
 naula_status naula_repo_file_write(const naula_repo_file *file, char **json, size_t *length) {
     *json = NULL;
     *length = 0;
+    if (!repo_file_size_holds_first_shape(file)) {
+        return NAULA_REFUSED;
+    }
     text_builder builder = {NULL, 0, 0, 0};
     write_file(&builder, file);
     naula_status status = builder.out_of_memory ? NAULA_OUT_OF_MEMORY : check_written(&builder);

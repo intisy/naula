@@ -76,7 +76,7 @@ static naula_status read_projects(const cJSON *object, naula_repo_file *file, na
 /** A format 1 forge id is `<word>[@host]:<number>` then segments; its place is the text before the first segment. */
 static naula_status read_forge_place(const char *id, const member_path *path, naula_reference *reference,
                                      naula_refusal *refusal) {
-    const char *colon = strrchr(id, ':');
+    const char *colon = strchr(id, ':');
     const char *segment = colon == NULL ? NULL : strchr(colon, '/');
     size_t length = segment == NULL ? strlen(id) : (size_t)(segment - id);
     char *place_text = naula_memory_allocate(length + 1);
@@ -211,10 +211,10 @@ naula_status naula_repo_file_parse_format_one(const uint8_t *bytes, size_t lengt
         return NAULA_REFUSED;
     }
     repo_file_start(file);
-    cJSON *json = length == 0 ? NULL : cJSON_ParseWithLength((const char *)bytes, length);
-    if (json == NULL) {
-        naula_refuse(refusal, "repo-file-not-json", "write repo.json as one JSON object", "repo.json is not JSON");
-        return NAULA_MALFORMED;
+    cJSON *json = NULL;
+    naula_status parsed = repo_file_parse_json(bytes, length, &json, refusal);
+    if (parsed != NAULA_OK) {
+        return parsed;
     }
     naula_status status = read_format_one(json, file, refusal);
     cJSON_Delete(json);

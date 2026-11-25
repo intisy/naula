@@ -9,6 +9,7 @@
 #include "check.h"
 #include "naula/git.h"
 #include "naula/run.h"
+#include "naula/json.h"
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -369,6 +370,7 @@ static int flood(void) {
 }
 
 int main(int count, char **values) {
+    naula_json_use_allocator();
     if (count > 1 && strcmp(values[1], "--print-arguments") == 0) {
         return print_arguments(count, values);
     }

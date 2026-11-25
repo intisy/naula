@@ -87,3 +87,6 @@ naula_test(repo_file_test)
 target_link_libraries(repo_file_test PRIVATE naula naula_allocator_counting)
 target_compile_definitions(repo_file_test PRIVATE NAULA_REPO_FILE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/repo-file"
     NAULA_REPO_FILE_FORMAT_ONE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/repo-file-format-one/repo.json")
+
+naula_test(json_test)
+target_link_libraries(json_test PRIVATE naula naula_allocator_counting)

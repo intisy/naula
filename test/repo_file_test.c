@@ -6,6 +6,7 @@
 #include "cJSON.h"
 #include "memory_testing.h"
 #include "naula/repo_file.h"
+#include "naula/json.h"
 
 #ifndef NAULA_REPO_FILE_FIXTURES
 #error "NAULA_REPO_FILE_FIXTURES names test/fixtures/repo-file"
@@ -331,6 +332,121 @@ static void a_file_struct_smaller_than_its_first_shape_is_refused(void) {
     CHECK(file.name == NULL);
 }
 
+static void expect_bytes_malformed(const char *bytes, size_t length, const char *label) {
+    naula_repo_file file;
+    naula_refusal refusal;
+    start(&file, &refusal);
+    naula_status status = naula_repo_file_parse((const uint8_t *)bytes, length, &file, &refusal);
+    if (status != NAULA_MALFORMED || strcmp(refusal.code, "repo-file-not-json") != 0) {
+        fprintf(stderr, "%s: expected repo-file-not-json, got status %d (%s)\n", label, (int)status, refusal.code);
+        check_failures++;
+    }
+    if (status == NAULA_OK) {
+        naula_repo_file_release(&file);
+    }
+}
+
+static void bytes_not_held_to_json_are_malformed(void) {
+    const char *trailing = FILE_HEAD GITHUB_HOME " } trailing";
+    expect_bytes_malformed(trailing, strlen(trailing), "trailing text");
+    const char *second = FILE_HEAD GITHUB_HOME " } { }";
+    expect_bytes_malformed(second, strlen(second), "a second value");
+    const char *latin1 = "{ \"format\": 2, \"name\": \"a\xe9\", \"importName\": \"a\", " GITHUB_HOME " }";
+    expect_bytes_malformed(latin1, strlen(latin1), "a Latin-1 byte");
+    const char *escaped_nul = "{ \"format\": 2, \"name\": \"a\\u0000b\", \"importName\": \"a\", " GITHUB_HOME " }";
+    expect_bytes_malformed(escaped_nul, strlen(escaped_nul), "an escaped NUL");
+    const char raw_nul[] = "{ \"format\": 2, \"name\": \"a\0b\", \"importName\": \"a\" }";
+    expect_bytes_malformed(raw_nul, sizeof raw_nul - 1, "a raw NUL");
+}
+
+#define DEPENDENCY_WITH_PATH(path)                                                                                    \
+    FILE_HEAD GITHUB_HOME ", \"dependencies\": [ { \"id\": " GIT_ID ", \"at\": [ \"github:1\" ], \"importName\": "   \
+                          "\"b\", \"commit\": \"" HEX40 "\", \"path\": \"" path "\" } ] }"
+
+static void expect_text_accepted(const char *text, const char *label) {
+    naula_repo_file file;
+    naula_refusal refusal;
+    if (parse_text(text, &file, &refusal) != NAULA_OK) {
+        fprintf(stderr, "%s: refused: %s\n", label, refusal.detail);
+        check_failures++;
+        return;
+    }
+    naula_repo_file_release(&file);
+}
+
+static void paths_git_or_windows_cannot_hold_are_refused(void) {
+    expect_text_refused(DEPENDENCY_WITH_PATH(".git"), "dependencies[0].path", "a .git segment");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/.GIT/b"), "dependencies[0].path", "a .GIT segment");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/b."), "dependencies[0].path", "a trailing dot");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/con"), "dependencies[0].path", "con");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/CON.txt"), "dependencies[0].path", "CON with an extension");
+    expect_text_refused(DEPENDENCY_WITH_PATH("nul"), "dependencies[0].path", "nul");
+    expect_text_refused(DEPENDENCY_WITH_PATH("aux.tar.gz"), "dependencies[0].path", "aux with two extensions");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/prn"), "dependencies[0].path", "prn");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/com1"), "dependencies[0].path", "com1");
+    expect_text_refused(DEPENDENCY_WITH_PATH("siblings/LPT9.log"), "dependencies[0].path", "lpt9 with an extension");
+    expect_text_refused(ORG_HEAD "\"rules\": \".Git/RULES.md\" } }", "org.rules", "rules under .git");
+    expect_text_refused("{ \"format\": 2, \"name\": \"CON\", \"importName\": \"a\", " GITHUB_HOME " }", "name",
+                        "a device name as the repo's name");
+    expect_text_refused("{ \"format\": 2, \"name\": \"naula.\", \"importName\": \"a\", " GITHUB_HOME " }", "name",
+                        "a name with a trailing dot");
+    expect_text_accepted(DEPENDENCY_WITH_PATH("siblings/console"), "console");
+    expect_text_accepted(DEPENDENCY_WITH_PATH("siblings/com10/.github/lpt"), "com10, .github and lpt");
+}
+
+static void a_number_that_is_not_finite_is_refused_in_access(void) {
+    expect_text_refused(FILE_HEAD GITHUB_HOME ", \"access\": { \"limit\": [ 1, -1e999 ] } }", "access",
+                        "an infinite number");
+}
+
+static void a_home_written_twice_over_is_refused(void) {
+    expect_text_refused(FILE_HEAD "\"homes\": [ { \"provider\": \"github\", \"account\": \"a\", \"account\": \"b\" } ] }",
+                        "homes[0]", "an account written twice");
+    expect_text_refused(ORG_HEAD "\"accounts\": [ { \"provider\": \"github\", \"provider\": \"gitea\", \"account\": "
+                                 "\"a\" } ] } }",
+                        "org.accounts[0]", "a provider written twice");
+}
+
+static void a_local_parent_or_hold_is_refused(void) {
+    expect_text_refused(ORG_HEAD "\"parent\": { \"id\": \"local:docs\" } } }", "org.parent.id", "a local parent");
+    expect_text_refused(ORG_HEAD "\"hold\": [ { \"id\": \"local:docs\" } ] } }", "org.hold[0].id", "a local hold");
+    expect_text_accepted(ORG_HEAD "\"parent\": { \"url\": \"https://github.com/intisy/docs\" } } }", "a url parent");
+}
+
+static void references_by_url_or_local_id(void) {
+    expect_text_refused(FILE_HEAD GITHUB_HOME ", \"dependencies\": [ { \"url\": \"https://github.com/a/b\", \"at\": [ "
+                                              "\"github:1\" ], \"importName\": \"b\", \"commit\": \"" HEX40 "\" } ] }",
+                        "dependencies[0].at", "a url with an at");
+    naula_repo_file file;
+    naula_refusal refusal;
+    const char *local = FILE_HEAD GITHUB_HOME ", \"dependencies\": [ { \"id\": \"local:b\", \"importName\": \"b\", "
+                                              "\"commit\": \"" HEX40 "\" } ] }";
+    if (parse_text(local, &file, &refusal) != NAULA_OK) {
+        fprintf(stderr, "a local dependency: refused: %s\n", refusal.detail);
+        check_failures++;
+        return;
+    }
+    check_text(file.dependencies[0].reference.id, "local:b", "local dependency id");
+    CHECK(file.dependencies[0].reference.at_count == 0);
+    naula_repo_file_release(&file);
+}
+
+static void write_refuses_a_struct_smaller_than_its_first_shape(void) {
+    naula_repo_file file;
+    naula_refusal refusal;
+    if (parse_fixture("valid", &file, &refusal) != NAULA_OK) {
+        check_failures++;
+        return;
+    }
+    uint32_t size = file.size;
+    file.size = 8;
+    char *json = NULL;
+    size_t length = 0;
+    CHECK(naula_repo_file_write(&file, &json, &length) == NAULA_REFUSED && json == NULL);
+    file.size = size;
+    naula_repo_file_release(&file);
+}
+
 static int same_text(const char *left, const char *right) {
     return (left == NULL && right == NULL) || (left != NULL && right != NULL && strcmp(left, right) == 0);
 }
@@ -560,6 +676,22 @@ static void format_one_keeps_hosts_and_projects(void) {
     check_text(refusal.code, "repo-file-format", "format 2 read as format 1");
 }
 
+static void format_one_reads_a_forge_id_from_the_left(void) {
+    const char *text = "{ \"format\": 1, \"importName\": \"a\", \"dependencies\": [ { \"id\": "
+                       "\"github:12/plugins/a:b\", \"importName\": \"b\", \"commit\": \"" HEX40 "\" } ] }";
+    naula_repo_file file;
+    naula_refusal refusal;
+    start(&file, &refusal);
+    if (naula_repo_file_parse_format_one((const uint8_t *)text, strlen(text), &file, &refusal) != NAULA_OK) {
+        fprintf(stderr, "a segment holding a colon: %s\n", refusal.detail);
+        check_failures++;
+        return;
+    }
+    check_text(file.dependencies[0].reference.id, "github:12/plugins/a:b", "the id kept verbatim");
+    CHECK(file.dependencies[0].reference.at_count == 1 && file.dependencies[0].reference.at[0].number == 12);
+    naula_repo_file_release(&file);
+}
+
 static void write_fails_cleanly_at_every_allocation(const naula_repo_file *file, const char *label) {
     char *json = NULL;
     size_t length = 0;
@@ -611,6 +743,7 @@ static void out_of_memory_is_answered_at_every_allocation(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     every_valid_fixture_parses();
     the_valid_fixture_reads_every_member();
     the_fork_fixture_states_its_own_id();
@@ -629,6 +762,14 @@ int main(void) {
     write_is_byte_stable();
     format_one_reads_paths_and_github_ids();
     format_one_keeps_hosts_and_projects();
+    bytes_not_held_to_json_are_malformed();
+    paths_git_or_windows_cannot_hold_are_refused();
+    a_number_that_is_not_finite_is_refused_in_access();
+    a_home_written_twice_over_is_refused();
+    a_local_parent_or_hold_is_refused();
+    references_by_url_or_local_id();
+    write_refuses_a_struct_smaller_than_its_first_shape();
+    format_one_reads_a_forge_id_from_the_left();
     out_of_memory_is_answered_at_every_allocation();
     return check_summary("repo_file_test");
 }

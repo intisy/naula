@@ -3,6 +3,7 @@
 
 #include "check.h"
 #include "naula/sha256.h"
+#include "naula/json.h"
 
 static void expect_digest(const char *message, const char *expected, const char *label) {
     naula_sha256 hash;
@@ -48,6 +49,7 @@ static void finish_answers_the_raw_digest_hex_spells(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     sha256_matches_fips_vectors();
     a_million_a_fed_in_uneven_pieces_matches_fips();
     finish_answers_the_raw_digest_hex_spells();

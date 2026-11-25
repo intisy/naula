@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "json_document.h"
 #include "naula/memory.h"
 #include "naula/transport.h"
 
@@ -231,9 +232,13 @@ naula_status naula_forge_fetch(const forge_flavor *flavor, const char *url, cons
 
 cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
                                naula_refusal *refusal) {
-    cJSON *json = cJSON_ParseWithLength((const char *)reply->body, reply->length);
-    if (json == NULL) {
+    cJSON *json = NULL;
+    const char *reason = NULL;
+    naula_status parsed = naula_json_parse(reply->body, reply->length, &json, &reason);
+    if (parsed == NAULA_MALFORMED) {
         *status = naula_forge_refuse_malformed(flavor, refusal, "something that is not JSON");
+    } else if (parsed != NAULA_OK) {
+        *status = parsed;
     }
     return json;
 }

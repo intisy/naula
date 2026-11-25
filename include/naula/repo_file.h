@@ -20,7 +20,9 @@ extern "C" {
 #endif
 
 /**
- * Another repo: an `id` with the places `at` to start looking, or a `url` alone. In a file read by
+ * Another repo: an `id` with the places `at` to start looking, or a `url` alone. A `url` is accepted everywhere a
+ * reference is, `parent` and `hold` included, since naming a repo by url is warned and never an error; a `local:` id
+ * is refused in `parent` and `hold`, which name a rules repo that a home must confirm. In a file read by
  * naula_repo_file_parse_format_one, `id` is the format 1 text verbatim, segments included, and `at` its forge number.
  * First shape ends at `at_count`.
  */
@@ -90,8 +92,11 @@ typedef struct naula_repo_file {
 naula_status naula_repo_file_parse(const uint8_t *bytes, size_t length, naula_repo_file *file, naula_refusal *refusal);
 
 /**
- * Writes `file` as format 2: members in the order of the format's table, two-space indent, LF, a trailing newline,
- * so writing what was read changes no byte. Answers NAULA_MALFORMED, and no text, for a file the parser would refuse.
+ * Writes `file` as format 2: members in the order of the format's table, two-space indent, LF, a trailing newline.
+ * Writing what was read changes no byte only for a file already in that canonical form: a number in `access` is
+ * written back in its shortest exact form, so `1.0` becomes `1` and a large integer may gain an exponent. Answers
+ * NAULA_REFUSED for a struct smaller than its first shape and NAULA_MALFORMED, with no text, for a file the parser
+ * would refuse.
  */
 naula_status naula_repo_file_write(const naula_repo_file *file, char **json, size_t *length);
 

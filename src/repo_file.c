@@ -1,3 +1,4 @@
+#include <math.h>
 #include <string.h>
 
 #include "naula/id.h"
@@ -19,19 +20,7 @@ static const char *const REGISTRY_FIX =
     "name the npm scope and the maven group, for example \"@spisor\" and \"com.spisor\"";
 
 static int is_repo_name(const char *text) {
-    size_t length = strlen(text);
-    if (length == 0 || length > REPO_NAME_LIMIT || strcmp(text, ".") == 0 || strcmp(text, "..") == 0) {
-        return 0;
-    }
-    for (size_t index = 0; index < length; index++) {
-        char character = text[index];
-        int is_alphanumeric = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-                              (character >= '0' && character <= '9');
-        if (!is_alphanumeric && character != '.' && character != '-' && character != '_') {
-            return 0;
-        }
-    }
-    return 1;
+    return strlen(text) <= REPO_NAME_LIMIT && repo_file_is_folder_name(text);
 }
 
 static int is_registry(const char *text) {
@@ -48,6 +37,12 @@ static int is_registry(const char *text) {
 
 static naula_status read_home(const cJSON *json, const member_path *path, naula_home *home, naula_refusal *refusal) {
     home->size = sizeof *home;
+    if (cJSON_IsObject(json)) {
+        naula_status checked = repo_file_check_members(json, path, NULL, refusal);
+        if (checked != NAULA_OK) {
+            return checked;
+        }
+    }
     naula_refusal inner;
     memset(&inner, 0, sizeof inner);
     inner.size = sizeof inner;
@@ -220,10 +215,28 @@ static naula_status read_org_member(const cJSON *object, naula_repo_file *file, 
     return repo_file_read_org(org, &path, NULL, file->org, refusal);
 }
 
-static naula_status read_access(const cJSON *object, naula_repo_file *file) {
+static int holds_only_finite_numbers(const cJSON *value) {
+    if (cJSON_IsNumber(value)) {
+        return isfinite(value->valuedouble);
+    }
+    for (const cJSON *child = value->child; child != NULL; child = child->next) {
+        if (!holds_only_finite_numbers(child)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static naula_status read_access(const cJSON *object, naula_repo_file *file, naula_refusal *refusal) {
     const cJSON *access = cJSON_GetObjectItemCaseSensitive(object, "access");
     if (access == NULL) {
         return NAULA_OK;
+    }
+    if (!holds_only_finite_numbers(access)) {
+        member_path root = member_path_root();
+        member_path path = member_path_child(&root, "access");
+        return repo_file_refuse(refusal, &path, "write every number within the range a double holds",
+                                "holds a number too large to read back");
     }
     file->access = cJSON_Duplicate(access, 1);
     return file->access == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
@@ -291,7 +304,7 @@ static naula_status read_file(const cJSON *object, naula_repo_file *file, naula_
     if (status == NAULA_OK) {
         status = read_org_member(object, file, refusal);
     }
-    return status == NAULA_OK ? read_access(object, file) : status;
+    return status == NAULA_OK ? read_access(object, file, refusal) : status;
 }
 
 naula_status naula_repo_file_parse(const uint8_t *bytes, size_t length, naula_repo_file *file,
@@ -302,10 +315,10 @@ naula_status naula_repo_file_parse(const uint8_t *bytes, size_t length, naula_re
         return NAULA_REFUSED;
     }
     repo_file_start(file);
-    cJSON *json = length == 0 ? NULL : cJSON_ParseWithLength((const char *)bytes, length);
-    if (json == NULL) {
-        naula_refuse(refusal, "repo-file-not-json", "write repo.json as one JSON object", "repo.json is not JSON");
-        return NAULA_MALFORMED;
+    cJSON *json = NULL;
+    naula_status parsed = repo_file_parse_json(bytes, length, &json, refusal);
+    if (parsed != NAULA_OK) {
+        return parsed;
     }
     naula_status status = read_file(json, file, refusal);
     cJSON_Delete(json);

@@ -5,6 +5,7 @@
 #include "check.h"
 #include "naula/memory.h"
 #include "naula/provider.h"
+#include "naula/json.h"
 
 static naula_refusal fresh_refusal(void) {
     naula_refusal refusal;
@@ -41,6 +42,7 @@ static void codeberg_answers_a_find_but_asks_for_a_token_by_number(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     web_a_domain_that_does_not_resolve_is_unreachable();
     codeberg_answers_a_find_but_asks_for_a_token_by_number();
     return check_summary("provider_network_test");

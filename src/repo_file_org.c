@@ -131,7 +131,14 @@ static naula_status read_reference_object(const cJSON *json, const member_path *
                                           naula_refusal *refusal) {
     static const char *const allowed[] = {"id", "url", "at", NULL};
     naula_status status = repo_file_check_members(json, path, allowed, refusal);
-    return status == NAULA_OK ? repo_file_read_reference(json, path, reference, refusal) : status;
+    if (status == NAULA_OK) {
+        status = repo_file_read_reference(json, path, reference, refusal);
+    }
+    if (status == NAULA_OK && reference->id != NULL && strncmp(reference->id, "local:", 6) == 0) {
+        member_path id_path = member_path_child(path, "id");
+        return repo_file_refuse(refusal, &id_path, REFERENCE_FIX, "is local:, which can never hold an org's rules");
+    }
+    return status;
 }
 
 static int is_one_line(const char *text) {
@@ -170,6 +177,10 @@ naula_status repo_file_read_projects(const cJSON *projects, const member_path *p
 static naula_status read_account(const cJSON *json, const member_path *path, naula_home *account,
                                  naula_refusal *refusal) {
     account->size = sizeof *account;
+    naula_status checked = repo_file_check_members(json, path, NULL, refusal);
+    if (checked != NAULA_OK) {
+        return checked;
+    }
     naula_refusal inner;
     memset(&inner, 0, sizeof inner);
     inner.size = sizeof inner;
