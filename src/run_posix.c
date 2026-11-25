@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -19,6 +20,8 @@
 #include "run_internal.h"
 
 #define POLL_MILLISECONDS 20
+
+extern char **environ;
 
 typedef enum child_stage { STAGE_DIRECTORY = 1, STAGE_EXEC = 2 } child_stage;
 
@@ -63,7 +66,9 @@ static int open_pipe(run_pipe *made) {
         return 0;
     }
     if (fcntl(made->ends[0], F_SETFD, FD_CLOEXEC) != 0 || fcntl(made->ends[1], F_SETFD, FD_CLOEXEC) != 0) {
+        int saved = errno;
         close_pipe(made);
+        errno = saved;
         return 0;
     }
     return 1;
@@ -85,13 +90,126 @@ static void restore_signals(void) {
     signal(SIGPIPE, SIG_DFL);
 }
 
-static void add_environment(const char *const *environment) {
-    for (size_t index = 0; environment != NULL && environment[index] != NULL; index++) {
-        putenv((char *)environment[index]);
-    }
+/** What the child execs, all of it made before fork so the child calls nothing that allocates. */
+typedef struct child_program {
+    char *path;
+    char **environment;
+} child_program;
+
+static size_t name_length(const char *entry) {
+    const char *equals = strchr(entry, '=');
+    return equals == NULL ? strlen(entry) : (size_t)(equals - entry);
 }
 
-static void run_child(const char *const *arguments, const char *directory, const char *const *environment,
+static int overrides(const char *entry, const char *const *additions) {
+    for (size_t index = 0; additions != NULL && additions[index] != NULL; index++) {
+        size_t length = name_length(additions[index]);
+        if (strncmp(entry, additions[index], length) == 0 && entry[length] == '=') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void release_program(child_program *program) {
+    naula_memory_release(program->path);
+    naula_memory_release(program->environment);
+    memset(program, 0, sizeof *program);
+}
+
+/** This process's environment with the additions replacing same-named entries; NULL when memory ran out. */
+static char **merged_environment(const char *const *additions) {
+    size_t inherited = 0;
+    size_t added = 0;
+    while (environ != NULL && environ[inherited] != NULL) {
+        inherited++;
+    }
+    while (additions != NULL && additions[added] != NULL) {
+        added++;
+    }
+    char **merged = naula_memory_allocate((inherited + added + 1) * sizeof *merged);
+    size_t count = 0;
+    for (size_t index = 0; merged != NULL && index < inherited; index++) {
+        if (!overrides(environ[index], additions)) {
+            merged[count++] = environ[index];
+        }
+    }
+    for (size_t index = 0; merged != NULL && index < added; index++) {
+        merged[count++] = (char *)additions[index];
+    }
+    if (merged != NULL) {
+        merged[count] = NULL;
+    }
+    return merged;
+}
+
+static const char *path_of(char *const *environment) {
+    for (size_t index = 0; environment[index] != NULL; index++) {
+        if (strncmp(environment[index], "PATH=", 5) == 0) {
+            return environment[index] + 5;
+        }
+    }
+    return "/usr/bin:/bin";
+}
+
+static int is_runnable(const char *path) {
+    struct stat details;
+    return stat(path, &details) == 0 && S_ISREG(details.st_mode) && access(path, X_OK) == 0;
+}
+
+/**
+ * The program as a path to exec, found on PATH only: an empty PATH entry, which the shell reads as the current
+ * directory, is skipped. NULL when absent, with *out_of_memory set when memory ran out.
+ */
+static char *resolve_program(const char *name, const char *search, int *out_of_memory) {
+    if (strchr(name, '/') != NULL) {
+        char *copy = naula_memory_duplicate_text(name);
+        *out_of_memory = copy == NULL;
+        return copy;
+    }
+    size_t name_size = strlen(name);
+    for (const char *entry = search; *entry != '\0';) {
+        size_t length = strcspn(entry, ":");
+        if (length > 0) {
+            char *candidate = naula_memory_allocate(length + name_size + 2);
+            if (candidate == NULL) {
+                *out_of_memory = 1;
+                return NULL;
+            }
+            memcpy(candidate, entry, length);
+            candidate[length] = '/';
+            memcpy(candidate + length + 1, name, name_size + 1);
+            if (is_runnable(candidate)) {
+                return candidate;
+            }
+            naula_memory_release(candidate);
+        }
+        entry += length + (entry[length] == ':' ? 1 : 0);
+    }
+    return NULL;
+}
+
+static naula_status prepare_program(const char *name, const char *const *additions, child_program *program,
+                                    naula_refusal *refusal) {
+    int out_of_memory = 0;
+    memset(program, 0, sizeof *program);
+    program->environment = merged_environment(additions);
+    if (program->environment != NULL) {
+        program->path = resolve_program(name, path_of(program->environment), &out_of_memory);
+    }
+    if (program->environment == NULL || out_of_memory) {
+        release_program(program);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    if (program->path == NULL) {
+        release_program(program);
+        naula_refuse(refusal, "program-not-found", "install it and put it on PATH", "%s was not found", name);
+        return NAULA_NOT_FOUND;
+    }
+    return NAULA_OK;
+}
+
+static void run_child(const char *const *arguments, const char *directory, const child_program *program,
                       const run_pipe *output, const run_pipe *error, const run_pipe *report) {
     int null_device = open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (directory != NULL && chdir(directory) != 0) {
@@ -101,8 +219,7 @@ static void run_child(const char *const *arguments, const char *directory, const
         report_and_exit(report->ends[1], STAGE_EXEC, errno);
     }
     restore_signals();
-    add_environment(environment);
-    execvp(arguments[0], (char *const *)arguments);
+    execve(program->path, (char *const *)arguments, program->environment);
     report_and_exit(report->ends[1], STAGE_EXEC, errno);
 }
 
@@ -234,7 +351,7 @@ static naula_status run_started(pid_t child, run_pipe *output, run_pipe *error, 
     run_buffer collected_error = {NULL, 0, 0};
     collect_state state = {0, 0, 0};
     int exited = collect(child, output->ends[0], error->ends[0], &collected_output, &collected_error, &status, &state);
-    if (state.poll_failed) {
+    if (state.poll_failed && !exited) {
         kill(child, SIGKILL);
     }
     if (!exited && !wait_for(child, &status)) {
@@ -261,6 +378,11 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
     if (begun != NAULA_OK) {
         return begun;
     }
+    child_program program;
+    begun = prepare_program(arguments[0], environment, &program, refusal);
+    if (begun != NAULA_OK) {
+        return begun;
+    }
     run_pipe output = {{-1, -1}};
     run_pipe error = {{-1, -1}};
     run_pipe report = {{-1, -1}};
@@ -272,7 +394,7 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
         if (child < 0) {
             status = refuse_system_failure("start", arguments[0], refusal);
         } else if (child == 0) {
-            run_child(arguments, directory, environment, &output, &error, &report);
+            run_child(arguments, directory, &program, &output, &error, &report);
         } else {
             status = run_started(child, &output, &error, &report, arguments, directory, result, refusal);
         }
@@ -280,6 +402,7 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
     close_pipe(&output);
     close_pipe(&error);
     close_pipe(&report);
+    release_program(&program);
     return status;
 }
 

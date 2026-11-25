@@ -1,3 +1,5 @@
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <windows.h>
@@ -319,19 +321,60 @@ static int append_wide(run_buffer *block, const wchar_t *text) {
     return run_buffer_append(block, (const char *)text, (wcslen(text) + 1) * sizeof *text);
 }
 
-/** This process's environment with the additions replacing same-named entries, as a block to release. */
+static wchar_t fold(wchar_t letter) {
+    return (wchar_t)(uintptr_t)CharUpperW((LPWSTR)(uintptr_t)letter);
+}
+
+/** Entries whose name starts with `=` (the per-drive directories) first, then by name ignoring case. */
+static int compare_entries(const void *left, const void *right) {
+    const wchar_t *first = *(const wchar_t *const *)left;
+    const wchar_t *second = *(const wchar_t *const *)right;
+    if ((first[0] == L'=') != (second[0] == L'=')) {
+        return first[0] == L'=' ? -1 : 1;
+    }
+    for (;; first++, second++) {
+        wchar_t a = first[0];
+        wchar_t b = second[0];
+        a = (a == L'\0' || a == L'=') ? L'\0' : fold(a);
+        b = (b == L'\0' || b == L'=') ? L'\0' : fold(b);
+        if (a != b || a == L'\0') {
+            return a < b ? -1 : a > b;
+        }
+    }
+}
+
+/**
+ * This process's environment with the additions replacing same-named entries, as a block to release.
+ *
+ * @implNote CreateProcessW documents the block as sorted by name, case-insensitively, so it is sorted here.
+ */
 static wchar_t *merged_environment(wchar_t *const *additions, size_t count) {
     wchar_t *inherited = GetEnvironmentStringsW();
-    run_buffer block = {NULL, 0, 0};
-    int complete = inherited != NULL;
-    for (const wchar_t *entry = inherited; complete && *entry != L'\0'; entry += wcslen(entry) + 1) {
-        complete = is_overridden(entry, additions, count) || append_wide(&block, entry);
+    size_t entries = count;
+    for (const wchar_t *entry = inherited; inherited != NULL && *entry != L'\0'; entry += wcslen(entry) + 1) {
+        entries++;
     }
-    for (size_t index = 0; complete && index < count; index++) {
-        complete = append_wide(&block, additions[index]);
+    const wchar_t **sorted = naula_memory_allocate((entries + 1) * sizeof *sorted);
+    size_t kept = 0;
+    for (const wchar_t *entry = inherited; sorted != NULL && *entry != L'\0'; entry += wcslen(entry) + 1) {
+        if (!is_overridden(entry, additions, count)) {
+            sorted[kept++] = entry;
+        }
+    }
+    for (size_t index = 0; sorted != NULL && index < count; index++) {
+        sorted[kept++] = additions[index];
+    }
+    run_buffer block = {NULL, 0, 0};
+    int complete = sorted != NULL;
+    if (complete) {
+        qsort(sorted, kept, sizeof *sorted, compare_entries);
+    }
+    for (size_t index = 0; complete && index < kept; index++) {
+        complete = append_wide(&block, sorted[index]);
     }
     static const wchar_t terminator = L'\0';
     complete = complete && run_buffer_append(&block, (const char *)&terminator, sizeof terminator);
+    naula_memory_release(sorted);
     if (inherited != NULL) {
         FreeEnvironmentStringsW(inherited);
     }
