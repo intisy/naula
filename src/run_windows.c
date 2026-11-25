@@ -350,6 +350,9 @@ static int compare_entries(const void *left, const void *right) {
  */
 static wchar_t *merged_environment(wchar_t *const *additions, size_t count) {
     wchar_t *inherited = GetEnvironmentStringsW();
+    if (inherited == NULL) {
+        return NULL;
+    }
     size_t entries = count;
     for (const wchar_t *entry = inherited; inherited != NULL && *entry != L'\0'; entry += wcslen(entry) + 1) {
         entries++;

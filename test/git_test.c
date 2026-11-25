@@ -18,6 +18,7 @@
 #define CHDIR _chdir
 #define NAULA_PROGRAM_SUFFIX ".exe"
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #define GETCWD getcwd
 #define CHDIR chdir
@@ -293,18 +294,47 @@ static int copy_file(const char *from, const char *to) {
     return copied;
 }
 
+static void set_variable(const char *name, const char *value) {
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void run_replaces_a_variable_the_parent_already_has(void) {
+    const char *arguments[] = {own_program, "--print-environment", "NAULA_TEST_OVERRIDDEN", NULL};
+    const char *added[] = {"NAULA_TEST_OVERRIDDEN=added", NULL};
+    naula_run_result result;
+    naula_refusal refusal;
+    set_variable("NAULA_TEST_OVERRIDDEN", "parent");
+    CHECK(naula_run(arguments, NULL, added, &result, &refusal) == NAULA_OK);
+    check_text(result.output, "added\n", "overridden variable");
+    naula_run_result_release(&result);
+}
+
 static void run_never_runs_a_program_from_the_current_directory(void) {
     const char *folder = NAULA_FIXTURE_ROOT "/home";
     const char *fake = NAULA_FIXTURE_ROOT "/home/naula-fake-tool" NAULA_PROGRAM_SUFFIX;
     const char *arguments[] = {"naula-fake-tool", "--print-arguments", NULL};
     char previous[1024];
+    const char *path_now = getenv("PATH");
+    char original_path[8192];
     naula_run_result result;
     naula_refusal refusal;
+    snprintf(original_path, sizeof original_path, "%s", path_now == NULL ? "" : path_now);
     CHECK(copy_file(own_program, fake));
+#if !defined(_WIN32)
+    CHECK(chmod(fake, 0755) == 0);
+    set_variable("PATH", ":/usr/bin:/bin");
+#endif
     CHECK(GETCWD(previous, sizeof previous) != NULL);
     CHECK(CHDIR(folder) == 0);
     CHECK(naula_run(arguments, NULL, NULL, &result, &refusal) == NAULA_NOT_FOUND);
     check_text(refusal.code, "program-not-found", "planted program");
+#if !defined(_WIN32)
+    set_variable("PATH", original_path);
+#endif
     CHECK(CHDIR(previous) == 0);
     naula_run_result_release(&result);
 }
@@ -369,6 +399,7 @@ int main(int count, char **values) {
     run_says_a_missing_program_is_not_found();
     run_gives_the_child_the_added_environment();
     git_children_never_wait_for_a_person();
+    run_replaces_a_variable_the_parent_already_has();
     run_never_runs_a_program_from_the_current_directory();
     return check_summary("git_test");
 }
