@@ -87,9 +87,6 @@ static const char *refusal_of(const uint8_t *bytes, size_t length) {
     if (!naula_json_is_valid_utf8(bytes, length)) {
         return "is not UTF-8";
     }
-    if (memchr(bytes, '\0', length) != NULL) {
-        return "carries a NUL";
-    }
     if (!naula_json_is_grammar((const char *)bytes, length)) {
         return "is not JSON";
     }

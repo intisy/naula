@@ -4,6 +4,7 @@
 
 #include "check.h"
 #include "cJSON.h"
+#include "forge_common.h"
 #include "json_document.h"
 #include "memory_testing.h"
 #include "naula/json.h"
@@ -29,6 +30,8 @@ static void expect_malformed(const char *bytes, size_t length, const char *label
     cJSON_Delete(root);
 }
 
+#define EXPECT_MALFORMED_LITERAL(literal, label) expect_malformed(literal, sizeof literal - 1, label)
+
 static void json_parses(void) {
     cJSON *root = NULL;
     const char *reason = NULL;
@@ -40,29 +43,29 @@ static void json_parses(void) {
 static void trailing_data_is_refused(void) {
     const char *text = "{ \"a\": 1 } { \"b\": 2 }";
     expect_malformed(text, strlen(text), "a second value");
-    expect_malformed("{} x", 4, "trailing text");
-    expect_malformed("{}\x0c", 3, "a form feed after the value");
+    EXPECT_MALFORMED_LITERAL("{} x", "trailing text");
+    EXPECT_MALFORMED_LITERAL("{}\x0c", "a form feed after the value");
 }
 
 static void text_that_is_not_utf8_is_refused(void) {
-    expect_malformed("{ \"a\": \"\xc3\" }", 10, "a cut sequence");
-    expect_malformed("{ \"a\": \"\xc0\xaf\" }", 11, "an overlong form");
-    expect_malformed("{ \"a\": \"\xed\xa0\x80\" }", 12, "an encoded surrogate");
-    expect_malformed("{ \"a\": \"\xf4\x90\x80\x80\" }", 13, "past U+10FFFF");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"\xc3\" }", "a cut sequence");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"\xc0\xaf\" }", "an overlong form");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"\xed\xa0\x80\" }", "an encoded surrogate");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"\xf4\x90\x80\x80\" }", "past U+10FFFF");
 }
 
 static void a_nul_is_refused_raw_or_escaped(void) {
-    expect_malformed("{ \"a\": \"\\u0000\" }", 17, "an escaped NUL");
-    expect_malformed("{ \"a\": \"x\0y\" }", 13, "a NUL in a string");
-    expect_malformed("{}\0", 3, "a NUL after the value");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"\\u0000\" }", "an escaped NUL");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"x\0y\" }", "a NUL in a string");
+    EXPECT_MALFORMED_LITERAL("{}\0", "a NUL after the value");
 }
 
 static void grammar_cjson_tolerates_is_refused(void) {
-    expect_malformed("{ \"a\": 01 }", 11, "a leading zero");
-    expect_malformed("{ \"a\": 1. }", 11, "a bare decimal point");
-    expect_malformed("{ \"a\": \"\t\" }", 11, "a raw tab in a string");
-    expect_malformed("\xef\xbb\xbf{}", 5, "a byte order mark");
-    expect_malformed("", 0, "nothing");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": 01 }", "a leading zero");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": 1. }", "a bare decimal point");
+    EXPECT_MALFORMED_LITERAL("{ \"a\": \"\t\" }", "a raw tab in a string");
+    EXPECT_MALFORMED_LITERAL("\xef\xbb\xbf{}", "a byte order mark");
+    EXPECT_MALFORMED_LITERAL("", "nothing");
 }
 
 static void an_unpaired_surrogate_reads_as_the_replacement_character(void) {
@@ -118,6 +121,38 @@ static void a_failed_allocation_is_out_of_memory_never_malformed(void) {
     }
 }
 
+static naula_status parse_reply(const char *text, cJSON **json) {
+    static const forge_flavor flavor = {"the test forge", "name a host", NULL};
+    forge_reply reply = {(uint8_t *)text, strlen(text), NULL};
+    naula_refusal refusal;
+    memset(&refusal, 0, sizeof refusal);
+    refusal.size = sizeof refusal;
+    naula_status status = NAULA_OK;
+    *json = naula_forge_parse_reply(&flavor, &reply, &status, &refusal);
+    return status;
+}
+
+static void a_provider_reply_without_memory_is_out_of_memory(void) {
+    char text[] = "{ \"id\": 1222336612, \"name\": \"naula\", \"owner\": { \"login\": \"intisy\" } }";
+    cJSON *json = NULL;
+    naula_memory_fail_at(0);
+    CHECK(parse_reply(text, &json) == NAULA_OK && json != NULL);
+    uint64_t attempts = naula_memory_attempts();
+    cJSON_Delete(json);
+    for (uint64_t attempt = 1; attempt <= attempts; attempt++) {
+        naula_memory_fail_at(attempt);
+        naula_status status = parse_reply(text, &json);
+        naula_memory_fail_at(0);
+        if (status != NAULA_OUT_OF_MEMORY || json != NULL) {
+            fprintf(stderr, "reply: failing allocation %llu answered %d\n", (unsigned long long)attempt, (int)status);
+            check_failures++;
+            cJSON_Delete(json);
+        }
+    }
+    char trailing[] = "{ \"id\": 1 } x";
+    CHECK(parse_reply(trailing, &json) == NAULA_MALFORMED && json == NULL);
+}
+
 int main(void) {
     naula_json_use_allocator();
     json_parses();
@@ -128,5 +163,6 @@ int main(void) {
     an_unpaired_surrogate_reads_as_the_replacement_character();
     nesting_past_cjson_is_malformed_not_out_of_memory();
     a_failed_allocation_is_out_of_memory_never_malformed();
+    a_provider_reply_without_memory_is_out_of_memory();
     return check_summary("json_test");
 }
