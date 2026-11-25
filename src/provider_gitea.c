@@ -1,4 +1,3 @@
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,22 +12,49 @@
 #define NAME_SIZE 256
 #define PAGE_SIZE 50u
 #define PAGE_LIMIT 200u
+#define MINIMUM_MAJOR 1ul
+#define MINIMUM_MINOR 20ul
+#define MINIMUM_FIX "upgrade the host to Gitea 1.20 or later, or to a Forgejo built on it"
+#define GITEA_PART "+gitea-"
+#define VERSION_NUMBER_LIMIT 100000ul
 
 /**
  * @implNote Gitea and Forgejo answer one API, so one table serves both words. Forgejo 17.0.0-121 (API of Gitea 1.22.0)
- * was read from codeberg.org/swagger.v1.json on 2026-11-25 and sends no API version header, so none is sent here. The
- * compare answer has no status and no merge base, which is why contains reads two comparisons and the branch tip.
+ * was read from codeberg.org/swagger.v1.json on 2026-11-25 and sends no API version header, so none is sent here.
+ * contains asks for the commits the commit holds that the branch lacks and reads an empty list as contained; a compare
+ * answer carries every commit since the common base, so on a long history it passes the read limit.
+ * `not`, and `stat`, `verification` and `files` on both commit routes, arrived in Gitea 1.20 (docs/providers.md), and a
+ * host that ignores `not` would answer every commit as missing, which is why the version is checked first.
  */
 static const struct {
     const char *by_number;
     const char *by_name;
     const char *raw_file;
     const char *commit;
-    const char *compare;
+    const char *commits_not_in;
+    const char *version;
     const char *organization_repositories;
     const char *user_repositories;
-} routes = {"repositories/%llu",         "repos/%s/%s",       "%s/raw/%s", "%s/git/commits/%s",
-            "%s/compare/%s...%s",       "orgs/%s/repos?limit=%u&page=%u", "users/%s/repos?limit=%u&page=%u"};
+} routes = {"repositories/%llu",
+            "repos/%s/%s",
+            "%s/raw/%s",
+            "%s/git/commits/%s?stat=false&verification=false&files=false",
+            "%s/commits?sha=%s&not=%s&limit=1&stat=false&verification=false&files=false",
+            "version",
+            "orgs/%s/repos?limit=%u&page=%u",
+            "users/%s/repos?limit=%u&page=%u"};
+
+typedef struct missing_answer {
+    const char *code;
+    const char *what;
+    const char *fix;
+} missing_answer;
+
+static const missing_answer missing_file = {"missing_file_or_ref", "file or ref",
+                                            "check the path and the ref exist in the repository"};
+static const missing_answer missing_commit = {"missing_commit", "commit", "check the commit exists in the repository"};
+static const missing_answer missing_commit_or_ref = {"missing_commit_or_ref", "commit or ref",
+                                                     "check the commit and the branch exist in the repository"};
 
 static const char *const request_headers[] = {ACCEPT_HEADER, NULL};
 
@@ -201,7 +227,7 @@ static naula_status confirm_names(const target *at, const naula_repository *befo
 
 /** A 404 on a file or a commit reads the same as a repository that is gone, so the repository decides which. */
 static naula_status settle_read(const target *at, const naula_repository *before, naula_status status,
-                                const char *missing_code, const char *what, const char *fix, naula_refusal *refusal) {
+                                const missing_answer *missing, naula_refusal *refusal) {
     if (status != NAULA_NOT_FOUND) {
         return status == NAULA_OK ? confirm_names(at, before, refusal) : status;
     }
@@ -209,8 +235,63 @@ static naula_status settle_read(const target *at, const naula_repository *before
     if (status != NAULA_OK) {
         return status;
     }
-    naula_refuse(refusal, missing_code, fix, "the repository has no %s asked for", what);
+    naula_refuse(refusal, missing->code, missing->fix, "the repository has no %s asked for", missing->what);
     return NAULA_REFUSED;
+}
+
+static const char *read_version_number(const char *text, unsigned long *number) {
+    unsigned long value = 0;
+    if (*text < '0' || *text > '9') {
+        return NULL;
+    }
+    for (; *text >= '0' && *text <= '9'; text++) {
+        if (value > VERSION_NUMBER_LIMIT) {
+            return NULL;
+        }
+        value = value * 10 + (unsigned long)(*text - '0');
+    }
+    *number = value;
+    return text;
+}
+
+/**
+ * The Gitea version a host's API is, from its `version` answer. Forgejo from 7 on names its own version and the Gitea
+ * it carries after "+gitea-" ("7.0.0+gitea-1.22.0"); Gitea, and Forgejo before 7 ("1.21.11-1"), lead with it.
+ */
+static int read_gitea_version(const char *version, unsigned long *major, unsigned long *minor) {
+    const char *gitea_part = strstr(version, GITEA_PART);
+    const char *at = read_version_number(gitea_part != NULL ? gitea_part + strlen(GITEA_PART) : version, major);
+    return at != NULL && *at == '.' && read_version_number(at + 1, minor) != NULL;
+}
+
+static naula_status refuse_old_host(const forge_flavor *flavor, const char *answered, naula_refusal *refusal) {
+    naula_refuse(refusal, "unsupported_operation", MINIMUM_FIX,
+                 "%s answered %s for its version; naula reads hosts on Gitea 1.20 or later", flavor->label, answered);
+    return NAULA_REFUSED;
+}
+
+static naula_status require_version(const target *at, naula_refusal *refusal) {
+    forge_reply reply;
+    unsigned long major = 0;
+    unsigned long minor = 0;
+    const forge_flavor *flavor = &at->edition->flavor;
+    naula_status status = get(at, routes.version, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return refuse_old_host(flavor, "404", refusal);
+    }
+    if (status != NAULA_OK) {
+        return status;
+    }
+    cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
+    const char *version = json == NULL ? NULL : naula_forge_text_member(json, "version");
+    if (json != NULL && (version == NULL || !read_gitea_version(version, &major, &minor))) {
+        status = naula_forge_refuse_malformed(flavor, refusal, "a version that cannot be read");
+    } else if (json != NULL && (major < MINIMUM_MAJOR || (major == MINIMUM_MAJOR && minor < MINIMUM_MINOR))) {
+        status = refuse_old_host(flavor, version, refusal);
+    }
+    cJSON_Delete(json);
+    naula_forge_reply_release(&reply);
+    return status;
 }
 
 static naula_status build_raw_route(const naula_repository *repository, const char *ref, const char *path, char *route,
@@ -271,9 +352,11 @@ static naula_status gitea_read_file(void *context, const char *host, uint64_t nu
     *length = 0;
     naula_status status = lookup_target(&at, &repository, refusal);
     if (status == NAULA_OK) {
+        status = require_version(&at, refusal);
+    }
+    if (status == NAULA_OK) {
         status = read_raw(&at, &repository, ref, path, bytes, length, refusal);
-        status = settle_read(&at, &repository, status, "missing_file_or_ref", "file or ref",
-                             "check the path and the ref exist in the repository", refusal);
+        status = settle_read(&at, &repository, status, &missing_file, refusal);
     }
     if (status != NAULA_OK) {
         naula_memory_release(*bytes);
@@ -284,94 +367,33 @@ static naula_status gitea_read_file(void *context, const char *host, uint64_t nu
     return status;
 }
 
-static int read_count(const cJSON *object, const char *member, size_t *count) {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, member);
-    if (!cJSON_IsNumber(item) || item->valuedouble < 0 || item->valuedouble > 1e9 ||
-        floor(item->valuedouble) != item->valuedouble) {
-        return 0;
-    }
-    *count = (size_t)item->valuedouble;
-    return 1;
-}
-
-/** How many commits `head` holds that `base` does not, which Forgejo answers as 0 for histories with no common base. */
-static naula_status compare_total(const target *at, const char *prefix, const char *base, const char *head,
-                                  size_t *total, naula_refusal *refusal) {
+static naula_status read_contained(const target *at, const char *prefix, const char *ref, const char *commit,
+                                   int *contained, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
-    char encoded_base[FORGE_ROUTE_SIZE / 4];
-    char encoded_head[FORGE_ROUTE_SIZE / 4];
+    char encoded_ref[FORGE_ROUTE_SIZE / 4];
     forge_reply reply;
     const forge_flavor *flavor = &at->edition->flavor;
-    if (naula_forge_encode_text(base, 1, encoded_base, sizeof encoded_base) == 0 ||
-        naula_forge_encode_text(head, 1, encoded_head, sizeof encoded_head) == 0 ||
-        snprintf(route, sizeof route, routes.compare, prefix, encoded_base, encoded_head) >= (int)sizeof route) {
+    if (naula_forge_encode_text(ref, 0, encoded_ref, sizeof encoded_ref) == 0 ||
+        snprintf(route, sizeof route, routes.commits_not_in, prefix, commit, encoded_ref) >= (int)sizeof route) {
         return naula_forge_refuse_input(flavor, refusal, "the commit or the ref");
     }
-    naula_status status = get(at, route, FORGE_HISTORY_BODY_CAPACITY, &reply, refusal);
+    naula_status status = get(at, route, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
     if (status != NAULA_OK) {
         return status;
     }
     cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
-    if (json != NULL && !read_count(json, "total_commits", total)) {
-        status = naula_forge_refuse_malformed(flavor, refusal, "a comparison with no commit count");
+    if (json != NULL && !cJSON_IsArray(json)) {
+        status = naula_forge_refuse_malformed(flavor, refusal, "a commit list that is not a list");
+    } else if (json != NULL) {
+        *contained = cJSON_GetArraySize(json) == 0;
     }
     cJSON_Delete(json);
     naula_forge_reply_release(&reply);
     return status;
 }
 
-static naula_status read_commit(const target *at, const char *prefix, const char *name, forge_reply *reply,
-                                cJSON **json, naula_refusal *refusal) {
-    char route[FORGE_ROUTE_SIZE];
-    char encoded[FORGE_ROUTE_SIZE / 4];
-    if (naula_forge_encode_text(name, 1, encoded, sizeof encoded) == 0 ||
-        snprintf(route, sizeof route, routes.commit, prefix, encoded) >= (int)sizeof route) {
-        return naula_forge_refuse_input(&at->edition->flavor, refusal, "the commit or the ref");
-    }
-    naula_status status = get(at, route, FORGE_HISTORY_BODY_CAPACITY, reply, refusal);
-    if (status == NAULA_OK) {
-        *json = naula_forge_parse_reply(&at->edition->flavor, reply, &status, refusal);
-    }
-    return status;
-}
-
-static naula_status tip_is(const target *at, const char *prefix, const char *ref, const char *commit, int *same,
-                           naula_refusal *refusal) {
-    forge_reply reply = {NULL, 0, NULL};
-    cJSON *json = NULL;
-    naula_status status = read_commit(at, prefix, ref, &reply, &json, refusal);
-    const char *sha = json == NULL ? NULL : naula_forge_text_member(json, "sha");
-    if (json != NULL && sha == NULL) {
-        status = naula_forge_refuse_malformed(&at->edition->flavor, refusal, "a commit with no sha");
-    } else if (sha != NULL) {
-        *same = strncmp(sha, commit, strlen(commit)) == 0;
-    }
-    cJSON_Delete(json);
-    naula_forge_reply_release(&reply);
-    return status;
-}
-
-/**
- * The commit is in the branch when the branch holds nothing it lacks and either it is behind the branch or it is the
- * branch tip, because the same answer, 0 commits each way, also describes two histories with no common base.
- */
-static naula_status read_contained(const target *at, const char *prefix, const char *ref, const char *commit,
-                                   int *contained, naula_refusal *refusal) {
-    size_t forward = 0;
-    size_t backward = 0;
-    naula_status status = compare_total(at, prefix, ref, commit, &forward, refusal);
-    if (status != NAULA_OK || forward > 0) {
-        return status;
-    }
-    status = compare_total(at, prefix, commit, ref, &backward, refusal);
-    if (status != NAULA_OK) {
-        return status;
-    }
-    if (backward > 0) {
-        *contained = 1;
-        return NAULA_OK;
-    }
-    return tip_is(at, prefix, ref, commit, contained, refusal);
+static int is_usable_ref(const char *ref) {
+    return ref != NULL && ref[0] != '\0' && ref[0] != '-';
 }
 
 static naula_status gitea_contains(void *context, const char *host, uint64_t number, const char *ref,
@@ -380,7 +402,7 @@ static naula_status gitea_contains(void *context, const char *host, uint64_t num
     target at = {context, host, number, token};
     naula_repository repository = fresh_repository();
     *contained = 0;
-    if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit) || ref == NULL || ref[0] == '\0') {
+    if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit) || !is_usable_ref(ref)) {
         return naula_forge_refuse_input(&at.edition->flavor, refusal, "the number, the commit or the ref");
     }
     naula_status status = lookup_target(&at, &repository, refusal);
@@ -388,22 +410,46 @@ static naula_status gitea_contains(void *context, const char *host, uint64_t num
         status = naula_forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
     }
     if (status == NAULA_OK) {
+        status = require_version(&at, refusal);
+    }
+    if (status == NAULA_OK) {
         status = read_contained(&at, prefix, ref, commit, contained, refusal);
-        status = status == NAULA_NOT_FOUND ? confirm_names(&at, &repository, refusal)
-                                           : settle_read(&at, &repository, status, "", "", "", refusal);
-        if (status != NAULA_OK) {
-            *contained = 0;
-        }
+        status = settle_read(&at, &repository, status, &missing_commit_or_ref, refusal);
+    }
+    if (status != NAULA_OK) {
+        *contained = 0;
     }
     naula_repository_release(&repository);
+    return status;
+}
+
+static naula_status read_parent_count(const target *at, const char *prefix, const char *commit, size_t *count,
+                                      naula_refusal *refusal) {
+    char route[FORGE_ROUTE_SIZE];
+    forge_reply reply;
+    const forge_flavor *flavor = &at->edition->flavor;
+    if (snprintf(route, sizeof route, routes.commit, prefix, commit) >= (int)sizeof route) {
+        return naula_forge_refuse_input(flavor, refusal, "the commit");
+    }
+    naula_status status = get(at, route, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
+    const cJSON *parents = json == NULL ? NULL : cJSON_GetObjectItemCaseSensitive(json, "parents");
+    if (json != NULL && !cJSON_IsArray(parents)) {
+        status = naula_forge_refuse_malformed(flavor, refusal, "a commit with no parents list");
+    } else if (parents != NULL) {
+        *count = (size_t)cJSON_GetArraySize(parents);
+    }
+    cJSON_Delete(json);
+    naula_forge_reply_release(&reply);
     return status;
 }
 
 static naula_status gitea_parent_count(void *context, const char *host, uint64_t number, const char *commit,
                                        const char *token, size_t *count, naula_refusal *refusal) {
     char prefix[FORGE_ROUTE_SIZE / 4];
-    forge_reply reply = {NULL, 0, NULL};
-    cJSON *json = NULL;
     target at = {context, host, number, token};
     naula_repository repository = fresh_repository();
     *count = 0;
@@ -415,20 +461,14 @@ static naula_status gitea_parent_count(void *context, const char *host, uint64_t
         status = naula_forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
     }
     if (status == NAULA_OK) {
-        status = read_commit(&at, prefix, commit, &reply, &json, refusal);
-        const cJSON *parents = json == NULL ? NULL : cJSON_GetObjectItemCaseSensitive(json, "parents");
-        if (json != NULL && !cJSON_IsArray(parents)) {
-            status = naula_forge_refuse_malformed(&at.edition->flavor, refusal, "a commit with no parents list");
-        } else if (parents != NULL) {
-            *count = (size_t)cJSON_GetArraySize(parents);
-        }
-        cJSON_Delete(json);
-        naula_forge_reply_release(&reply);
-        status = settle_read(&at, &repository, status, "missing_commit", "commit",
-                             "check the commit exists in the repository", refusal);
-        if (status != NAULA_OK) {
-            *count = 0;
-        }
+        status = require_version(&at, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = read_parent_count(&at, prefix, commit, count, refusal);
+        status = settle_read(&at, &repository, status, &missing_commit, refusal);
+    }
+    if (status != NAULA_OK) {
+        *count = 0;
     }
     naula_repository_release(&repository);
     return status;

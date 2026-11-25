@@ -21,14 +21,15 @@
 #define HOST "codeberg.org"
 #define NUMBER 16490u
 #define COMMIT "28cde84643972ecdacd43a1a4c95bf52d017101f"
-#define TIP "e4c0f1faa0210fa0f8e53aff71a31f64720a5caa"
 #define TOKEN_TEXT "not-a-real-token"
 #define NOT_FOUND_BODY "{\"message\":\"The target couldn't be found.\",\"errors\":[]}"
 #define REPOSITORY_ROUTE "/repositories/16490"
 #define PREFIX "/repos/Codeberg/pages-server"
-#define COMPARE_FORWARD PREFIX "/compare/main..." COMMIT
-#define COMPARE_BACKWARD PREFIX "/compare/" COMMIT "...main"
+#define COMMITS_NOT_IN_MAIN PREFIX "/commits?sha=" COMMIT "&not=main&limit=1&stat=false&verification=false&files=false"
+#define COMMIT_ROUTE PREFIX "/git/commits/" COMMIT "?stat=false&verification=false&files=false"
 #define RAW_ROUTE PREFIX "/raw/README.md?ref=main"
+#define VERSION_ROUTE "/version"
+#define CODEBERG_VERSION "{\"version\":\"17.0.0-121-39320c0+gitea-1.22.0\"}"
 
 static char *load(const char *name) {
     char path[512];
@@ -261,11 +262,11 @@ static void find_reads_the_number_and_answers_zero_for_a_missing_or_renamed_name
 
 static void read_file_reads_the_raw_bytes_and_reverifies_the_number(void) {
     char *body = load("repository.json");
-    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, body), route(RAW_ROUTE, 200, "# Pages\n\x01\x02"),
-                            route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY)};
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RAW_ROUTE, 200, "# Pages\n\x01\x02"), route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY)};
     routes[0].answer_limit = 1;
-    routes[1].body_length = 10;
-    http_fixture *server = serve(routes, 3);
+    routes[2].body_length = 10;
+    http_fixture *server = serve(routes, 4);
     naula_refusal refusal = fresh_refusal();
     uint8_t *bytes = NULL;
     size_t length = 0;
@@ -274,7 +275,7 @@ static void read_file_reads_the_raw_bytes_and_reverifies_the_number(void) {
     CHECK(bytes == NULL && length == 0);
     naula_memory_release(finish(server));
     routes[0].answer_limit = 0;
-    server = serve(routes, 2);
+    server = serve(routes, 3);
     CHECK(gitea()->read_file(gitea()->context, HOST, NUMBER, "main", "README.md", NULL, &bytes, &length, &refusal) ==
           NAULA_OK);
     CHECK(length == 10 && memcmp(bytes, "# Pages\n\x01\x02", 10) == 0);
@@ -286,10 +287,10 @@ static void read_file_reads_the_raw_bytes_and_reverifies_the_number(void) {
 static void read_file_refuses_bytes_from_a_repository_renamed_during_the_read(void) {
     char *body = load("repository.json");
     const char other[] = "{\"id\":16490,\"name\":\"other-name\",\"owner\":{\"login\":\"Codeberg\"}}";
-    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, body), route(RAW_ROUTE, 200, "bytes"),
-                            route(REPOSITORY_ROUTE, 200, other)};
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RAW_ROUTE, 200, "bytes"), route(REPOSITORY_ROUTE, 200, other)};
     routes[0].answer_limit = 1;
-    http_fixture *server = serve(routes, 3);
+    http_fixture *server = serve(routes, 4);
     naula_refusal refusal = fresh_refusal();
     uint8_t *bytes = NULL;
     size_t length = 0;
@@ -303,11 +304,11 @@ static void read_file_refuses_bytes_from_a_repository_renamed_during_the_read(vo
 
 static void a_missing_file_ref_or_commit_in_a_live_repository_is_not_not_found(void) {
     char *body = load("repository.json");
-    http_route routes[4] = {route(PREFIX "/raw/nope?ref=main", 404, NOT_FOUND_BODY),
+    http_route routes[5] = {route(PREFIX "/raw/nope?ref=main", 404, NOT_FOUND_BODY),
                             route(PREFIX "/raw/README.md?ref=nobranch", 404, NOT_FOUND_BODY),
-                            route(PREFIX "/git/commits/" COMMIT, 404, NOT_FOUND_BODY),
-                            route(REPOSITORY_ROUTE, 200, body)};
-    http_fixture *server = serve(routes, 4);
+                            route(COMMIT_ROUTE, 404, NOT_FOUND_BODY), route(REPOSITORY_ROUTE, 200, body),
+                            route(VERSION_ROUTE, 200, CODEBERG_VERSION)};
+    http_fixture *server = serve(routes, 5);
     naula_refusal refusal = fresh_refusal();
     uint8_t *bytes = NULL;
     size_t length = 0;
@@ -324,87 +325,154 @@ static void a_missing_file_ref_or_commit_in_a_live_repository_is_not_not_found(v
     naula_memory_release(body);
 }
 
-static void contains_reads_two_comparisons_and_the_tip(void) {
-    char *behind = load("compare_behind.json");
-    char *ahead = load("compare_ahead.json");
+static void contains_is_yes_when_the_commit_holds_nothing_the_branch_lacks(void) {
     char *repository = load("repository.json");
-    char tip_body[128];
-    snprintf(tip_body, sizeof tip_body, "{\"sha\":\"%s\"}", COMMIT);
-    http_route ahead_routes[3] = {route(REPOSITORY_ROUTE, 200, repository), route(COMPARE_FORWARD, 200, behind),
-                                  route(COMPARE_BACKWARD, 200, ahead)};
-    http_fixture *server = serve(ahead_routes, 3);
+    char *contained_body = load("commits_contained.json");
+    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, repository), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(COMMITS_NOT_IN_MAIN, 200, contained_body)};
+    http_fixture *server = serve(routes, 3);
     naula_refusal refusal = fresh_refusal();
     int contained = 0;
     CHECK(contains("main", &contained, &refusal) == NAULA_OK && contained == 1);
-    naula_memory_release(finish(server));
-    http_route identical_routes[4] = {route(REPOSITORY_ROUTE, 200, repository), route(COMPARE_FORWARD, 200, behind),
-                                      route(COMPARE_BACKWARD, 200, behind), route(PREFIX "/git/commits/main", 200, tip_body)};
-    server = serve(identical_routes, 4);
-    CHECK(contains("main", &contained, &refusal) == NAULA_OK && contained == 1);
-    naula_memory_release(finish(server));
-    http_route unrelated_routes[4] = {route(REPOSITORY_ROUTE, 200, repository), route(COMPARE_FORWARD, 200, behind),
-                                      route(COMPARE_BACKWARD, 200, behind),
-                                      route(PREFIX "/git/commits/main", 200, "{\"sha\":\"" TIP "\"}")};
-    server = serve(unrelated_routes, 4);
-    CHECK(contains("main", &contained, &refusal) == NAULA_OK && contained == 0);
-    naula_memory_release(finish(server));
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "/compare/") == NULL && strstr(log, "GET " COMMITS_NOT_IN_MAIN) != NULL);
+    naula_memory_release(log);
+    naula_memory_release(contained_body);
     naula_memory_release(repository);
-    naula_memory_release(ahead);
-    naula_memory_release(behind);
 }
 
-static void contains_answers_no_for_a_commit_the_branch_lacks(void) {
-    char *diverged = load("compare_diverged.json");
-    char *ahead = load("compare_ahead.json");
+static void contains_is_no_for_a_diverged_or_an_unrelated_commit(void) {
+    const char *const fixtures[] = {"commits_diverged.json", "commits_unrelated.json"};
     char *repository = load("repository.json");
-    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, repository), route(COMPARE_FORWARD, 200, diverged),
-                            route(COMPARE_BACKWARD, 200, ahead)};
+    for (size_t index = 0; index < 2; index++) {
+        char *body = load(fixtures[index]);
+        http_route routes[3] = {route(REPOSITORY_ROUTE, 200, repository), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                                route(COMMITS_NOT_IN_MAIN, 200, body)};
+        http_fixture *server = serve(routes, 3);
+        naula_refusal refusal = fresh_refusal();
+        int contained = 1;
+        CHECK(contains("main", &contained, &refusal) == NAULA_OK && contained == 0);
+        naula_memory_release(finish(server));
+        naula_memory_release(body);
+    }
+    naula_memory_release(repository);
+}
+
+static void contains_refuses_what_a_live_repository_does_not_know_and_is_not_found_once_it_is_gone(void) {
+    char *repository = load("repository.json");
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, repository), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(COMMITS_NOT_IN_MAIN, 404, "null"), route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY)};
     http_fixture *server = serve(routes, 3);
     naula_refusal refusal = fresh_refusal();
     int contained = 1;
-    CHECK(contains("main", &contained, &refusal) == NAULA_OK && contained == 0);
+    CHECK(contains("main", &contained, &refusal) == NAULA_REFUSED && contained == 0);
+    check_text(refusal.code, "missing_commit_or_ref", "unknown commit");
     naula_memory_release(finish(server));
-    naula_memory_release(repository);
-    naula_memory_release(ahead);
-    naula_memory_release(diverged);
-}
-
-static void contains_answers_no_for_a_commit_a_live_repository_does_not_know(void) {
-    char *repository = load("repository.json");
-    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, repository), route(COMPARE_FORWARD, 404, NOT_FOUND_BODY)};
-    http_fixture *server = serve(routes, 2);
-    naula_refusal refusal = fresh_refusal();
-    int contained = 1;
-    CHECK(contains("main", &contained, &refusal) == NAULA_OK && contained == 0);
+    routes[2] = route(COMMITS_NOT_IN_MAIN, 500, "{\"message\":\"\",\"url\":\"https://codeberg.org/api/swagger\"}");
+    server = serve(routes, 3);
+    contained = 1;
+    CHECK(contains("main", &contained, &refusal) == NAULA_REFUSED && contained == 0);
+    check_text(refusal.code, "unexpected_status", "unknown ref");
     naula_memory_release(finish(server));
-    http_route gone[2] = {route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY), route(COMPARE_FORWARD, 404, NOT_FOUND_BODY)};
-    server = serve(gone, 2);
+    routes[0].answer_limit = 1;
+    routes[2] = route(COMMITS_NOT_IN_MAIN, 404, "null");
+    server = serve(routes, 4);
+    contained = 1;
     CHECK(contains("main", &contained, &refusal) == NAULA_NOT_FOUND && contained == 0);
     naula_memory_release(finish(server));
     naula_memory_release(repository);
 }
 
-static void contains_refuses_a_commit_that_is_not_hex(void) {
+static void contains_refuses_a_commit_that_is_not_hex_or_a_ref_that_reads_as_an_option(void) {
     naula_refusal refusal = fresh_refusal();
     int contained = 1;
     CHECK(gitea()->contains(gitea()->context, HOST, NUMBER, "main", "not-hex", NULL, &contained, &refusal) ==
           NAULA_REFUSED);
     CHECK(contained == 0);
+    contained = 1;
+    CHECK(contains("--all", &contained, &refusal) == NAULA_REFUSED && contained == 0);
+    check_text(refusal.code, "invalid_request", "ref read as an option");
+}
+
+static naula_status version_answer(const char *body, int status, naula_refusal *refusal, char **log) {
+    char *repository = load("repository.json");
+    char *contained_body = load("commits_contained.json");
+    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, repository), route(VERSION_ROUTE, status, body),
+                            route(COMMITS_NOT_IN_MAIN, 200, contained_body)};
+    http_fixture *server = serve(routes, 3);
+    int contained = 0;
+    naula_status answer = contains("main", &contained, refusal);
+    *log = finish(server);
+    naula_memory_release(contained_body);
+    naula_memory_release(repository);
+    return answer;
+}
+
+static void a_host_older_than_gitea_1_20_is_refused_before_any_call_it_would_misread(void) {
+    const char *const too_old[] = {"{\"version\":\"1.19.4\"}", "{\"version\":\"1.19.4+dev-3-gabc\"}",
+                                   "{\"version\":\"1.18.5-0\"}", "{\"version\":\"11.0.0+gitea-1.19.0\"}"};
+    for (size_t index = 0; index < 4; index++) {
+        naula_refusal refusal = fresh_refusal();
+        char *log = NULL;
+        CHECK(version_answer(too_old[index], 200, &refusal, &log) == NAULA_REFUSED);
+        check_text(refusal.code, "unsupported_operation", too_old[index]);
+        CHECK(refusal.fix != NULL && strstr(refusal.fix, "1.20") != NULL);
+        CHECK(log != NULL && strstr(log, "/commits?") == NULL);
+        naula_memory_release(log);
+    }
+    naula_refusal refusal = fresh_refusal();
+    char *log = NULL;
+    CHECK(version_answer(NOT_FOUND_BODY, 404, &refusal, &log) == NAULA_REFUSED);
+    check_text(refusal.code, "unsupported_operation", "no version endpoint");
+    naula_memory_release(log);
+    CHECK(version_answer("{\"version\":\"unknown\"}", 200, &refusal, &log) == NAULA_MALFORMED);
+    naula_memory_release(log);
+}
+
+static void gitea_1_20_and_later_and_every_forgejo_scheme_on_it_are_accepted(void) {
+    const char *const recent[] = {"{\"version\":\"1.20.0\"}", "{\"version\":\"1.22.3\"}",
+                                  "{\"version\":\"1.23.0+dev-12-gabcdef0\"}", "{\"version\":\"1.21.11-1\"}",
+                                  "{\"version\":\"7.0.0+gitea-1.22.0\"}", "{\"version\":\"2.0.0\"}", CODEBERG_VERSION};
+    for (size_t index = 0; index < 7; index++) {
+        naula_refusal refusal = fresh_refusal();
+        char *log = NULL;
+        CHECK(version_answer(recent[index], 200, &refusal, &log) == NAULA_OK);
+        naula_memory_release(log);
+    }
+}
+
+static void read_file_and_parent_count_check_the_version_too(void) {
+    char *repository = load("repository.json");
+    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, repository),
+                            route(VERSION_ROUTE, 200, "{\"version\":\"1.19.4\"}")};
+    http_fixture *server = serve(routes, 2);
+    naula_refusal refusal = fresh_refusal();
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    size_t count = 0;
+    CHECK(gitea()->read_file(gitea()->context, HOST, NUMBER, "main", "README.md", NULL, &bytes, &length, &refusal) ==
+          NAULA_REFUSED);
+    check_text(refusal.code, "unsupported_operation", "read_file on an old host");
+    CHECK(gitea()->parent_count(gitea()->context, HOST, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "unsupported_operation", "parent_count on an old host");
+    naula_memory_release(finish(server));
+    naula_memory_release(repository);
 }
 
 static void parent_count_reads_the_commit(void) {
     char *repository = load("repository.json");
     char *commit = load("commit.json");
     const char root[] = "{\"sha\":\"" COMMIT "\",\"parents\":[]}";
-    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, repository), route(PREFIX "/git/commits/" COMMIT, 200, commit)};
-    http_fixture *server = serve(routes, 2);
+    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, repository), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(COMMIT_ROUTE, 200, commit)};
+    http_fixture *server = serve(routes, 3);
     naula_refusal refusal = fresh_refusal();
     size_t count = 9;
     CHECK(gitea()->parent_count(gitea()->context, HOST, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_OK);
     CHECK(count == 1);
     naula_memory_release(finish(server));
-    routes[1] = route(PREFIX "/git/commits/" COMMIT, 200, root);
-    server = serve(routes, 2);
+    routes[2] = route(COMMIT_ROUTE, 200, root);
+    server = serve(routes, 3);
     CHECK(gitea()->parent_count(gitea()->context, HOST, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_OK);
     CHECK(count == 0);
     naula_memory_release(finish(server));
@@ -466,7 +534,6 @@ static void describe_names_the_supported_operations_and_release_index_is_refused
 }
 
 static void forgejo_answers_from_its_own_word_and_the_registry_holds_every_built_in(void) {
-    char *body = load("repository.json");
     http_route routes[1] = {route(REPOSITORY_ROUTE, 401, "{}")};
     http_fixture *server = serve(routes, 1);
     naula_repository repository = fresh_repository();
@@ -482,7 +549,6 @@ static void forgejo_answers_from_its_own_word_and_the_registry_holds_every_built
         CHECK(naula_providers_find(providers, words[index], &refusal) != NULL);
     }
     naula_providers_close(providers);
-    naula_memory_release(body);
 }
 
 int main(void) {
@@ -500,10 +566,13 @@ int main(void) {
     read_file_reads_the_raw_bytes_and_reverifies_the_number();
     read_file_refuses_bytes_from_a_repository_renamed_during_the_read();
     a_missing_file_ref_or_commit_in_a_live_repository_is_not_not_found();
-    contains_reads_two_comparisons_and_the_tip();
-    contains_answers_no_for_a_commit_the_branch_lacks();
-    contains_answers_no_for_a_commit_a_live_repository_does_not_know();
-    contains_refuses_a_commit_that_is_not_hex();
+    contains_is_yes_when_the_commit_holds_nothing_the_branch_lacks();
+    contains_is_no_for_a_diverged_or_an_unrelated_commit();
+    contains_refuses_what_a_live_repository_does_not_know_and_is_not_found_once_it_is_gone();
+    contains_refuses_a_commit_that_is_not_hex_or_a_ref_that_reads_as_an_option();
+    a_host_older_than_gitea_1_20_is_refused_before_any_call_it_would_misread();
+    gitea_1_20_and_later_and_every_forgejo_scheme_on_it_are_accepted();
+    read_file_and_parent_count_check_the_version_too();
     parent_count_reads_the_commit();
     list_repos_reads_pages_until_an_empty_one();
     list_repos_falls_back_to_a_user_and_answers_not_found_for_neither();
