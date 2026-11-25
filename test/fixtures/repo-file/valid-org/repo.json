@@ -1,0 +1,45 @@
+{
+  "format": 2,
+  "name": "docs",
+  "importName": "docs",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "spisor"
+    }
+  ],
+  "org": {
+    "name": "spisor",
+    "parent": {
+      "id": "git:8cd1eb2f40e5c0c2a4e3a1f0b6d7c8e9f0a1b2c3",
+      "at": [
+        "github:1000000001"
+      ]
+    },
+    "accounts": [
+      {
+        "provider": "github",
+        "account": "spisor"
+      }
+    ],
+    "rules": "RULES.md",
+    "projects": {
+      "shared": "What any spisor application uses.",
+      "platform": "The Java server side."
+    },
+    "suborgs": {
+      "forebay": {
+        "accounts": [
+          {
+            "provider": "github",
+            "account": "forebay"
+          }
+        ],
+        "rules": "forebay/CLAUDE.md",
+        "projects": {
+          "apps": "The client applications."
+        }
+      }
+    }
+  }
+}

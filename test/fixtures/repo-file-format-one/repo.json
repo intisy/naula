@@ -1,0 +1,93 @@
+{
+  "format": 1,
+  "importName": "claude-code-proxy",
+  "description": "The Claude Code proxy: a weivel plugin that listens for Claude Code and asks forebay-library's C for every decision.",
+  "topics": [
+    "ai",
+    "ai-proxy",
+    "anthropic",
+    "app-proxy",
+    "claude",
+    "forebay",
+    "llm",
+    "proxy",
+    "typescript"
+  ],
+  "dependencies": [
+    {
+      "id": "github:1427561829",
+      "importName": "typescript",
+      "commit": "aa63d0ce0eed15ace5cd958d83cae4309d132962"
+    },
+    {
+      "id": "github:1455223370",
+      "importName": "core",
+      "commit": "0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39",
+      "path": "siblings/typescript/siblings/core"
+    },
+    {
+      "id": "github:1456093642",
+      "importName": "standard",
+      "commit": "999d01b2a2f1b7a5cae9c3b3c2daf3b63172efd5",
+      "path": "siblings/typescript/siblings/standard"
+    },
+    {
+      "id": "github:1426141679",
+      "importName": "conformance",
+      "commit": "bc05534a8e8df412412a1d16dda55e1070875219",
+      "path": "siblings/typescript/siblings/conformance"
+    },
+    {
+      "id": "github:1434954468",
+      "importName": "forebay-library",
+      "commit": "0feecccb0c4f09dfa841baf900c91ebafd0345ea"
+    },
+    {
+      "id": "github:1434914426",
+      "importName": "library",
+      "commit": "ab136a1f4620c5fc7f0bcccd7e92cbc6c8933569",
+      "path": "siblings/forebay-library/siblings/library"
+    },
+    {
+      "id": "github:1455223370",
+      "importName": "core",
+      "commit": "fba572ac6fc61ab719dd331a5409796c06ef23b4",
+      "path": "siblings/forebay-library/siblings/core"
+    },
+    {
+      "id": "github:1456093642",
+      "importName": "standard",
+      "commit": "999d01b2a2f1b7a5cae9c3b3c2daf3b63172efd5",
+      "path": "siblings/forebay-library/siblings/standard"
+    },
+    {
+      "id": "github:1457141747",
+      "importName": "c",
+      "commit": "0d0ef67e66de32b40ef9c7851dcd8652e93af808",
+      "path": "siblings/forebay-library/siblings/c"
+    },
+    {
+      "id": "github:1434914426",
+      "importName": "library",
+      "commit": "9711952c1f2407281aaf09ac97fa0a313d988bc9"
+    },
+    {
+      "id": "github:1455223370",
+      "importName": "core",
+      "commit": "fba572ac6fc61ab719dd331a5409796c06ef23b4",
+      "path": "siblings/library/siblings/core"
+    },
+    {
+      "id": "github:1456093642",
+      "importName": "standard",
+      "commit": "999d01b2a2f1b7a5cae9c3b3c2daf3b63172efd5",
+      "path": "siblings/library/siblings/standard"
+    },
+    {
+      "id": "github:1457141747",
+      "importName": "c",
+      "commit": "0d0ef67e66de32b40ef9c7851dcd8652e93af808",
+      "path": "siblings/library/siblings/c"
+    }
+  ]
+}

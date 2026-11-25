@@ -3,6 +3,7 @@
 
 #include "memory_testing.h"
 #include "naula/status.h"
+#include "naula/json.h"
 
 static int failures;
 
@@ -50,6 +51,7 @@ static void counting_allocator_fails_the_named_attempt(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     refuse_fills_code_detail_and_fix();
     refuse_truncates_a_long_detail_with_a_terminator();
     counting_allocator_fails_the_named_attempt();

@@ -1,0 +1,12 @@
+{
+  "format": 2,
+  "name": "docs",
+  "importName": "docs",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "spisor"
+    }
+  ],
+  "place": "docs"
+}

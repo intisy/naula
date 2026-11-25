@@ -13,6 +13,7 @@
 #include "naula/provider.h"
 #include "provider_github_hooks.h"
 #include "transport_hooks.h"
+#include "naula/json.h"
 
 #ifndef NAULA_GITHUB_FIXTURES
 #error "NAULA_GITHUB_FIXTURES names test/fixtures/github"
@@ -584,6 +585,7 @@ static void register_refuses_a_second_provider_for_a_word(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     naula_fetch_allow_plain_http(1);
     lookup_reads_a_repository_with_its_etag();
     lookup_compares_the_echoed_number();

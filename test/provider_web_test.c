@@ -12,6 +12,7 @@
 #include "naula/provider.h"
 #include "provider_web_hooks.h"
 #include "transport_hooks.h"
+#include "naula/json.h"
 
 #define HEX "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
 #define OTHER_HEX "0123456789abcdef0123456789abcdef01234567"
@@ -170,6 +171,7 @@ static void the_web_provider_supports_no_operation_and_refuses_each(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     naula_fetch_allow_plain_http(1);
     web_reads_the_well_known_document();
     web_refuses_a_document_for_another_id();

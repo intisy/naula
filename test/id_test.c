@@ -9,6 +9,7 @@
 #include "check.h"
 #include "cJSON.h"
 #include "naula/id.h"
+#include "naula/json.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -219,6 +220,7 @@ static void length_bounds_the_text_read(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     every_kit_vector_holds();
     folder_is_the_first_twelve_hex();
     a_local_name_holding_a_nul_is_refused();

@@ -5,6 +5,7 @@
 #include "check.h"
 #include "naula/memory.h"
 #include "naula/transport.h"
+#include "naula/json.h"
 
 #define PINNED_URL "https://raw.githubusercontent.com/DaveGamble/cJSON/acc76239bee01d8e9c858ae2cab296704e52d916/LICENSE"
 #define PINNED_SHA256 "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
@@ -31,6 +32,7 @@ static void a_pinned_https_file_is_fetched_over_the_os_stack(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     a_pinned_https_file_is_fetched_over_the_os_stack();
     return check_summary("transport_network_test");
 }

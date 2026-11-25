@@ -1,0 +1,26 @@
+{
+  "format": 2,
+  "name": "docs",
+  "importName": "docs",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "pinaxis"
+    }
+  ],
+  "org": {
+    "name": "pinaxis",
+    "parent": {
+      "id": "git:8cd1eb2f40e5c0c2a4e3a1f0b6d7c8e9f0a1b2c3",
+      "at": [
+        "github:1000000001"
+      ]
+    },
+    "accounts": [
+      {
+        "provider": "github",
+        "account": "pinaxis"
+      }
+    ]
+  }
+}

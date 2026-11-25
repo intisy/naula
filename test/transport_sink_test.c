@@ -4,6 +4,7 @@
 
 #include "check.h"
 #include "naula/transport.h"
+#include "naula/json.h"
 
 #ifndef NAULA_TEST_SCRATCH
 #error "NAULA_TEST_SCRATCH names the folder a test may write into"
@@ -53,6 +54,7 @@ static void memory_sink_marks_exceeded(void) {
 }
 
 int main(void) {
+    naula_json_use_allocator();
     sink_refuses_past_its_limit();
     an_unlimited_sink_takes_everything();
     memory_sink_marks_exceeded();

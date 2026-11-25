@@ -13,6 +13,7 @@
 #include "naula/provider.h"
 #include "provider_gitea_hooks.h"
 #include "transport_hooks.h"
+#include "naula/json.h"
 
 #ifndef NAULA_FORGEJO_FIXTURES
 #error "NAULA_FORGEJO_FIXTURES names test/fixtures/forgejo"
@@ -552,6 +553,7 @@ static void forgejo_answers_from_its_own_word_and_the_registry_holds_every_built
 }
 
 int main(void) {
+    naula_json_use_allocator();
     naula_fetch_allow_plain_http(1);
     lookup_reads_a_repository_with_its_etag();
     a_lookup_without_a_token_names_the_fix();

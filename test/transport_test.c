@@ -12,6 +12,7 @@
 #include "naula/memory.h"
 #include "naula/transport.h"
 #include "transport_hooks.h"
+#include "naula/json.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -275,6 +276,7 @@ static void a_linux_without_libcurl_is_refused_naming_the_package(void) {
 #endif
 
 int main(void) {
+    naula_json_use_allocator();
 #if !defined(_WIN32)
     clear_proxy_environment();
 #endif

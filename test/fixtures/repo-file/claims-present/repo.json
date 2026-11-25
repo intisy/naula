@@ -1,0 +1,14 @@
+{
+  "format": 2,
+  "name": "docs",
+  "importName": "docs",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "intisy"
+    }
+  ],
+  "claims": [
+    "github:forebay"
+  ]
+}
