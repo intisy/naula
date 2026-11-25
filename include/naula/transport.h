@@ -45,7 +45,10 @@ int naula_fetch_sink_take(naula_fetch_sink *sink, const uint8_t *bytes, size_t l
 /** Whether a body of the declared length fits the limit; one that does not marks the sink exceeded. */
 int naula_fetch_sink_admits(naula_fetch_sink *sink, uint64_t declared);
 
-/** First shape ends at `authorization`. */
+/**
+ * First shape ends at `authorization`; `extra_headers`, a NULL-terminated list of whole `Name: value` lines sent on
+ * every hop and overwritten after use, was appended and is read only when `size` covers it.
+ */
 typedef struct naula_fetch_request {
     uint32_t size;
     const char *url;
@@ -53,6 +56,7 @@ typedef struct naula_fetch_request {
     const char *last_modified;
     unsigned deadline_milliseconds;
     const char *authorization;
+    const char *const *extra_headers;
 } naula_fetch_request;
 
 typedef enum naula_fetch_outcome {
@@ -101,6 +105,11 @@ void naula_fetch_deadline_passed(naula_fetch_answer *answer, const naula_fetch_r
  */
 void naula_fetch_into_memory(const char *url, const char *authorization, unsigned deadline_milliseconds,
                              naula_fetch_sink *sink, naula_fetch_answer *answer);
+
+/** naula_fetch_into_memory with extra_headers, a NULL-terminated list of whole header lines, or NULL for none. */
+void naula_fetch_into_memory_with_headers(const char *url, const char *authorization, const char *const *extra_headers,
+                                          unsigned deadline_milliseconds, naula_fetch_sink *sink,
+                                          naula_fetch_answer *answer);
 
 /** Whether the test hook has allowed plain http; always 0 in the shipped library. */
 int naula_fetch_plain_http_is_allowed(void);

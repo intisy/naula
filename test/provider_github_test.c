@@ -189,7 +189,7 @@ static void a_404_by_number_is_not_found(void) {
 
 static void a_rate_limit_and_a_missing_token_are_refused_with_their_own_codes(void) {
     const int statuses[] = {403, 429, 401};
-    const char *const codes[] = {"rate_limited", "rate_limited", "token_needed"};
+    const char *const codes[] = {"forbidden_or_rate_limited", "rate_limited", "token_needed"};
     for (size_t index = 0; index < 3; index++) {
         http_route routes[1] = {route(REPOSITORY_ROUTE, statuses[index], "{}")};
         http_fixture *server = serve(routes, 1);
@@ -261,6 +261,78 @@ static void find_reads_the_number_and_answers_zero_for_a_missing_name(void) {
     CHECK(github()->find(NULL, NULL, "octocat", "../x", NULL, &number, &refusal) == NAULA_REFUSED);
     naula_memory_release(finish(server));
     naula_memory_release(body);
+}
+
+static void find_answers_zero_for_a_repository_renamed_away_from_the_name(void) {
+    char *body = load("repository.json");
+    char location[128];
+    http_route routes[3] = {route("/repos/octocat/old-name", 301, ""), route("/repos/octocat/Hello-World", 200, body),
+                            route("/repos/OCTOCAT/hello-world", 200, body)};
+    routes[0].extra_headers = location;
+    http_fixture *server = serve(routes, 3);
+    snprintf(location, sizeof location, "Location: http://127.0.0.1:%u/repos/octocat/Hello-World\r\n",
+             (unsigned)http_fixture_port(server));
+    naula_refusal refusal = fresh_refusal();
+    uint64_t number = 5;
+    CHECK(github()->find(NULL, NULL, "octocat", "old-name", NULL, &number, &refusal) == NAULA_OK);
+    CHECK(number == 0);
+    CHECK(github()->find(NULL, NULL, "OCTOCAT", "hello-world", NULL, &number, &refusal) == NAULA_OK);
+    CHECK(number == NUMBER);
+    naula_memory_release(finish(server));
+    naula_memory_release(body);
+}
+
+static void every_call_sends_the_api_version_and_accept_headers(void) {
+    char *body = load("repository.json");
+    http_route routes[1] = {route(REPOSITORY_ROUTE, 200, body)};
+    http_fixture *server = serve(routes, 1);
+    naula_repository repository = fresh_repository();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(lookup(NUMBER, NULL, &repository, &refusal) == NAULA_OK);
+    naula_repository_release(&repository);
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "X-GitHub-Api-Version: 2022-11-28") != NULL);
+    CHECK(log != NULL && strstr(log, "Accept: application/vnd.github+json") != NULL);
+    naula_memory_release(log);
+    naula_memory_release(body);
+}
+
+static void a_missing_file_ref_or_commit_in_a_live_repository_is_not_not_found(void) {
+    char *repository_body = load("repository.json");
+    http_route routes[4] = {route("/repositories/1296269/contents/nope?ref=master", 404, NOT_FOUND_BODY),
+                            route("/repositories/1296269/contents/README?ref=nobranch", 404, NOT_FOUND_BODY),
+                            route("/repositories/1296269/commits/" COMMIT, 404, NOT_FOUND_BODY),
+                            route(REPOSITORY_ROUTE, 200, repository_body)};
+    http_fixture *server = serve(routes, 4);
+    naula_refusal refusal = fresh_refusal();
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    size_t count = 0;
+    CHECK(github()->read_file(NULL, NULL, NUMBER, "master", "nope", NULL, &bytes, &length, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_file_or_ref", "missing file");
+    CHECK(github()->read_file(NULL, NULL, NUMBER, "nobranch", "README", NULL, &bytes, &length, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_file_or_ref", "unknown ref");
+    CHECK(github()->parent_count(NULL, NULL, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_commit", "unknown commit");
+    naula_memory_release(finish(server));
+    routes[3] = route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY);
+    server = serve(routes, 4);
+    CHECK(github()->read_file(NULL, NULL, NUMBER, "master", "nope", NULL, &bytes, &length, &refusal) == NAULA_NOT_FOUND);
+    CHECK(github()->parent_count(NULL, NULL, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_NOT_FOUND);
+    naula_memory_release(finish(server));
+    naula_memory_release(repository_body);
+}
+
+static void a_failure_with_no_refusal_to_fill_does_not_crash(void) {
+    http_route routes[2] = {route("/orgs/spisor/repos?per_page=100&page=1", 500, "{}"),
+                            route("/repos/octocat/x", 500, "{}")};
+    http_fixture *server = serve(routes, 2);
+    naula_repository *repositories = NULL;
+    size_t count = 0;
+    uint64_t number = 0;
+    CHECK(github()->list_repos(NULL, NULL, "spisor", NULL, &repositories, &count, NULL) == NAULA_REFUSED);
+    CHECK(github()->find(NULL, NULL, "octocat", "x", NULL, &number, NULL) == NAULA_REFUSED);
+    naula_memory_release(finish(server));
 }
 
 static void read_file_decodes_the_contents(void) {
@@ -492,6 +564,10 @@ static void register_refuses_a_second_provider_for_a_word(void) {
     extra.word = "extra";
     CHECK(naula_providers_register(providers, &extra, &refusal) == NAULA_OK);
     CHECK(naula_providers_find(providers, "extra", &refusal) != NULL);
+    naula_provider hollow = extra;
+    hollow.word = "hollow";
+    hollow.contains = NULL;
+    CHECK(naula_providers_register(providers, &hollow, &refusal) == NAULA_REFUSED);
     naula_provider small = extra;
     small.word = "small";
     small.size = sizeof(uint32_t);
@@ -513,6 +589,10 @@ int main(void) {
     the_token_is_sent_only_when_given_and_never_repeated();
     a_lookup_struct_smaller_than_its_first_shape_is_refused();
     find_reads_the_number_and_answers_zero_for_a_missing_name();
+    find_answers_zero_for_a_repository_renamed_away_from_the_name();
+    every_call_sends_the_api_version_and_accept_headers();
+    a_missing_file_ref_or_commit_in_a_live_repository_is_not_not_found();
+    a_failure_with_no_refusal_to_fill_does_not_crash();
     read_file_decodes_the_contents();
     read_file_reverifies_the_number();
     read_file_refuses_a_folder_and_a_file_too_large_to_inline();

@@ -174,9 +174,13 @@ static int open_handles(const naula_fetch_request *request, const url_parts *par
 
 static wchar_t *request_headers(const naula_fetch_request *request, int is_authorized) {
     const char *authorization = is_authorized ? request->authorization : NULL;
+    const char *const *extra = naula_fetch_request_extra_headers(request);
     size_t size = 96 + (request->etag == NULL ? 0 : strlen(request->etag)) +
                   (request->last_modified == NULL ? 0 : strlen(request->last_modified)) +
                   (authorization == NULL ? 0 : strlen(authorization));
+    for (size_t index = 0; extra != NULL && extra[index] != NULL; index++) {
+        size += strlen(extra[index]) + 2;
+    }
     char *headers = naula_memory_allocate(size);
     if (headers == NULL) {
         return NULL;
@@ -190,7 +194,10 @@ static wchar_t *request_headers(const naula_fetch_request *request, int is_autho
         length += snprintf(headers + length, size - (size_t)length, "If-Modified-Since: %s\r\n", request->last_modified);
     }
     if (authorization != NULL) {
-        snprintf(headers + length, size - (size_t)length, "Authorization: %s\r\n", authorization);
+        length += snprintf(headers + length, size - (size_t)length, "Authorization: %s\r\n", authorization);
+    }
+    for (size_t index = 0; extra != NULL && extra[index] != NULL; index++) {
+        length += snprintf(headers + length, size - (size_t)length, "%s\r\n", extra[index]);
     }
     int out_of_memory;
     wchar_t *wide = to_wide_reporting(headers, &out_of_memory);

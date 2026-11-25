@@ -44,14 +44,25 @@ int naula_fetch_request_is_usable(const naula_fetch_request *request, naula_fetc
     return 0;
 }
 
+const char *const *naula_fetch_request_extra_headers(const naula_fetch_request *request) {
+    size_t covered = offsetof(naula_fetch_request, extra_headers) + sizeof request->extra_headers;
+    return request->size >= covered ? request->extra_headers : NULL;
+}
+
 void naula_fetch_into_memory(const char *url, const char *authorization, unsigned deadline_milliseconds,
                              naula_fetch_sink *sink, naula_fetch_answer *answer) {
+    naula_fetch_into_memory_with_headers(url, authorization, NULL, deadline_milliseconds, sink, answer);
+}
+
+void naula_fetch_into_memory_with_headers(const char *url, const char *authorization, const char *const *extra_headers,
+                                          unsigned deadline_milliseconds, naula_fetch_sink *sink,
+                                          naula_fetch_answer *answer) {
     if (!is_network_url(url)) {
         naula_fetch_refuse(answer, "serve the lookup over https", "%s is not an https url", url);
         return;
     }
     naula_fetch_request request = {sizeof request, url, NULL, NULL,
                                    deadline_override != 0 ? deadline_override : deadline_milliseconds,
-                                   authorization};
+                                   authorization, extra_headers};
     naula_fetch_over_network(&request, sink, answer);
 }

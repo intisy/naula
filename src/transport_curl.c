@@ -277,14 +277,21 @@ static curl_slist *request_headers(const curl_api *api, const naula_fetch_reques
     *built = 1;
     const char *names[3] = {"If-None-Match: ", "If-Modified-Since: ", "Authorization: "};
     const char *values[3] = {request->etag, request->last_modified, request->authorization};
-    for (size_t index = 0; index < 3 && *built; index++) {
-        if (values[index] == NULL) {
+    const char *const *extra = naula_fetch_request_extra_headers(request);
+    size_t extra_count = 0;
+    while (extra != NULL && extra[extra_count] != NULL) {
+        extra_count++;
+    }
+    for (size_t index = 0; index < 3 + extra_count && *built; index++) {
+        const char *name = index < 3 ? names[index] : "";
+        const char *value = index < 3 ? values[index] : extra[index - 3];
+        if (value == NULL) {
             continue;
         }
-        size_t size = strlen(names[index]) + strlen(values[index]) + 1;
+        size_t size = strlen(name) + strlen(value) + 1;
         char *line = naula_memory_allocate(size);
         if (line != NULL) {
-            snprintf(line, size, "%s%s", names[index], values[index]);
+            snprintf(line, size, "%s%s", name, value);
         }
         curl_slist *grown = line == NULL ? NULL : api->slist_append(headers, line);
         if (line != NULL) {

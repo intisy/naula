@@ -9,6 +9,8 @@
 #include "provider_github_hooks.h"
 
 #define API_ROOT_DEFAULT "https://api.github.com"
+#define API_VERSION_HEADER "X-GitHub-Api-Version: 2022-11-28"
+#define ACCEPT_HEADER "Accept: application/vnd.github+json"
 #define ROOT_SIZE 300
 #define URL_SIZE 2048
 #define ROUTE_SIZE 1536
@@ -25,6 +27,13 @@
 #define COMMIT_HEX_MAXIMUM 64u
 
 static const char *const HOST_FIX = "check that the host is the GitHub host the home names";
+
+/**
+ * @implNote 403 is labelled forbidden_or_rate_limited because the transport answers no response headers, so
+ * x-ratelimit-remaining cannot tell a spent rate limit from a refused token. API version 2022-11-28 was read from
+ * x-github-api-version-selected on 2026-11-25.
+ */
+static const char *const request_headers[] = {API_VERSION_HEADER, ACCEPT_HEADER, NULL};
 
 static char api_root_override[ROOT_SIZE];
 
@@ -155,9 +164,14 @@ static naula_status refuse_answer(const naula_fetch_answer *answer, const char *
         return refuse_with(refusal, NAULA_REFUSED, "token_needed", "give a token the host accepts",
                            "GitHub wants a token for %s", subject);
     }
-    if (answer->status == 403 || answer->status == 429) {
+    if (answer->status == 429) {
         return refuse_with(refusal, NAULA_REFUSED, "rate_limited", "wait for the host's rate limit to reset, then try again",
                            "GitHub is rate limiting this caller at %s", subject);
+    }
+    if (answer->status == 403) {
+        return refuse_with(refusal, NAULA_REFUSED, "forbidden_or_rate_limited",
+                           "give a token that reaches the repository, or wait for the host's rate limit to reset",
+                           "GitHub refused this caller at %s", subject);
     }
     return refuse_with(refusal, NAULA_REFUSED, "unexpected_status", HOST_FIX, "GitHub answered an unexpected status at %s", subject);
 }
@@ -203,7 +217,8 @@ static naula_status get_answer(const char *url, const char *token, size_t capaci
     naula_fetch_answer answer;
     memset(&answer, 0, sizeof answer);
     answer.size = sizeof answer;
-    naula_fetch_into_memory(url, token == NULL ? NULL : authorization, DEADLINE_MILLISECONDS, &sink, &answer);
+    naula_fetch_into_memory_with_headers(url, token == NULL ? NULL : authorization, request_headers, DEADLINE_MILLISECONDS,
+                                         &sink, &answer);
     naula_overwrite(authorization, sizeof authorization);
     naula_status status = settle_answer(&answer, url, refusal);
     reply->length = (size_t)sink.bytes;
@@ -345,6 +360,24 @@ static naula_status github_lookup(void *context, const char *host, uint64_t numb
     return status;
 }
 
+static int equals_ignoring_case(const char *left, const char *right) {
+    for (; *left != '\0' && *right != '\0'; left++, right++) {
+        if (*left != *right && !(((*left | 0x20) == (*right | 0x20)) && ((*left | 0x20) >= 'a' && (*left | 0x20) <= 'z'))) {
+            return 0;
+        }
+    }
+    return *left == *right;
+}
+
+/** GitHub follows a rename with a redirect, so the answer can belong to the repository now at another name. */
+static int answers_to_the_name(const cJSON *json, const char *account, const char *name) {
+    const cJSON *owner = cJSON_GetObjectItemCaseSensitive(json, "owner");
+    const char *answered_account = cJSON_IsObject(owner) ? text_member(owner, "login") : NULL;
+    const char *answered_name = text_member(json, "name");
+    return answered_account != NULL && answered_name != NULL && equals_ignoring_case(answered_account, account) &&
+           equals_ignoring_case(answered_name, name);
+}
+
 static naula_status github_find(void *context, const char *host, const char *account, const char *name,
                                 const char *token, uint64_t *number, naula_refusal *refusal) {
     char route[ROUTE_SIZE];
@@ -363,12 +396,16 @@ static naula_status github_find(void *context, const char *host, const char *acc
         return NAULA_OK;
     }
     if (status != NAULA_OK) {
-        *refusal = absent;
+        if (refusal != NULL) {
+            *refusal = absent;
+        }
         return status;
     }
     cJSON *json = parse_reply(&reply, &status, refusal);
     if (json != NULL && !read_exact_number(json, "id", number)) {
         status = refuse_malformed(refusal, "a repository with no number that can be read exactly");
+    } else if (json != NULL && !answers_to_the_name(json, account, name)) {
+        *number = 0;
     }
     cJSON_Delete(json);
     reply_release(&reply);
@@ -485,6 +522,16 @@ static naula_status still_the_same_number(const char *host, uint64_t number, con
     return status;
 }
 
+/** A 404 on a file or a commit reads the same as a repository that is gone, so the repository decides which. */
+static naula_status settle_missing(const char *host, uint64_t number, const char *token, const char *code,
+                                   const char *what, const char *fix, naula_refusal *refusal) {
+    naula_status status = still_the_same_number(host, number, token, refusal);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    return refuse_with(refusal, NAULA_REFUSED, code, fix, "the repository has no %s asked for", what);
+}
+
 static naula_status github_read_file(void *context, const char *host, uint64_t number, const char *ref,
                                      const char *path, const char *token, uint8_t **bytes, size_t *length,
                                      naula_refusal *refusal) {
@@ -499,6 +546,10 @@ static naula_status github_read_file(void *context, const char *host, uint64_t n
         return status;
     }
     status = github_get(host, route, token, FILE_BODY_CAPACITY, &reply, refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return settle_missing(host, number, token, "missing_file_or_ref", "file or ref",
+                              "check the path and the ref exist in the repository", refusal);
+    }
     if (status != NAULA_OK) {
         return status;
     }
@@ -578,6 +629,10 @@ static naula_status github_parent_count(void *context, const char *host, uint64_
     }
     snprintf(route, sizeof route, "repositories/%llu/commits/%s", (unsigned long long)number, commit);
     naula_status status = github_get(host, route, token, HISTORY_BODY_CAPACITY, &reply, refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return settle_missing(host, number, token, "missing_commit", "commit",
+                              "check the commit exists in the repository", refusal);
+    }
     if (status != NAULA_OK) {
         return status;
     }
@@ -674,7 +729,7 @@ static naula_status github_list_repos(void *context, const char *host, const cha
         naula_repository_list_release(list.items, list.count);
         list = (repository_list){NULL, 0, 0};
         status = read_pages(host, "users", account, token, &list, refusal);
-    } else if (status != NAULA_OK) {
+    } else if (status != NAULA_OK && refusal != NULL) {
         *refusal = absent;
     }
     if (status != NAULA_OK) {

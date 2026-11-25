@@ -14,6 +14,12 @@ static int covers_first_shape(const naula_provider *provider) {
     return provider->size >= offsetof(naula_provider, release_index) + sizeof provider->release_index;
 }
 
+static int has_every_function(const naula_provider *provider) {
+    return provider->describe != NULL && provider->lookup != NULL && provider->find != NULL &&
+           provider->read_file != NULL && provider->contains != NULL && provider->parent_count != NULL &&
+           provider->list_repos != NULL && provider->release_index != NULL;
+}
+
 static const naula_provider *entry_for(const naula_providers *providers, const char *word) {
     for (size_t index = 0; index < providers->count; index++) {
         if (strcmp(providers->entries[index]->word, word) == 0) {
@@ -39,7 +45,7 @@ static int make_room(naula_providers *providers) {
 
 naula_status naula_providers_register(naula_providers *providers, const naula_provider *provider,
                                       naula_refusal *refusal) {
-    if (!covers_first_shape(provider) || provider->word == NULL ||
+    if (!covers_first_shape(provider) || !has_every_function(provider) || provider->word == NULL ||
         provider->word[0] == '\0') {
         naula_refuse(refusal, "invalid_provider", "fill every function of the provider's first shape and name its word",
                      "the provider is smaller than its first shape or names no word");
@@ -57,6 +63,7 @@ naula_status naula_providers_register(naula_providers *providers, const naula_pr
     }
     memset(copy, 0, sizeof *copy);
     memcpy(copy, provider, provider->size < sizeof *copy ? provider->size : sizeof *copy);
+    copy->size = sizeof *copy;
     providers->entries[providers->count++] = copy;
     return NAULA_OK;
 }
