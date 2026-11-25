@@ -247,6 +247,21 @@ static void libcurl_honours_https_proxy_and_no_proxy(void) {
 }
 #endif
 
+#if !defined(_WIN32)
+static void a_stopped_transfer_is_settled_by_its_own_flag_whatever_libcurl_reports(void) {
+    naula_fetch_sink sink;
+    naula_fetch_curl_use_library(NAULA_FAKE_CURL);
+    naula_fetch_answer answer = fetch_into_buffer("https://forge.invalid/refused", NULL, 5000, BODY_LENGTH, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_STATUS);
+    CHECK(answer.status == 401);
+    release(&answer);
+    answer = fetch_into_buffer("https://forge.invalid/large", NULL, 5000, 1, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_STOPPED_BY_SINK);
+    naula_fetch_curl_use_library(NULL);
+    release(&answer);
+}
+#endif
+
 #if defined(__linux__)
 static void a_linux_without_libcurl_is_refused_naming_the_package(void) {
     naula_fetch_sink sink;
@@ -272,6 +287,9 @@ int main(void) {
     winhttp_takes_the_system_proxy();
 #else
     libcurl_honours_https_proxy_and_no_proxy();
+#endif
+#if !defined(_WIN32)
+    a_stopped_transfer_is_settled_by_its_own_flag_whatever_libcurl_reports();
 #endif
 #if defined(__linux__)
     a_linux_without_libcurl_is_refused_naming_the_package();
