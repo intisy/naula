@@ -384,7 +384,7 @@ static void take_hops(const naula_fetch_request *request, origin *first, naula_f
     }
     for (int hop = 0; hop <= MAXIMUM_REDIRECTS; hop++) {
         url_parts parts;
-        naula_status split = split_url(request->allow_plain_http, current, &parts);
+        naula_status split = split_url(naula_fetch_plain_http_is_allowed(), current, &parts);
         if (split == NAULA_OUT_OF_MEMORY) {
             free_parts(&parts);
             naula_fetch_out_of_memory(answer);

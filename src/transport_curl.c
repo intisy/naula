@@ -299,7 +299,7 @@ static curl_slist *request_headers(const curl_api *api, const naula_fetch_reques
 
 static int configure(const curl_api *api, curl_handle *curl, const naula_fetch_request *request, transfer *state,
                      curl_slist *headers, char *error_buffer) {
-    long protocols = request->allow_plain_http ? CURLPROTO_HTTP | CURLPROTO_HTTPS : CURLPROTO_HTTPS;
+    long protocols = naula_fetch_plain_http_is_allowed() ? CURLPROTO_HTTP | CURLPROTO_HTTPS : CURLPROTO_HTTPS;
     long deadline = (long)request->deadline_milliseconds;
     long connect = deadline < CONNECT_MILLISECONDS ? deadline : CONNECT_MILLISECONDS;
     curl_data_function header_function = take_header;

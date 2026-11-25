@@ -23,6 +23,7 @@ target_link_libraries(transport_shipped_test PRIVATE naula naula_allocator)
 
 naula_test(transport_network_test)
 target_link_libraries(transport_network_test PRIVATE naula naula_allocator)
+set_tests_properties(transport_network_test PROPERTIES LABELS network)
 
 naula_test(transport_test http_fixture.c)
 target_link_libraries(transport_test PRIVATE naula_test_hooks naula_allocator)

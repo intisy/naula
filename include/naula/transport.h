@@ -4,7 +4,8 @@
 /**
  * @file
  * naula's HTTP transport: one GET over the operating system's stack (WinHTTP, or libcurl loaded at run time), into a
- * sink that hashes and bounds what it takes. A size-prefixed struct is read only up to its `size`.
+ * sink that hashes and bounds what it takes. naula_fetch_request is read only up to its `size`; the caller sets
+ * naula_fetch_answer's `size` and the transport fills its first shape.
  */
 
 #include <stddef.h>
@@ -51,7 +52,6 @@ typedef struct naula_fetch_request {
     const char *etag;
     const char *last_modified;
     unsigned deadline_milliseconds;
-    int allow_plain_http;
     const char *authorization;
 } naula_fetch_request;
 

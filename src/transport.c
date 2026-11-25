@@ -52,6 +52,6 @@ void naula_fetch_into_memory(const char *url, const char *authorization, unsigne
     }
     naula_fetch_request request = {sizeof request, url, NULL, NULL,
                                    deadline_override != 0 ? deadline_override : deadline_milliseconds,
-                                   plain_http_allowed, authorization};
+                                   authorization};
     naula_fetch_over_network(&request, sink, answer);
 }
