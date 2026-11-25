@@ -1,0 +1,21 @@
+{
+  "format": 2,
+  "name": "naula",
+  "importName": "naula",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "intisy"
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "github:1",
+      "at": [
+        "github:1"
+      ],
+      "importName": "conformance",
+      "commit": "0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39"
+    }
+  ]
+}

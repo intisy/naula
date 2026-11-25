@@ -1,0 +1,25 @@
+{
+  "format": 2,
+  "name": "inventree-data",
+  "importName": "inventree-data",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "intisy-compose"
+    },
+    {
+      "provider": "forgejo",
+      "host": "codeberg.org",
+      "account": "intisy-compose"
+    },
+    {
+      "provider": "web",
+      "domain": "naula.dev"
+    },
+    {
+      "url": "https://git.example.org/compose/inventree-data.git"
+    }
+  ],
+  "id": "git:3ac5a2bb587e0f1d2c3b4a5968778695a4b3c2d1",
+  "topics": []
+}

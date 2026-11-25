@@ -1,0 +1,19 @@
+{
+  "format": 2,
+  "name": "tarn",
+  "importName": "tarn",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "intisy"
+    }
+  ],
+  "dependencies": [
+    {
+      "url": "https://github.com/intisy/workflows",
+      "importName": "workflows",
+      "commit": "0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39",
+      "path": ".workflows"
+    }
+  ]
+}
