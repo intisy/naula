@@ -35,9 +35,15 @@ static int is_json_name(const char *name) {
 }
 
 static void add_name(vector_names *found, const char *name) {
-    if (is_json_name(name) && found->count < VECTOR_LIMIT) {
-        strcpy(found->names[found->count++], name);
+    if (!is_json_name(name)) {
+        return;
     }
+    if (found->count >= VECTOR_LIMIT) {
+        fprintf(stderr, "more than %d vectors: raise VECTOR_LIMIT\n", VECTOR_LIMIT);
+        check_failures++;
+        return;
+    }
+    strcpy(found->names[found->count++], name);
 }
 
 static void list_vectors(vector_names *found) {
@@ -136,7 +142,10 @@ static void expect_parse(const char *name, const char *text, const cJSON *then) 
         CHECK(status == NAULA_REFUSED);
         CHECK(strcmp(refusal.code, "invalid_id") == 0);
         CHECK(refusal.fix != NULL && refusal.fix[0] != '\0');
-        if (cJSON_IsNumber(offset) && refusal_offset(&refusal) != (long)offset->valuedouble) {
+        if (!cJSON_IsNumber(offset)) {
+            fprintf(stderr, "%s: a refusal vector names no offset\n", name);
+            check_failures++;
+        } else if (refusal_offset(&refusal) != (long)offset->valuedouble) {
             fprintf(stderr, "%s: expected offset %d, detail \"%s\"\n", name, (int)offset->valuedouble,
                     refusal.detail);
             check_failures++;
@@ -170,7 +179,7 @@ static void every_kit_vector_holds(void) {
     vector_names found;
     size_t at;
     list_vectors(&found);
-    CHECK(found.count >= 17);
+    CHECK(found.count >= 19);
     for (at = 0; at < found.count; at++) {
         run_vector(found.names[at]);
     }
@@ -193,6 +202,15 @@ static void folder_is_the_first_twelve_hex(void) {
     naula_id_release(&id);
 }
 
+static void a_local_name_holding_a_nul_is_refused(void) {
+    naula_id id;
+    naula_refusal refusal;
+    memset(&refusal, 0, sizeof refusal);
+    CHECK(naula_id_parse("local:a\0b", 9, &id, &refusal) == NAULA_REFUSED);
+    CHECK(refusal_offset(&refusal) == 7);
+    naula_id_release(&id);
+}
+
 static void length_bounds_the_text_read(void) {
     naula_id id;
     CHECK(naula_id_parse("local:stubby", 10, &id, NULL) == NAULA_OK);
@@ -203,6 +221,7 @@ static void length_bounds_the_text_read(void) {
 int main(void) {
     every_kit_vector_holds();
     folder_is_the_first_twelve_hex();
+    a_local_name_holding_a_nul_is_refused();
     length_bounds_the_text_read();
     return check_summary("id_test");
 }

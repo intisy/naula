@@ -22,8 +22,8 @@ static int is_segment_character(char character) {
            character == '_' || character == '-';
 }
 
-static int is_space(char character) {
-    return character == ' ' || character == '\t' || character == '\n' || character == '\r' || character == '\v' ||
+static int is_forbidden_in_name(char character) {
+    return character == '\0' || character == ' ' || character == '\t' || character == '\n' || character == '\r' || character == '\v' ||
            character == '\f';
 }
 
@@ -115,14 +115,14 @@ static naula_status check_git(const char *text, size_t length, naula_refusal *re
 static naula_status check_local(const char *text, size_t length, naula_refusal *refusal, size_t *after_head) {
     size_t start = sizeof LOCAL_PREFIX - 1;
     size_t at = start;
-    while (at < length && text[at] != '/' && !is_space(text[at])) {
+    while (at < length && text[at] != '/' && !is_forbidden_in_name(text[at])) {
         at++;
     }
     if (at == start) {
         return refuse_at(refusal, start, "a local id needs a name");
     }
     if (at < length && text[at] != '/') {
-        return refuse_at(refusal, at, "a local name holds no whitespace");
+        return refuse_at(refusal, at, "a local name holds no whitespace or NUL");
     }
     *after_head = at;
     return NAULA_OK;
