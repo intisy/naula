@@ -55,6 +55,7 @@ enum { CURLPROTO_HTTP = 1, CURLPROTO_HTTPS = 2 };
 enum {
     CURLE_OK = 0,
     CURLE_UNSUPPORTED_PROTOCOL = 1,
+    CURLE_COULDNT_RESOLVE_HOST = 6,
     CURLE_PARTIAL_FILE = 18,
     CURLE_WRITE_ERROR = 23,
     CURLE_OPERATION_TIMEDOUT = 28,
@@ -369,6 +370,9 @@ static void settle(const curl_api *api, const naula_fetch_request *request, int 
     } else {
         naula_fetch_refuse(answer, NAULA_FETCH_NETWORK_FIX, "%s could not be fetched: %s", request->url,
                              error_buffer[0] != 0 ? error_buffer : api->easy_strerror(code));
+        if (code == CURLE_COULDNT_RESOLVE_HOST) {
+            naula_fetch_mark_host_unresolved(answer);
+        }
     }
 }
 

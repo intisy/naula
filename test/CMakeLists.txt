@@ -62,3 +62,18 @@ target_compile_definitions(provider_github_test PRIVATE NAULA_GITHUB_FIXTURES="$
 if(WIN32)
     target_link_libraries(provider_github_test PRIVATE ws2_32)
 endif()
+
+naula_test(provider_gitea_test http_fixture.c)
+target_link_libraries(provider_gitea_test PRIVATE naula_test_hooks naula_allocator)
+target_compile_definitions(provider_gitea_test PRIVATE NAULA_FORGEJO_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/forgejo")
+
+naula_test(provider_web_test http_fixture.c)
+target_link_libraries(provider_web_test PRIVATE naula_test_hooks naula_allocator)
+
+naula_test(provider_network_test)
+target_link_libraries(provider_network_test PRIVATE naula naula_allocator)
+set_tests_properties(provider_network_test PROPERTIES LABELS network)
+if(WIN32)
+    target_link_libraries(provider_gitea_test PRIVATE ws2_32)
+    target_link_libraries(provider_web_test PRIVATE ws2_32)
+endif()

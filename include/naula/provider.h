@@ -90,6 +90,25 @@ void naula_providers_close(naula_providers *providers);
 /** GitHub and GitHub Enterprise: host NULL or github.com is api.github.com, another host is https://<host>/api/v3. */
 const naula_provider *naula_provider_github(void);
 
+/** Gitea and Forgejo, one API under two words: the home names the host, https://<host>/api/v1. */
+const naula_provider *naula_provider_gitea(void);
+const naula_provider *naula_provider_forgejo(void);
+
+/**
+ * A home that is a domain. It supports no NAULA_OP_ operation; what it reads is the identity document, through
+ * naula_web_document.
+ */
+const naula_provider *naula_provider_web(void);
+
+/**
+ * Reads https://<domain>/.well-known/repo-identity/<hex>.json, the document `{ "id", "homes" }` a domain serves for
+ * the repo whose root commit is hex (40 or 64 lowercase hex). The bytes are released with naula_memory_release.
+ * NAULA_NOT_FOUND is answered for a 404 and for a domain that does not resolve, and NAULA_TIMED_OUT for a transfer
+ * that did not finish in time, which says nothing about the domain. A document whose id is another repo's is refused.
+ */
+naula_status naula_web_document(const char *domain, const char *hex, uint8_t **bytes, size_t *length,
+                                naula_refusal *refusal);
+
 #ifdef __cplusplus
 }
 #endif

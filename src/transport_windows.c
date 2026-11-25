@@ -253,6 +253,9 @@ static void refuse_error(const naula_fetch_request *request, DWORD error, naula_
     } else {
         naula_fetch_refuse(answer, NAULA_FETCH_NETWORK_FIX, "%s could not be fetched: WinHTTP error %lu",
                              request->url, (unsigned long)error);
+        if (error == ERROR_WINHTTP_NAME_NOT_RESOLVED) {
+            naula_fetch_mark_host_unresolved(answer);
+        }
     }
 }
 

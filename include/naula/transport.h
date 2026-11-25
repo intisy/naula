@@ -73,7 +73,8 @@ typedef enum naula_fetch_outcome {
  * What a transport found, its `size` set by the caller. STATUS carries the status; CUT_OFF the declared length, or 0
  * with a `detail` and `fix` when the deadline ended the transfer, which says nothing about whether the host is gone;
  * REFUSED its own detail and fix; RECEIVED and NOT_MODIFIED may carry the validators the answer sent, released with
- * naula_memory_release. First shape ends at `fix`.
+ * naula_memory_release. First shape ends at `fix`; `host_unresolved`, appended, is 1 on a REFUSED answer whose host name
+ * did not resolve, and is read only when `size` covers it.
  */
 typedef struct naula_fetch_answer {
     uint32_t size;
@@ -84,9 +85,13 @@ typedef struct naula_fetch_answer {
     char *last_modified;
     char detail[NAULA_FETCH_DETAIL_SIZE];
     const char *fix;
+    int host_unresolved;
 } naula_fetch_answer;
 
 void naula_fetch_refuse(naula_fetch_answer *answer, const char *fix, const char *format, ...);
+
+/** Marks a REFUSED answer as one whose host name did not resolve; does nothing for an answer too small to carry it. */
+void naula_fetch_mark_host_unresolved(naula_fetch_answer *answer);
 
 /** Answers that memory ran out before the transport could answer. */
 void naula_fetch_out_of_memory(naula_fetch_answer *answer);
