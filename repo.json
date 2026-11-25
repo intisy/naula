@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "importName": "naula",
+  "description": "Lays out, identifies and renames git repos from one name.",
+  "topics": [
+    "tools"
+  ],
+  "dependencies": [
+    {
+      "id": "github:1426141679",
+      "importName": "conformance",
+      "commit": "a460405cf9c29ece49b00578addbc7c5933fd4cc"
+    }
+  ]
+}

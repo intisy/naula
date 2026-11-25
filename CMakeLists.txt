@@ -1,0 +1,82 @@
+cmake_minimum_required(VERSION 3.19)
+project(naula C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(naula_is_top_level ON)
+else()
+    set(naula_is_top_level OFF)
+endif()
+option(NAULA_TESTS "Build naula's tests" ${naula_is_top_level})
+
+function(naula_strict_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /utf-8 /D_CRT_SECURE_NO_WARNINGS)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+endfunction()
+
+add_library(naula_cjson STATIC vendor/cjson/cJSON.c)
+target_include_directories(naula_cjson PUBLIC vendor/cjson)
+target_compile_definitions(naula_cjson PUBLIC CJSON_HIDE_SYMBOLS)
+set_target_properties(naula_cjson PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+
+if(WIN32)
+    set(naula_transport_platform_source src/transport_windows.c)
+    set(naula_transport_libraries Winhttp Shlwapi)
+else()
+    find_package(Threads REQUIRED)
+    set(naula_transport_platform_source src/transport_curl.c)
+    set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads)
+endif()
+set(naula_sources src/status.c src/id.c src/sha256.c src/home.c src/provider_registry.c src/provider_github.c src/transport.c src/transport_sink.c ${naula_transport_platform_source})
+
+add_library(naula STATIC ${naula_sources})
+target_include_directories(naula PUBLIC include)
+target_link_libraries(naula PUBLIC naula_cjson ${naula_transport_libraries})
+set_target_properties(naula PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+naula_strict_warnings(naula)
+
+# The same sources with the loopback and plain http hooks compiled in; only a test links it.
+# The git-driving half: linked by the command line and the helper, never by naula.
+if(WIN32)
+    set(naula_run_platform_source src/run_windows.c)
+else()
+    set(naula_run_platform_source src/run_posix.c)
+endif()
+add_library(naula_git STATIC src/run.c ${naula_run_platform_source} src/git.c)
+target_include_directories(naula_git PUBLIC include PRIVATE src)
+target_link_libraries(naula_git PUBLIC naula)
+set_target_properties(naula_git PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+naula_strict_warnings(naula_git)
+
+add_library(naula_test_hooks STATIC EXCLUDE_FROM_ALL ${naula_sources})
+target_include_directories(naula_test_hooks PUBLIC include src)
+target_compile_definitions(naula_test_hooks PRIVATE NAULA_TEST_HOOKS)
+target_link_libraries(naula_test_hooks PUBLIC naula_cjson ${naula_transport_libraries})
+set_target_properties(naula_test_hooks PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+naula_strict_warnings(naula_test_hooks)
+
+# naula carries no allocator: every binary links exactly one of these two, so a test can fail an allocation.
+add_library(naula_allocator OBJECT src/memory_malloc.c)
+target_include_directories(naula_allocator PUBLIC include)
+set_target_properties(naula_allocator PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+naula_strict_warnings(naula_allocator)
+
+add_library(naula_allocator_counting OBJECT EXCLUDE_FROM_ALL src/memory_malloc.c)
+target_include_directories(naula_allocator_counting PUBLIC include src)
+target_compile_definitions(naula_allocator_counting PUBLIC NAULA_TESTING)
+set_target_properties(naula_allocator_counting PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
+naula_strict_warnings(naula_allocator_counting)
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/allocation_check.cmake)
+naula_refuse_plain_allocation(${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+if(NAULA_TESTS)
+    enable_testing()
+    add_subdirectory(test)
+endif()
