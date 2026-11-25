@@ -57,7 +57,6 @@ enum {
     CURLE_UNSUPPORTED_PROTOCOL = 1,
     CURLE_COULDNT_RESOLVE_HOST = 6,
     CURLE_PARTIAL_FILE = 18,
-    CURLE_WRITE_ERROR = 23,
     CURLE_OPERATION_TIMEDOUT = 28,
     CURLE_TOO_MANY_REDIRECTS = 47
 };
@@ -346,15 +345,21 @@ static void settle_completed(transfer *state) {
     }
 }
 
+/**
+ * Settles a transfer by code.
+ *
+ * @implNote A transfer this file's own callbacks stopped is settled by their flags, never by the code: the libcurl
+ * macOS ships reports that stop as CURLE_RECV_ERROR over HTTP/2 where Linux builds report CURLE_WRITE_ERROR.
+ */
 static void settle(const curl_api *api, const naula_fetch_request *request, int code, transfer *state,
                    const char *error_buffer) {
     naula_fetch_answer *answer = state->answer;
     if (code == CURLE_OK) {
         settle_completed(state);
-    } else if (code == CURLE_WRITE_ERROR && state->refused_status) {
+    } else if (state->refused_status) {
         answer->outcome = NAULA_FETCH_STATUS;
         answer->status = state->status;
-    } else if (code == CURLE_WRITE_ERROR && (state->sink->exceeded || state->sink->unwritable)) {
+    } else if (state->sink->exceeded || state->sink->unwritable) {
         answer->outcome = NAULA_FETCH_STOPPED_BY_SINK;
     } else if (code == CURLE_PARTIAL_FILE && state->declared_known) {
         answer->outcome = NAULA_FETCH_CUT_OFF;

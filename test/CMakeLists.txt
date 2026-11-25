@@ -36,6 +36,11 @@ set_tests_properties(transport_network_test PROPERTIES LABELS network)
 
 naula_test(transport_test http_fixture.c)
 target_link_libraries(transport_test PRIVATE naula_test_hooks naula_allocator)
+if(NOT WIN32)
+    add_library(fake_curl_reporting_receive_error MODULE fake_curl_reporting_receive_error.c)
+    add_dependencies(transport_test fake_curl_reporting_receive_error)
+    target_compile_definitions(transport_test PRIVATE NAULA_FAKE_CURL="$<TARGET_FILE:fake_curl_reporting_receive_error>")
+endif()
 
 if(WIN32)
     target_link_libraries(transport_shipped_test PRIVATE ws2_32)
