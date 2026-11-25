@@ -5,5 +5,11 @@
   "topics": [
     "tools"
   ],
-  "dependencies": []
+  "dependencies": [
+    {
+      "id": "github:1426141679",
+      "importName": "conformance",
+      "commit": "5845368a6a5b22421910d57ab999f3d82ebc3b05"
+    }
+  ]
 }

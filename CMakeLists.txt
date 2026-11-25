@@ -33,7 +33,7 @@ else()
     set(naula_transport_platform_source src/transport_curl.c)
     set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads)
 endif()
-set(naula_sources src/status.c src/sha256.c src/transport.c src/transport_sink.c ${naula_transport_platform_source})
+set(naula_sources src/status.c src/id.c src/sha256.c src/transport.c src/transport_sink.c ${naula_transport_platform_source})
 
 add_library(naula STATIC ${naula_sources})
 target_include_directories(naula PUBLIC include)

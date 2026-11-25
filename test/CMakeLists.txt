@@ -14,6 +14,15 @@ endfunction()
 naula_test(sha256_test)
 target_link_libraries(sha256_test PRIVATE naula naula_allocator)
 
+set(NAULA_CONFORMANCE_DIR "${CMAKE_SOURCE_DIR}/siblings/conformance" CACHE PATH "The conformance kit checkout naula's tests read vectors from")
+if(NOT EXISTS "${NAULA_CONFORMANCE_DIR}/vectors/standard/identity")
+    message(FATAL_ERROR "the conformance kit is missing at ${NAULA_CONFORMANCE_DIR}: check it out at the commit repo.json pins, or set NAULA_CONFORMANCE_DIR")
+endif()
+
+naula_test(id_test)
+target_link_libraries(id_test PRIVATE naula naula_allocator)
+target_compile_definitions(id_test PRIVATE NAULA_IDENTITY_VECTORS="${NAULA_CONFORMANCE_DIR}/vectors/standard/identity")
+
 naula_test(transport_sink_test)
 target_link_libraries(transport_sink_test PRIVATE naula naula_allocator)
 target_compile_definitions(transport_sink_test PRIVATE NAULA_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}")
