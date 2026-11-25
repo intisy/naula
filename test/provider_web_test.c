@@ -126,6 +126,17 @@ static void web_a_timeout_is_timed_out(void) {
     naula_memory_release(finish(server));
 }
 
+static void web_a_domain_that_does_not_resolve_is_unreachable_never_not_found(void) {
+    naula_web_use_root("http://naula-test.invalid");
+    naula_refusal refusal = fresh_refusal();
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    CHECK(read_document("naula.dev", HEX, &bytes, &length, &refusal) == NAULA_UNREACHABLE);
+    check_text(refusal.code, "host_not_resolved", "unresolved domain");
+    CHECK(refusal.fix != NULL && bytes == NULL);
+    naula_web_use_root(NULL);
+}
+
 static void web_refuses_a_domain_or_an_identity_it_cannot_address(void) {
     naula_refusal refusal = fresh_refusal();
     uint8_t *bytes = NULL;
@@ -165,6 +176,7 @@ int main(void) {
     web_refuses_a_document_that_is_not_an_identity_document();
     web_a_missing_document_is_not_found_and_other_statuses_are_not();
     web_a_timeout_is_timed_out();
+    web_a_domain_that_does_not_resolve_is_unreachable_never_not_found();
     web_refuses_a_domain_or_an_identity_it_cannot_address();
     the_web_provider_supports_no_operation_and_refuses_each();
     return check_summary("provider_web_test");

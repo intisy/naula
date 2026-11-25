@@ -13,12 +13,12 @@ static naula_refusal fresh_refusal(void) {
     return refusal;
 }
 
-static void web_a_domain_that_does_not_resolve_is_not_found(void) {
+static void web_a_domain_that_does_not_resolve_is_unreachable(void) {
     naula_refusal refusal = fresh_refusal();
     uint8_t *bytes = NULL;
     size_t length = 0;
     CHECK(naula_web_document("naula-test.invalid", "dd92836cca7c292258635112ecfe1acb7b4f6ecd", &bytes, &length,
-                             &refusal) == NAULA_NOT_FOUND);
+                             &refusal) == NAULA_UNREACHABLE);
     check_text(refusal.code, "host_not_resolved", "unresolved domain");
 }
 
@@ -37,7 +37,7 @@ static void codeberg_answers_a_find_but_asks_for_a_token_by_number(void) {
 }
 
 int main(void) {
-    web_a_domain_that_does_not_resolve_is_not_found();
+    web_a_domain_that_does_not_resolve_is_unreachable();
     codeberg_answers_a_find_but_asks_for_a_token_by_number();
     return check_summary("provider_network_test");
 }

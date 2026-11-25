@@ -61,6 +61,9 @@ then refused `answer_too_large` rather than guessed.
 when the document is an object with an `id` naming that same `git:<hex>` and a `homes` list. The `web` provider
 supports no `NAULA_OP_` operation, since a domain has no number to look up.
 
-- 404 and a domain that does not resolve answer NOT_FOUND (dead, spec section 7.3). The transport marks a name that did
-  not resolve in `naula_fetch_answer.host_unresolved`; a timeout answers TIMED_OUT and says nothing about the domain.
+- Only a 404 answers NOT_FOUND (dead, spec section 7.3). A domain that does not resolve answers UNREACHABLE, refused
+  `host_not_resolved` with the network fix, and a timeout answers TIMED_OUT: neither says the domain is gone. Neither
+  libcurl's `CURLE_COULDNT_RESOLVE_HOST` nor WinHTTP's 12007 tells an authoritative NXDOMAIN from an offline machine
+  or a blocked resolver, and reading it as dead would let whoever answers one DNS query silence a home that disowns a
+  copy. The transport still marks the case in `naula_fetch_answer.host_unresolved`, which only picks the refusal code.
 - A document for another id is refused `document_for_another_id`; one that is not an identity document is MALFORMED.

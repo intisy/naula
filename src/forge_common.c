@@ -182,13 +182,8 @@ static naula_status settle_answer(const forge_flavor *flavor, const naula_fetch_
     case NAULA_FETCH_OUT_OF_MEMORY:
         return NAULA_OUT_OF_MEMORY;
     default:
-        if (flavor->unresolved_host_is_not_found && answer->host_unresolved) {
-            naula_refuse(refusal, "host_not_resolved", "check the domain the home names",
-                         "%s does not resolve to an address", url);
-            return NAULA_NOT_FOUND;
-        }
-        naula_refuse(refusal, "unreachable", answer->fix != NULL ? answer->fix : NAULA_FETCH_NETWORK_FIX, "%s",
-                     answer->detail);
+        naula_refuse(refusal, answer->host_unresolved ? "host_not_resolved" : "unreachable",
+                     answer->fix != NULL ? answer->fix : NAULA_FETCH_NETWORK_FIX, "%s", answer->detail);
         return NAULA_UNREACHABLE;
     }
 }

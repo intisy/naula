@@ -103,8 +103,10 @@ const naula_provider *naula_provider_web(void);
 /**
  * Reads https://<domain>/.well-known/repo-identity/<hex>.json, the document `{ "id", "homes" }` a domain serves for
  * the repo whose root commit is hex (40 or 64 lowercase hex). The bytes are released with naula_memory_release.
- * NAULA_NOT_FOUND is answered for a 404 and for a domain that does not resolve, and NAULA_TIMED_OUT for a transfer
- * that did not finish in time, which says nothing about the domain. A document whose id is another repo's is refused.
+ * NAULA_NOT_FOUND is answered for a 404 only. A domain that does not resolve is NAULA_UNREACHABLE, refused
+ * `host_not_resolved`, and a transfer that did not finish in time is NAULA_TIMED_OUT: neither says the domain is gone,
+ * since no transport tells an authoritative NXDOMAIN from an offline machine. A document whose id is another repo's is
+ * refused.
  */
 naula_status naula_web_document(const char *domain, const char *hex, uint8_t **bytes, size_t *length,
                                 naula_refusal *refusal);

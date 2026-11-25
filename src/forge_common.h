@@ -13,15 +13,10 @@
 #define FORGE_FILE_BODY_CAPACITY (2u * 1024u * 1024u)
 #define FORGE_HISTORY_BODY_CAPACITY (8u * 1024u * 1024u)
 
-/**
- * What differs between the hosts that answer a forge-shaped API: how they are named in a refusal, what they are sent
- * and whether a host name that does not resolve means the thing asked for is gone, as it does for a domain home.
- */
 typedef struct forge_flavor {
     const char *label;
     const char *host_fix;
     const char *const *request_headers;
-    int unresolved_host_is_not_found;
 } forge_flavor;
 
 typedef struct forge_reply {

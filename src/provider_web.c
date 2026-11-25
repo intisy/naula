@@ -13,7 +13,7 @@
 
 static const char *const request_headers[] = {"Accept: application/json", NULL};
 
-static const forge_flavor flavor = {"The domain", "check the domain the home names", request_headers, 1};
+static const forge_flavor flavor = {"The domain", "check the domain the home names", request_headers};
 
 static char root_override[FORGE_ROOT_SIZE];
 
