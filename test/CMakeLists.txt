@@ -52,3 +52,13 @@ set_tests_properties(git_fixtures_build PROPERTIES FIXTURES_SETUP git_fixtures T
 set_tests_properties(git_fixtures_remove PROPERTIES FIXTURES_CLEANUP git_fixtures)
 set_tests_properties(git_test PROPERTIES FIXTURES_REQUIRED git_fixtures
     ENVIRONMENT "HOME=${NAULA_FIXTURE_ROOT}/home;USERPROFILE=${NAULA_FIXTURE_ROOT}/home;XDG_CONFIG_HOME=${NAULA_FIXTURE_ROOT}/home/xdg;GIT_CONFIG_GLOBAL=${NAULA_FIXTURE_ROOT}/home/gitconfig;GIT_CONFIG_NOSYSTEM=1")
+
+naula_test(home_test)
+target_link_libraries(home_test PRIVATE naula naula_allocator)
+
+naula_test(provider_github_test http_fixture.c)
+target_link_libraries(provider_github_test PRIVATE naula_test_hooks naula_allocator)
+target_compile_definitions(provider_github_test PRIVATE NAULA_GITHUB_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/github")
+if(WIN32)
+    target_link_libraries(provider_github_test PRIVATE ws2_32)
+endif()
