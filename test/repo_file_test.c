@@ -413,6 +413,15 @@ static void a_local_parent_or_hold_is_refused(void) {
     expect_text_accepted(ORG_HEAD "\"parent\": { \"url\": \"https://github.com/intisy/docs\" } } }", "a url parent");
 }
 
+static void a_parent_or_hold_naming_a_part_of_a_repo_is_refused(void) {
+    expect_text_refused(ORG_HEAD "\"parent\": { \"id\": \"git:" HEX40 "/docs\", \"at\": [ \"github:1\" ] } } }",
+                        "org.parent.id", "a parent with a segment");
+    expect_text_refused(ORG_HEAD "\"hold\": [ { \"id\": \"git:" HEX40 "/docs\", \"at\": [ \"github:1\" ] } ] } }",
+                        "org.hold[0].id", "a hold with a segment");
+    expect_text_accepted(ORG_HEAD "\"parent\": { \"id\": \"git:" HEX40 "\", \"at\": [ \"github:1\" ] } } }",
+                         "a whole-repo parent");
+}
+
 static void references_by_url_or_local_id(void) {
     expect_text_refused(FILE_HEAD GITHUB_HOME ", \"dependencies\": [ { \"url\": \"https://github.com/a/b\", \"at\": [ "
                                               "\"github:1\" ], \"importName\": \"b\", \"commit\": \"" HEX40 "\" } ] }",
@@ -767,6 +776,7 @@ int main(void) {
     a_number_that_is_not_finite_is_refused_in_access();
     a_home_written_twice_over_is_refused();
     a_local_parent_or_hold_is_refused();
+    a_parent_or_hold_naming_a_part_of_a_repo_is_refused();
     references_by_url_or_local_id();
     write_refuses_a_struct_smaller_than_its_first_shape();
     format_one_reads_a_forge_id_from_the_left();

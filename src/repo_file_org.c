@@ -138,6 +138,11 @@ static naula_status read_reference_object(const cJSON *json, const member_path *
         member_path id_path = member_path_child(path, "id");
         return repo_file_refuse(refusal, &id_path, REFERENCE_FIX, "is local:, which can never hold an org's rules");
     }
+    if (status == NAULA_OK && reference->id != NULL && strchr(reference->id, '/') != NULL) {
+        member_path id_path = member_path_child(path, "id");
+        return repo_file_refuse(refusal, &id_path, REFERENCE_FIX,
+                                "names a part of a repo, where an org's rules are a whole repo");
+    }
     return status;
 }
 

@@ -22,7 +22,7 @@ extern "C" {
 /**
  * Another repo: an `id` with the places `at` to start looking, or a `url` alone. A `url` is accepted everywhere a
  * reference is, `parent` and `hold` included, since naming a repo by url is warned and never an error; a `local:` id
- * is refused in `parent` and `hold`, which name a rules repo that a home must confirm. In a file read by
+ * and an id with segments are refused in `parent` and `hold`, which name a whole rules repo that a home must confirm. In a file read by
  * naula_repo_file_parse_format_one, `id` is the format 1 text verbatim, segments included, and `at` its forge number.
  * First shape ends at `at_count`.
  */
