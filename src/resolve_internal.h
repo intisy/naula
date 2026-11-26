@@ -21,6 +21,7 @@ struct naula_session {
     naula_history history;
     const char *(*token_for)(void *context, const char *provider, const char *host);
     int (*accept_primary)(void *context, const char *id, const naula_place *was, const naula_place *becomes);
+    int (*accept_number)(void *context, const char *id, const naula_home *account, uint64_t was, uint64_t becomes);
     int offline;
     void *context;
 };
@@ -66,7 +67,17 @@ typedef struct candidate {
     int expanded;
     int holds_id;
     int in_closure;
+    const char *fix;
 } candidate;
+
+/** One account the session was asked about in this run, so each is asked once. */
+typedef struct number_answer {
+    const naula_home *account;
+    uint64_t found;
+    int accepted;
+} number_answer;
+
+#define NAULA_NUMBER_ANSWER_LIMIT 16u
 
 typedef struct resolver {
     naula_session *session;
@@ -83,6 +94,8 @@ typedef struct resolver {
     identity_cache *lineage;
     size_t lineage_count;
     size_t lineage_capacity;
+    number_answer answers[NAULA_NUMBER_ANSWER_LIMIT];
+    size_t answer_count;
 } resolver;
 
 /** The homes a readable candidate lists: its repo.json's, or a web home's document's. */
@@ -101,6 +114,17 @@ naula_status naula_resolver_add(resolver *subject, const naula_place *place, con
 naula_status naula_resolver_confirm(resolver *subject, size_t index, unsigned depth);
 
 void naula_resolver_release_candidates(resolver *subject);
+
+/**
+ * The distinct numbers the lineage holds for a listed account, at most `capacity`; more than that answers
+ * `capacity` + 1, which no caller settles. Nothing local orders two of them: a number and a confirmation time can both
+ * be forged, so more than one is asked of the session, never settled.
+ */
+size_t naula_resolver_lineage_numbers(const resolver *subject, const naula_home *home, uint64_t *numbers,
+                                      size_t capacity);
+
+/** The fix a refusal names when a lineage holds another number for an account that was not accepted. */
+#define NAULA_NUMBER_FIX "accept the new number through the session's accept_number to confirm the home again"
 
 naula_status naula_resolver_copy_place(const naula_place *from, naula_place *to);
 

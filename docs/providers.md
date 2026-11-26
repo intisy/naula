@@ -187,3 +187,20 @@ supports no `NAULA_OP_` operation, since a domain has no number to look up.
   or a blocked resolver, and reading it as dead would let whoever answers one DNS query silence a home that disowns a
   copy. The transport still marks the case in `naula_fetch_answer.host_unresolved`, which only picks the refusal code.
 - A document for another id is refused `document_for_another_id`; one that is not an identity document is MALFORMED.
+
+## Nothing local orders a re-registration
+
+When an account is deleted and registered again, the repository made there has a new number. A consumer with its
+own record refuses that number as `number-changed`. Two of an id's records can also disagree on an account's number,
+when one consumer's first contact took the new repository. Nothing on the machine says which number is the genuine
+one:
+
+- Numbers do not order it. GitHub does not document its repository ids as sequential, and a repository transferred
+  into the re-registered account keeps its older, lower number; Gitea and Forgejo number a repository when it is made,
+  which a transfer keeps too.
+- Confirmation times do not order it. A record written while the clock was behind carries early times, and a clock
+  behind now cannot tell a future time from a forged one.
+
+So a lineage that disagrees on an account's number is never settled by naula: the session's `accept_number` is asked,
+naming each number the lineage holds and the one found, and without an answer the home that lists the account stays
+unverifiable. A `web` home has no number and is never asked about.

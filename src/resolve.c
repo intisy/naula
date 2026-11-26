@@ -319,9 +319,10 @@ static int is_disqualified_baseline(const resolver *subject, size_t index) {
 
 /**
  * The former primary a new one is asked against, decided once confirmation is complete: this anchor's record's, or
- * with no record of its own the lineage's. `ask` is set when the lineage's records disagree or one of them was
- * disqualified by a refusal in this run, failing closed; `was` is then a former primary that differs from `becomes`
- * where there is one, never this run's own.
+ * with no record of its own the lineage's. `ask` is set when any lineage record's primary differs from `becomes`, or
+ * when a refusal in this run disqualified every lineage record that names one, failing closed; a disqualified record
+ * never vouches for a primary, but one that agrees with a qualified record does not ask on its own. `was` is a former
+ * primary that differs from `becomes` where there is one, never this run's own.
  */
 static void baseline_primary(const resolver *subject, const naula_place *becomes, const naula_place **was, int *ask) {
     *was = NULL;
@@ -333,6 +334,7 @@ static void baseline_primary(const resolver *subject, const naula_place *becomes
     }
     const naula_place *first = NULL;
     const naula_place *differing = NULL;
+    int qualified = 0;
     for (size_t index = 0; index < subject->lineage_count; index++) {
         const identity_cache *record = &subject->lineage[index];
         if (!record->has_primary) {
@@ -344,8 +346,9 @@ static void baseline_primary(const resolver *subject, const naula_place *becomes
             differing = differing == NULL ? primary : differing;
             *ask = 1;
         }
-        *ask |= is_disqualified_baseline(subject, index);
+        qualified += is_disqualified_baseline(subject, index) ? 0 : 1;
     }
+    *ask |= first != NULL && qualified == 0;
     *was = differing != NULL ? differing : first;
 }
 
@@ -420,26 +423,47 @@ static int is_reconfirmed(const resolver *subject, const cache_home *cached) {
     return 0;
 }
 
-static int holds_entry(const identity_cache *next, const cache_home *entry) {
+/** Whether `next` already holds a home for the account `entry` names, whatever its number. */
+static int holds_account(const identity_cache *next, const cache_home *entry) {
     for (size_t index = 0; index < next->count; index++) {
-        if (naula_resolver_same_place(&next->homes[index].place, next->homes[index].account, &entry->place,
-                                      entry->account)) {
+        const cache_home *held = &next->homes[index];
+        if (held->place.kind == NAULA_HOME_PROVIDER && entry->place.kind == NAULA_HOME_PROVIDER &&
+            strcmp(held->place.provider, entry->place.provider) == 0 &&
+            naula_resolver_same_host(held->place.provider, held->place.host, entry->place.host) &&
+            naula_resolver_equals_ignoring_case(held->account, entry->account)) {
             return 1;
         }
     }
     return 0;
 }
 
+static naula_home account_of(const cache_home *entry) {
+    naula_home home;
+    memset(&home, 0, sizeof home);
+    home.size = sizeof home;
+    home.kind = NAULA_HOME_PROVIDER;
+    home.provider = entry->place.provider;
+    home.host = entry->place.host;
+    home.account = entry->account;
+    return home;
+}
+
 /**
- * A first record for an `at` keeps, as guards, every account number its lineage held, so the protection the lineage
- * gave this run is not lost the moment the record exists and the lineage is no longer read.
+ * A first record for an `at` keeps, as guards, the one number its lineage holds for each account, so the protection
+ * the lineage gave this run is not lost the moment the record exists and the lineage is no longer read. An account the
+ * lineage holds more than one number for is left out, so a record never holds two numbers for one account.
  */
 static naula_status inherit_lineage(const resolver *subject, identity_cache *next) {
     for (size_t index = 0; index < subject->lineage_count; index++) {
         const identity_cache *record = &subject->lineage[index];
         for (size_t entry = 0; entry < record->count; entry++) {
             const cache_home *home = &record->homes[entry];
-            if (home->place.kind != NAULA_HOME_PROVIDER || home->account == NULL || holds_entry(next, home)) {
+            if (home->place.kind != NAULA_HOME_PROVIDER || home->account == NULL || holds_account(next, home)) {
+                continue;
+            }
+            naula_home account = account_of(home);
+            uint64_t numbers[2];
+            if (naula_resolver_lineage_numbers(subject, &account, numbers, 1) != 1) {
                 continue;
             }
             naula_status status = copy_cache_entry(home, CACHE_GUARD, &next->homes[next->count++]);
@@ -484,7 +508,8 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
         }
     }
     for (size_t entry = 0; entry < subject->cache.count; entry++) {
-        if (is_reconfirmed(subject, &subject->cache.homes[entry])) {
+        const cache_home *kept = &subject->cache.homes[entry];
+        if (is_reconfirmed(subject, kept) || holds_account(next, kept)) {
             continue;
         }
         naula_status status = copy_cache_entry(&subject->cache.homes[entry], CACHE_GUARD, &next->homes[next->count++]);
@@ -495,12 +520,46 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
     return inherit_lineage(subject, next);
 }
 
+/**
+ * Whether a first record would drop an account its lineage holds more than one number for: the record holds no number
+ * for it, and once it existed the lineage would no longer be read, so the dispute would be forgotten rather than asked.
+ */
+static int leaves_a_dispute_open(const resolver *subject, const identity_cache *next) {
+    if (subject->cache.present) {
+        return 0;
+    }
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        const identity_cache *record = &subject->lineage[index];
+        for (size_t entry = 0; entry < record->count; entry++) {
+            const cache_home *home = &record->homes[entry];
+            if (home->place.kind != NAULA_HOME_PROVIDER || home->account == NULL || holds_account(next, home)) {
+                continue;
+            }
+            naula_home account = account_of(home);
+            uint64_t numbers[2];
+            if (naula_resolver_lineage_numbers(subject, &account, numbers, 1) > 1) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static naula_status write_cache(const resolver *subject, size_t primary, naula_resolution *resolution) {
     if (subject->session->cache_directory == NULL) {
         return NAULA_OK;
     }
+
     identity_cache next;
     naula_status status = build_cache(subject, primary, &next);
+    if (status == NAULA_OK && leaves_a_dispute_open(subject, &next)) {
+        snprintf(resolution->cache_problem, sizeof resolution->cache_problem,
+                 "the records this at grew from hold different numbers for an account no home here settled, so no "
+                 "record of %s is written until a number is accepted",
+                 subject->id_text);
+        naula_cache_release(&next);
+        return NAULA_OK;
+    }
     if (status == NAULA_OK && !subject->cache.foreign) {
         status = naula_cache_write(subject->session->cache_directory, subject->hex, subject->anchor, &next,
                                    resolution->cache_problem);
@@ -601,7 +660,8 @@ static naula_status answer_unconfirmed(const resolver *subject, naula_resolution
     char text[PLACE_TEXT_SIZE];
     naula_candidate_text(decisive, text, sizeof text);
     status = status_for(subject, decisive);
-    naula_refuse(refusal, decisive->code, is_unheard(decisive) ? NETWORK_FIX : HOME_FIX, "%s: %s", text,
+    const char *fix = decisive->fix != NULL ? decisive->fix : (is_unheard(decisive) ? NETWORK_FIX : HOME_FIX);
+    naula_refuse(refusal, decisive->code, fix, "%s: %s", text,
                  decisive->detail);
     return status;
 }
@@ -798,7 +858,10 @@ static naula_status read_cache(resolver *subject, const naula_reference *referen
         status = naula_cache_read(directory, subject->hex, subject->anchor, subject->at_texts, subject->at_text_count,
                                   &subject->cache, resolution->cache_problem);
     }
-    return status == NAULA_OK ? read_lineage(subject) : status;
+    if (status == NAULA_OK) {
+        status = read_lineage(subject);
+    }
+    return status;
 }
 
 static naula_status resolve_with(resolver *subject, const naula_reference *reference, naula_resolution *resolution,

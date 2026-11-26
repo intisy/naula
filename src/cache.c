@@ -552,9 +552,44 @@ static naula_status replace_with(const char *directory, char *path, char *text, 
     return status;
 }
 
+static int same_text_ignoring_case(const char *left, const char *right) {
+    if (left == NULL || right == NULL) {
+        return left == right;
+    }
+    for (; *left != '\0' && *right != '\0'; left++, right++) {
+        char lower_left = (*left >= 'A' && *left <= 'Z') ? (char)(*left + ('a' - 'A')) : *left;
+        char lower_right = (*right >= 'A' && *right <= 'Z') ? (char)(*right + ('a' - 'A')) : *right;
+        if (lower_left != lower_right) {
+            return 0;
+        }
+    }
+    return *left == *right;
+}
+
+/** Whether two homes of `cache` name one account with different numbers, which no record may hold. */
+static int holds_two_numbers_for_an_account(const identity_cache *cache) {
+    for (size_t one = 0; one < cache->count; one++) {
+        const cache_home *left = &cache->homes[one];
+        for (size_t other = one + 1; left->place.kind == NAULA_HOME_PROVIDER && other < cache->count; other++) {
+            const cache_home *right = &cache->homes[other];
+            if (right->place.kind == NAULA_HOME_PROVIDER && strcmp(left->place.provider, right->place.provider) == 0 &&
+                same_text_ignoring_case(left->place.host, right->place.host) &&
+                same_text_ignoring_case(left->account, right->account) &&
+                left->place.number != right->place.number) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 naula_status naula_cache_write(const char *directory, const char *hex, const char *anchor, const identity_cache *cache,
                                char *problem) {
     if (cache->count == 0 || cache->foreign) {
+        return NAULA_OK;
+    }
+    if (holds_two_numbers_for_an_account(cache)) {
+        say(problem, "the cache record for git:%s would hold two numbers for one account and was not written", hex);
         return NAULA_OK;
     }
     unsigned char *kept = naula_memory_allocate(cache->count);

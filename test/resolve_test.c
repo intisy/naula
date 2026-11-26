@@ -352,6 +352,21 @@ static const char *fake_token(void *context, const char *provider, const char *h
     return strcmp(provider, "forge") == 0 ? TOKEN : NULL;
 }
 
+static int number_answer;
+static int number_calls;
+static uint64_t number_was;
+static uint64_t number_becomes;
+
+static int fake_accept_number(void *context, const char *id, const naula_home *account, uint64_t was,
+                              uint64_t becomes) {
+    (void)context;
+    CHECK(strncmp(id, "git:", 4) == 0 && account->account != NULL);
+    number_calls++;
+    number_was = was;
+    number_becomes = becomes;
+    return number_answer;
+}
+
 static int fake_accept(void *context, const char *id, const naula_place *was, const naula_place *becomes) {
     (void)context;
     accept_calls++;
@@ -457,6 +472,7 @@ static naula_session *open_session(const char *cache, int offline, const naula_h
     options.history = history;
     options.token_for = fake_token;
     options.accept_primary = fake_accept;
+    options.accept_number = fake_accept_number;
     options.offline = offline;
     naula_session *session = NULL;
     CHECK(naula_session_open(&options, &session, NULL) == NAULA_OK);
@@ -1768,6 +1784,153 @@ static void a_settled_home_read_later_releases_its_file(void) {
     naula_resolution_release(&resolution);
 }
 
+static int is_number_character(char character) {
+    return (character >= '0' && character <= '9') || character == '.' || character == 'e' || character == 'E' ||
+           character == '+' || character == '-';
+}
+
+/**
+ * Rewrites every confirmation time in the record at `path` to `replacement`, a whole number in microseconds.
+ *
+ * @implNote The writer may print a time with an exponent (`1.764123456789e+15`) when that form reads back exactly,
+ * so the whole number token is replaced, never its digits one by one.
+ */
+static void rewrite_confirmation_times(const char *path, const char *replacement) {
+    static char rewritten[65536];
+    char *text = read_text_file(path);
+    CHECK(text != NULL);
+    if (text == NULL) {
+        return;
+    }
+    const char *marker = "\"confirmed\":";
+    size_t used = 0;
+    const char *from = text;
+    for (const char *at = strstr(from, marker); at != NULL; at = strstr(from, marker)) {
+        at += strlen(marker);
+        used += (size_t)snprintf(rewritten + used, sizeof rewritten - used, "%.*s%s", (int)(at - from), from,
+                                 replacement);
+        while (is_number_character(*at)) {
+            at++;
+        }
+        from = at;
+    }
+    snprintf(rewritten + used, sizeof rewritten - used, "%s", from);
+    write_text_file(path, rewritten);
+    naula_memory_release(text);
+}
+
+/**
+ * A victim's record holds bee at 20; bee is deleted and re-registered holding `replacement`; an install with
+ * at=[replacement, 30] makes first contact with it. The victim's edited at=[10, 30] then has a lineage that disagrees
+ * on bee's number. `genuine_lists_bee` 0 drops bee from the genuine homes for the first runs.
+ */
+static void a_disagreeing_lineage(const char *name, uint64_t replacement, int genuine_lists_bee, char *cache,
+                                  size_t size, fake_repo **alpha, fake_repo **gamma) {
+    naula_resolution resolution;
+    naula_refusal refusal;
+    char install[32];
+    cache_directory(name, cache, size);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+    *alpha = add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    *gamma = add_repo(NULL, 30, "gamma", "lib", genuine);
+    accept_answer = 0;
+    number_answer = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, replacement, "bee", "lib", genuine);
+    snprintf(install, sizeof install, "forge:%llu", (unsigned long long)replacement);
+    accept_answer = 1;
+    resolve_once(cache, ID, install, "forge:30", &resolution, &refusal);
+    naula_resolution_release(&resolution);
+    accept_answer = 0;
+    if (!genuine_lists_bee) {
+        const char *dropped = repo_file("lib", HOME("alpha") "," HOME("gamma"), NULL);
+        (*alpha)->development = dropped;
+        (*gamma)->development = dropped;
+    }
+    number_calls = 0;
+}
+
+static void expect_number_asked(const char *label, naula_status status, const naula_refusal *refusal,
+                                const naula_resolution *resolution, uint64_t replacement, int calls) {
+    if (has_home(resolution, NULL, replacement) || status == NAULA_OK || number_calls != calls ||
+        number_was != 20 || number_becomes != replacement ||
+        refusal->fix == NULL || strstr(refusal->fix, "accept_number") == NULL) {
+        fprintf(stderr, "%s: answered %d (%s), %d questions (was %llu becomes %llu), %s\n", label, (int)status,
+                refusal->code, number_calls, (unsigned long long)number_was, (unsigned long long)number_becomes,
+                has_home(resolution, NULL, replacement) ? "the re-registered bee is a home" : "bee refused");
+        check_failures++;
+    }
+}
+
+static void a_lineage_that_disagrees_on_a_number_asks(void) {
+    char cache[512];
+    fake_repo *alpha = NULL;
+    fake_repo *gamma = NULL;
+    naula_resolution resolution;
+    naula_refusal refusal;
+    static const uint64_t replacements[3] = {21, 3, 3};
+    static const char *const names[3] = {"asked-newer", "asked-older", "asked-older-clock-behind"};
+    for (int scenario = 0; scenario < 3; scenario++) {
+        a_disagreeing_lineage(names[scenario], replacements[scenario], 1, cache, sizeof cache, &alpha, &gamma);
+        if (scenario == 2) {
+            char install[32];
+            char path[1024];
+            snprintf(install, sizeof install, "forge:%llu", (unsigned long long)replacements[scenario]);
+            const char *at[2] = {install, "forge:30"};
+            naula_place places[2];
+            char anchor[NAULA_CACHE_ANCHOR_SIZE];
+            for (size_t index = 0; index < 2; index++) {
+                memset(&places[index], 0, sizeof places[index]);
+                places[index].size = sizeof places[index];
+                CHECK(naula_place_parse(at[index], &places[index], NULL) == NAULA_OK);
+            }
+            CHECK(naula_cache_anchor(places, 2, anchor) == NAULA_OK);
+            naula_place_release(&places[0]);
+            naula_place_release(&places[1]);
+            snprintf(path, sizeof path, "%s/identities/%s-%s.json", cache, X, anchor);
+            rewrite_confirmation_times(path, "1000000000");
+        }
+        for (int run = 1; run <= 2; run++) {
+            naula_status status = resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+            expect_number_asked(names[scenario], status, &refusal, &resolution, replacements[scenario], run);
+            naula_resolution_release(&resolution);
+        }
+    }
+
+    a_disagreeing_lineage("asked-accepted", 21, 1, cache, sizeof cache, &alpha, &gamma);
+    number_answer = 1;
+    CHECK(resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal) == NAULA_OK);
+    CHECK(has_home(&resolution, NULL, 21) && number_calls == 1);
+    naula_resolution_release(&resolution);
+    number_answer = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal) == NAULA_OK);
+    CHECK(has_home(&resolution, NULL, 21) && number_calls == 1);
+    naula_resolution_release(&resolution);
+}
+
+static void a_record_never_forgets_a_number_its_lineage_disputes(void) {
+    char cache[512];
+    fake_repo *alpha = NULL;
+    fake_repo *gamma = NULL;
+    naula_resolution resolution;
+    naula_refusal refusal;
+    a_disagreeing_lineage("dispute-kept", 21, 0, cache, sizeof cache, &alpha, &gamma);
+    CHECK(resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal) == NAULA_OK);
+    CHECK(!has_home(&resolution, NULL, 21) && strstr(resolution.cache_problem, "until a number is accepted") != NULL);
+    naula_resolution_release(&resolution);
+    const char *relisted = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+    alpha->development = relisted;
+    gamma->development = relisted;
+    naula_status status = resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+    expect_number_asked("a dispute kept until bee is listed again", status, &refusal, &resolution, 21, 1);
+    naula_resolution_release(&resolution);
+}
+
 static void records_that_disagree_on_the_primary_ask(void) {
     char cache[512];
     naula_resolution resolution;
@@ -2315,6 +2478,8 @@ int main(void) {
     a_refusal_never_lifts_a_lineage_guard_whatever_the_order();
     a_home_refused_before_it_is_read_is_released_and_unheard();
     a_settled_home_read_later_releases_its_file();
+    a_lineage_that_disagrees_on_a_number_asks();
+    a_record_never_forgets_a_number_its_lineage_disputes();
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();
