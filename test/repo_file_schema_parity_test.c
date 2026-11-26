@@ -439,8 +439,9 @@ static void every_document_has_one_verdict(const cJSON *schema, const cJSON *doc
 
 /** Each of these reads differently over bytes than ECMA-262 reads it over code points, or is outside the subset. */
 static void the_pattern_engine_refuses_what_it_cannot_read(void) {
-    static const char *const refused[] = {"\\s",       "\\S",      "[\\s]",    "\\x80", "[\\xff]", "\xc3\xa9",
-                                          "[\xc3\xa9]", "[^a]",     "[^a]{2}",  "[^a]?",  ".",       "a*?",
+    static const char *const refused[] = {"\\s",       "\\S",           "[\\s]",        "\\x80",  "\\x80*",
+                                          "[\\xff]+",   "[\\x00-\\x80]+", "\xc3\xa9",      "\xc3*\xa9*", "[\xc3\xa9]+",
+                                          "[^a]",       "[^a]{2}",       "[^a]?",        ".",      "a*?",
                                           "\\w",        "(?<=a)b"};
     static const char *const compiled[] = {"^[^a]*$", "^[^a]+$", "^[\\x00-\\x7f]{2}$", "^\\d{3}$"};
     for (size_t index = 0; index < sizeof refused / sizeof refused[0]; index++) {
