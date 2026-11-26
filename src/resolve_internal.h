@@ -102,6 +102,13 @@ naula_status naula_resolver_confirm(resolver *subject, size_t index, unsigned de
 
 void naula_resolver_release_candidates(resolver *subject);
 
+/**
+ * The number the lineage holds for a listed account: 0 when no lineage record holds it, 1 with `number` when the
+ * records agree or one number was confirmed strictly earliest, which a re-registration never is, since it can only
+ * follow the genuine confirmation, and 2 when the earliest confirmations tie on different numbers, failing closed.
+ */
+int naula_resolver_lineage_number(const resolver *subject, const naula_home *home, uint64_t *number);
+
 naula_status naula_resolver_copy_place(const naula_place *from, naula_place *to);
 
 int naula_resolver_same_place(const naula_place *left, const char *left_account, const naula_place *right,

@@ -1768,6 +1768,55 @@ static void a_settled_home_read_later_releases_its_file(void) {
     naula_resolution_release(&resolution);
 }
 
+/**
+ * An install with at=[21, 30] makes first contact with the re-registered bee (21) and becomes lineage for the
+ * victim's edited at=[10, 30] beside the victim's own record (bee 20). `genuine_lists_bee` 0 then drops bee from the
+ * genuine homes, so only what the victim's first record inherited can protect it later.
+ */
+static void a_later_first_contact_never_denies_an_edited_at(int genuine_lists_bee) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory(genuine_lists_bee ? "earliest-wins" : "earliest-inherited", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+    fake_repo *alpha = add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    fake_repo *gamma = add_repo(NULL, 30, "gamma", "lib", genuine);
+    accept_answer = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    resolve_once(cache, ID, "forge:21", "forge:30", &resolution, &refusal);
+    naula_resolution_release(&resolution);
+    if (!genuine_lists_bee) {
+        const char *dropped = repo_file("lib", HOME("alpha") "," HOME("gamma"), NULL);
+        alpha->development = dropped;
+        gamma->development = dropped;
+    }
+    for (int run = 1; run <= 3; run++) {
+        naula_status status = resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+        if (status != NAULA_OK || has_home(&resolution, NULL, 21)) {
+            fprintf(stderr, "%s, run %d: the edited at answered %d (%s), 21 %s\n",
+                    genuine_lists_bee ? "a later first contact" : "an inherited number", run, (int)status,
+                    refusal.code, has_home(&resolution, NULL, 21) ? "a home" : "refused");
+            check_failures++;
+        }
+        naula_resolution_release(&resolution);
+    }
+    if (!genuine_lists_bee) {
+        const char *relisted = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+        alpha->development = relisted;
+        gamma->development = relisted;
+        CHECK(resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal) == NAULA_OK);
+        CHECK(!has_home(&resolution, NULL, 21));
+        CHECK(verdict_is(&resolution, NULL, 21, "number-changed", 0));
+        naula_resolution_release(&resolution);
+    }
+}
+
 static void records_that_disagree_on_the_primary_ask(void) {
     char cache[512];
     naula_resolution resolution;
@@ -2315,6 +2364,8 @@ int main(void) {
     a_refusal_never_lifts_a_lineage_guard_whatever_the_order();
     a_home_refused_before_it_is_read_is_released_and_unheard();
     a_settled_home_read_later_releases_its_file();
+    a_later_first_contact_never_denies_an_edited_at(1);
+    a_later_first_contact_never_denies_an_edited_at(0);
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();

@@ -557,12 +557,49 @@ static int record_number(const identity_cache *record, const naula_home *home, u
     return found;
 }
 
+int naula_resolver_lineage_number(const resolver *subject, const naula_home *home, uint64_t *number) {
+    int any = 0;
+    int all_same = 1;
+    int tie = 0;
+    uint64_t first = 0;
+    uint64_t earliest_number = 0;
+    int64_t earliest = 0;
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        const identity_cache *record = &subject->lineage[index];
+        for (size_t entry = 0; entry < record->count; entry++) {
+            const cache_home *cached = &record->homes[entry];
+            if (!guards_account(cached, home)) {
+                continue;
+            }
+            if (!any) {
+                any = 1;
+                first = earliest_number = cached->place.number;
+                earliest = cached->confirmed;
+                continue;
+            }
+            all_same &= cached->place.number == first;
+            if (cached->confirmed < earliest) {
+                earliest = cached->confirmed;
+                earliest_number = cached->place.number;
+                tie = 0;
+            } else if (cached->confirmed == earliest && cached->place.number != earliest_number) {
+                tie = 1;
+            }
+        }
+    }
+    if (!any) {
+        return 0;
+    }
+    *number = all_same ? first : earliest_number;
+    return all_same || !tie ? 1 : 2;
+}
+
 /**
  * The number a listed account was confirmed at: this anchor's own record's, its confirmed home before its guards,
- * or with none, the one every lineage record that holds the account agrees on. The lineage is fixed before any home
- * is weighed, and its numbers refuse a different number for the whole run whatever else the run refuses. `disagree`
- * is set when the record's guards or the lineage's records hold different numbers, which refuses every number for
- * the account, failing closed.
+ * or with none, the lineage's settled number. The lineage is fixed before any home is weighed, and its numbers
+ * refuse a different number for the whole run whatever else the run refuses. `disagree` is set when the record's
+ * guards hold different numbers, or the lineage's cannot be settled, which refuses every number for the account,
+ * failing closed.
  */
 static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number, int *disagree) {
     *disagree = 0;
@@ -578,19 +615,9 @@ static int cache_number(const resolver *subject, const naula_home *home, uint64_
         *disagree = holds == 2;
         return holds != 0;
     }
-    int known = 0;
-    for (size_t index = 0; index < subject->lineage_count; index++) {
-        uint64_t held = 0;
-        int holds = record_number(&subject->lineage[index], home, &held);
-        if (holds == 2 || (holds == 1 && known && held != *number)) {
-            *disagree = 1;
-        }
-        if (holds == 1 && !known) {
-            *number = held;
-            known = 1;
-        }
-    }
-    return known || *disagree;
+    int settled = naula_resolver_lineage_number(subject, home, number);
+    *disagree = settled == 2;
+    return settled != 0;
 }
 
 /**
