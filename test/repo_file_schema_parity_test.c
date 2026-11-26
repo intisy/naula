@@ -221,30 +221,59 @@ static void check_reference_stands_alone(const cJSON *schema, const char *locati
     }
 }
 
-/**
- * A condition (an `if`, `then` or `else`, or a branch of `oneOf`, `anyOf` or `allOf`) tests or adds to the object its
- * parent shapes, so it states a type for strict validators without closing the object a second time.
- */
-static int is_condition(const char *location) {
-    static const char *const condition_steps[] = {"/if", "/then", "/else"};
-    static const char *const combination_steps[] = {"/oneOf/", "/anyOf/", "/allOf/"};
+static int is_if_then_or_else(const char *location) {
+    static const char *const steps[] = {"/if", "/then", "/else"};
     const char *last = strrchr(location, '/');
-    for (size_t index = 0; last != NULL && index < 3; index++) {
-        if (strcmp(last, condition_steps[index]) == 0) {
-            return 1;
-        }
-        size_t length = strlen(combination_steps[index]);
-        if ((size_t)(last - location) + 1 >= length &&
-            strncmp(last + 1 - length, combination_steps[index], length) == 0) {
+    for (size_t index = 0; last != NULL && index < sizeof steps / sizeof steps[0]; index++) {
+        if (strcmp(last, steps[index]) == 0) {
             return 1;
         }
     }
     return 0;
 }
 
+static int is_combinator_branch(const char *location) {
+    static const char *const steps[] = {"/oneOf/", "/anyOf/", "/allOf/"};
+    const char *last = strrchr(location, '/');
+    for (size_t index = 0; last != NULL && index < sizeof steps / sizeof steps[0]; index++) {
+        size_t length = strlen(steps[index]);
+        if ((size_t)(last - location) + 1 >= length && strncmp(last + 1 - length, steps[index], length) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** `{}` declares a name for strict validators and `{"not": {}}` forbids it; neither shapes what the member holds. */
+static int is_trivial_member(const cJSON *member) {
+    const cJSON *forbidding = cJSON_GetObjectItemCaseSensitive(member, "not");
+    int keywords = cJSON_GetArraySize(member);
+    return cJSON_IsObject(member) &&
+           (keywords == 0 || (keywords == 1 && cJSON_IsObject(forbidding) && cJSON_GetArraySize(forbidding) == 0));
+}
+
+static int names_only_trivial_members(const cJSON *schema) {
+    const cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema, "properties");
+    for (const cJSON *member = properties == NULL ? NULL : properties->child; member != NULL; member = member->next) {
+        if (!is_trivial_member(member)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/**
+ * A condition tests or adds to the object its parent shapes, so it states a type for strict validators without closing
+ * that object again: every `if`, `then` and `else`, and a combinator branch whose members are only named or forbidden.
+ * A branch that shapes a member is an object of its own and must be closed.
+ */
+static int is_condition(const cJSON *schema, const char *location) {
+    return is_if_then_or_else(location) || (is_combinator_branch(location) && names_only_trivial_members(schema));
+}
+
 static void check_object_is_closed(const cJSON *schema, const char *location) {
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(schema, "type");
-    if (cJSON_IsString(type) && strcmp(type->valuestring, "object") == 0 && !is_condition(location) &&
+    if (cJSON_IsString(type) && strcmp(type->valuestring, "object") == 0 && !is_condition(schema, location) &&
         cJSON_GetObjectItemCaseSensitive(schema, "additionalProperties") == NULL) {
         fprintf(stderr, "%s is an object that leaves additionalProperties open\n", location[0] == '\0' ? "/" : location);
         check_failures++;
