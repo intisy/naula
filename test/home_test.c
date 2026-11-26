@@ -5,6 +5,7 @@
 #include "cJSON.h"
 #include "naula/home.h"
 #include "naula/json.h"
+#include "naula/memory.h"
 
 static naula_status parse_home(const char *json_text, naula_home *home, naula_refusal *refusal) {
     cJSON *json = cJSON_Parse(json_text);
@@ -157,8 +158,35 @@ static void a_place_without_a_readable_number_is_refused(void) {
     expect_place_refused("http://git.example.org/a/b.git");
 }
 
+static void check_place_text(uint32_t kind, const char *provider, const char *host, uint64_t number,
+                             const char *where, const char *expected) {
+    naula_place place;
+    memset(&place, 0, sizeof place);
+    place.size = sizeof place;
+    place.kind = kind;
+    place.provider = (char *)provider;
+    place.host = (char *)host;
+    place.number = number;
+    place.domain = kind == NAULA_HOME_WEB ? (char *)where : NULL;
+    place.url = kind == NAULA_HOME_URL ? (char *)where : NULL;
+    char *text = naula_place_text(&place);
+    check_text(text, expected, expected);
+    naula_memory_release(text);
+}
+
+static void a_place_reads_as_its_normal_text(void) {
+    check_place_text(NAULA_HOME_PROVIDER, "github", NULL, 1222336612u, NULL, "github:1222336612");
+    check_place_text(NAULA_HOME_PROVIDER, "github", "GitHub.com", 7, NULL, "github:7");
+    check_place_text(NAULA_HOME_PROVIDER, "github", "ghe.Example.com", 7, NULL, "github@ghe.example.com:7");
+    check_place_text(NAULA_HOME_PROVIDER, "gitea", "Git.Example.com:3000", 12, NULL, "gitea@git.example.com:3000:12");
+    check_place_text(NAULA_HOME_PROVIDER, "gitea", "github.com", 12, NULL, "gitea@github.com:12");
+    check_place_text(NAULA_HOME_WEB, NULL, NULL, 0, "Naula.Dev", "web:naula.dev");
+    check_place_text(NAULA_HOME_URL, NULL, NULL, 0, "https://Git.Example.org/A/b.git", "https://Git.Example.org/A/b.git");
+}
+
 int main(void) {
     naula_json_use_allocator();
+    a_place_reads_as_its_normal_text();
     a_github_account_home_parses();
     a_forgejo_home_keeps_its_host();
     a_web_home_parses();

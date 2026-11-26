@@ -12,6 +12,10 @@ A C library and command line that lays out, identifies and renames git repos fro
   `NAULA_OUT_OF_MEMORY`, never one for the other. It keeps a duplicated key as often as it is written, so the repo
   file reader refuses one; `naula_json_parse_keeping_last_value` keeps its first position and last value, as
   JavaScript's `JSON.parse` does. `naula_json_is_valid_utf8` and `naula_json_is_grammar` are the two checks alone.
+- **Ids and places** (`naula/id.h`, `naula/home.h`): `naula_id_parse` reads `git:<hex>` or `local:<name>` with
+  path segments, and `naula_id_is_valid` answers the same question without allocating. `naula_place_parse` reads a
+  place, and `naula_place_text` writes it in the normal form an `at` is kept in, hosts and domains lowercased and
+  GitHub's own host left out.
 - **The resolver** (`naula/resolve.h`, `naula/session.h`, `naula/history.h`): from a dependency's `{ id, at }` to the
   homes that speak for that id. Trust starts at the numbers `at` holds, never at a name, and the answer is every home
   linked both ways to the first of them that confirms. The cache keeps one record per normalised `at`, named by its

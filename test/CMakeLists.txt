@@ -20,7 +20,7 @@ if(NOT EXISTS "${NAULA_CONFORMANCE_DIR}/vectors/standard/identity")
 endif()
 
 naula_test(id_test)
-target_link_libraries(id_test PRIVATE naula naula_allocator)
+target_link_libraries(id_test PRIVATE naula naula_allocator_counting)
 target_compile_definitions(id_test PRIVATE NAULA_IDENTITY_VECTORS="${NAULA_CONFORMANCE_DIR}/vectors/standard/identity")
 
 naula_test(transport_sink_test)

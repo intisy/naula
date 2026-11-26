@@ -13,7 +13,6 @@
 
 #define CACHE_TEXT_LIMIT 255u
 #define CACHE_AT_TEXT_LIMIT 2048u
-#define PLACE_TEXT_SIZE 2304
 #define LARGEST_EXACT_INTEGER 9007199254740991.0
 
 static void say(char *problem, const char *format, ...) {
@@ -72,39 +71,6 @@ int naula_cache_is_temporary_name(const char *name) {
     return rest != NULL && length >= 4 && strcmp(rest + length - 4, ".tmp") == 0;
 }
 
-static void lowercase(char *text) {
-    for (; *text != '\0'; text++) {
-        if (*text >= 'A' && *text <= 'Z') {
-            *text = (char)(*text + ('a' - 'A'));
-        }
-    }
-}
-
-/** GitHub's own host may be written or left out of a GitHub place, so it is always left out. */
-static char *normal_place_text(const naula_place *place) {
-    char text[PLACE_TEXT_SIZE];
-    char host[300];
-    if (place->kind == NAULA_HOME_WEB) {
-        snprintf(text, sizeof text, "web:%s", place->domain);
-        lowercase(text);
-    } else if (place->kind == NAULA_HOME_URL) {
-        snprintf(text, sizeof text, "%s", place->url);
-    } else {
-        snprintf(host, sizeof host, "%s", place->host == NULL ? "" : place->host);
-        lowercase(host);
-        if (strcmp(place->provider, "github") == 0 && strcmp(host, "github.com") == 0) {
-            host[0] = '\0';
-        }
-        snprintf(text, sizeof text, "%s%s%s:%llu", place->provider, host[0] == '\0' ? "" : "@", host,
-                 (unsigned long long)place->number);
-    }
-    return naula_memory_duplicate_text(text);
-}
-
-char *naula_cache_place_text(const naula_place *place) {
-    return normal_place_text(place);
-}
-
 static int compare_texts(const void *left, const void *right) {
     return strcmp(*(const char *const *)left, *(const char *const *)right);
 }
@@ -124,7 +90,7 @@ naula_status naula_cache_normal_at(const naula_place *places, size_t count, char
         return NAULA_OUT_OF_MEMORY;
     }
     for (size_t index = 0; index < count; index++) {
-        made[index] = normal_place_text(&places[index]);
+        made[index] = naula_place_text(&places[index]);
         if (made[index] == NULL) {
             naula_cache_release_texts(made, index);
             return NAULA_OUT_OF_MEMORY;

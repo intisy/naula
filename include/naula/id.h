@@ -32,6 +32,9 @@ typedef struct naula_id {
  */
 naula_status naula_id_parse(const char *text, size_t length, naula_id *id, naula_refusal *refusal);
 
+/** Whether naula_id_parse would accept `text`, answered without allocating. */
+int naula_id_is_valid(const char *text, size_t length);
+
 void naula_id_release(naula_id *id);
 
 /** -1, 0 or 1: a local id before a git id, then by name or hex text, then segment by segment, a prefix first. */

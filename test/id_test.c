@@ -8,6 +8,7 @@
 
 #include "check.h"
 #include "cJSON.h"
+#include "memory_testing.h"
 #include "naula/id.h"
 #include "naula/json.h"
 
@@ -154,6 +155,12 @@ static void expect_parse(const char *name, const char *text, const cJSON *then) 
         CHECK(id.kind == 0 && id.local_name == NULL && id.segments == NULL);
     }
     naula_id_release(&id);
+    naula_memory_fail_at(0);
+    if (naula_id_is_valid(text, strlen(text)) != valid) {
+        fprintf(stderr, "%s: naula_id_is_valid disagrees with the vector\n", name);
+        check_failures++;
+    }
+    CHECK(naula_memory_attempts() == 0);
 }
 
 static void run_vector(const char *file_name) {
@@ -217,6 +224,10 @@ static void length_bounds_the_text_read(void) {
     CHECK(naula_id_parse("local:stubby", 10, &id, NULL) == NAULA_OK);
     check_text(id.local_name, "stub", "length-bounded name");
     naula_id_release(&id);
+    CHECK(naula_id_is_valid("local:stub/", 10));
+    CHECK(!naula_id_is_valid("local:stub/", 11));
+    CHECK(!naula_id_is_valid("local:a\0b", 9));
+    CHECK(!naula_id_is_valid(NULL, 0));
 }
 
 int main(void) {

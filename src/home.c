@@ -1,6 +1,7 @@
 #include "naula/home.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "naula/memory.h"
@@ -11,6 +12,8 @@
 #define URL_LIMIT 2048u
 #define NUMBER_DIGITS_LIMIT 19u
 #define PORT_DIGITS_LIMIT 5u
+#define PLACE_TEXT_SIZE 2304
+#define PLACE_HOST_SIZE 300
 
 static const char *const HOME_FIX =
     "write the home as { \"provider\", \"account\" }, { \"provider\": \"web\", \"domain\" } or { \"url\": \"https://...\" }";
@@ -394,4 +397,32 @@ naula_status naula_place_parse(const char *text, naula_place *place, naula_refus
         naula_place_release(place);
     }
     return status;
+}
+
+static void lowercase(char *text) {
+    for (; *text != '\0'; text++) {
+        if (*text >= 'A' && *text <= 'Z') {
+            *text = (char)(*text + ('a' - 'A'));
+        }
+    }
+}
+
+char *naula_place_text(const naula_place *place) {
+    char text[PLACE_TEXT_SIZE];
+    char host[PLACE_HOST_SIZE];
+    if (place->kind == NAULA_HOME_WEB) {
+        snprintf(text, sizeof text, "web:%s", place->domain);
+        lowercase(text);
+    } else if (place->kind == NAULA_HOME_URL) {
+        snprintf(text, sizeof text, "%s", place->url);
+    } else {
+        snprintf(host, sizeof host, "%s", place->host == NULL ? "" : place->host);
+        lowercase(host);
+        if (strcmp(place->provider, "github") == 0 && strcmp(host, "github.com") == 0) {
+            host[0] = '\0';
+        }
+        snprintf(text, sizeof text, "%s%s%s:%llu", place->provider, host[0] == '\0' ? "" : "@", host,
+                 (unsigned long long)place->number);
+    }
+    return naula_memory_duplicate_text(text);
 }
