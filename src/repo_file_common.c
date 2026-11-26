@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "json_document.h"
+#include "naula/json.h"
 #include "naula/memory.h"
 #include "repo_file_internal.h"
 

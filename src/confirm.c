@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include "cJSON.h"
-#include "json_document.h"
+#include "naula/json.h"
 #include "naula/id.h"
 #include "naula/memory.h"
 #include "resolve_internal.h"

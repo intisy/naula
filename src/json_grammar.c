@@ -1,6 +1,6 @@
 #include <string.h>
 
-#include "json_document.h"
+#include "naula/json.h"
 
 typedef struct cursor {
     const unsigned char *text;

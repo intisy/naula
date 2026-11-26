@@ -7,6 +7,11 @@ A C library and command line that lays out, identifies and renames git repos fro
 - **One allocator** (`naula/memory.h`): every allocation in shipped code goes through `naula_memory_allocate` and its
   family. `naula` carries no allocator itself: each final binary links exactly one of `naula_allocator` and the
   test-only `naula_allocator_counting`, and the configure refuses a plain `malloc` anywhere else in `src/`.
+- **Strict JSON** (`naula/json.h`): `naula_json_parse` reads bytes only as JSON itself does (well-formed UTF-8,
+  JSON's grammar, no NUL, no deeper nesting than cJSON reads) and tells `NAULA_MALFORMED` from
+  `NAULA_OUT_OF_MEMORY`, never one for the other. It keeps a duplicated key as often as it is written, so the repo
+  file reader refuses one; `naula_json_parse_keeping_last_value` keeps its first position and last value, as
+  JavaScript's `JSON.parse` does. `naula_json_is_valid_utf8` and `naula_json_is_grammar` are the two checks alone.
 - **The resolver** (`naula/resolve.h`, `naula/session.h`, `naula/history.h`): from a dependency's `{ id, at }` to the
   homes that speak for that id. Trust starts at the numbers `at` holds, never at a name, and the answer is every home
   linked both ways to the first of them that confirms. The cache keeps one record per normalised `at`, named by its

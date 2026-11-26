@@ -7,7 +7,7 @@
 #include "cJSON.h"
 #include "cache_internal.h"
 #include "forge_common.h"
-#include "json_document.h"
+#include "naula/json.h"
 #include "naula/memory.h"
 #include "naula/sha256.h"
 
