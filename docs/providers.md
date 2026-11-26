@@ -9,8 +9,13 @@ from `describe` and answers REFUSED `unsupported_operation`; nothing fails silen
 release when `tag` is NULL, and answers its bytes and the asset's `browser_download_url`, the address a file the index
 lists by a relative address resolves against. naula names no asset itself: the caller says which one is the index.
 
-- **Before any request** it refuses a number of 0, a result struct smaller than its first shape, a missing asset name,
-  and a tag that is empty or starts with `-` (`invalid_request`). A tag is sent encoded, `/` included.
+- **The result is emptied first**, whenever its size covers the first shape, so a caller may release it after any
+  failure. Then, before any request, it refuses a number of 0, a result struct smaller than its first shape, a missing
+  asset name, and a tag that is empty or starts with `-` (`invalid_request`). A tag is sent encoded, `/` included.
+- **The release answer is read as JavaScript reads it**: a duplicated key keeps its last value. The asset taken is the
+  first of that name with a `browser_download_url`; one of the name without it is skipped.
+- **The index is read up to 4 MiB**; a longer one is refused `answer_too_large`. The release answer is read up to
+  256 KiB.
 - **A 404** for the release or the asset is settled by looking the number up: gone is NOT_FOUND, still there is
   `missing_release` or `missing_index`. A release without the asset is `no_index_asset`. A host name that does not
   resolve is UNREACHABLE (`host_not_resolved`) and a timeout TIMED_OUT, as for every read.
@@ -22,7 +27,11 @@ lists by a relative address resolves against. naula names no asset itself: the c
 |---|---|
 | `missing_release` | the repository is live and has no release of that tag, or no release at all |
 | `missing_index` | the release lists the asset, and the host answers 404 for it while the repository is live |
-| `no_index_asset` | the release has no asset of that name; the detail names it |
+| `no_index_asset` | the release has no asset of that name with a download address; the detail names it |
+| `answer_too_large` | the index, or the release answer, is longer than is read |
+
+**Known limit**: the API root is always `https://<host>/api/v3` for GitHub Enterprise and `https://<host>/api/v1` for
+Gitea and Forgejo, built from the host the home names. A host that serves its API under another root is not supported.
 
 ## Writes, on every provider
 

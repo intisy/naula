@@ -437,7 +437,7 @@ static naula_status read_release(const char *host, uint64_t number, const char *
                               "publish a release, or name a tag the repository has", refusal);
     }
     if (status == NAULA_OK) {
-        *release = naula_forge_parse_reply(&flavor, &reply, &status, refusal);
+        *release = naula_forge_parse_release(&flavor, &reply, &status, refusal);
         naula_forge_reply_release(&reply);
     }
     return status;

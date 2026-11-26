@@ -161,6 +161,10 @@ naula_status naula_forge_read_metadata(const forge_flavor *flavor, const char *h
 
 cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
                                naula_refusal *refusal);
+
+/** naula_forge_parse_reply keeping a duplicated key's last value, as a JavaScript reader of the release would. */
+cJSON *naula_forge_parse_release(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
+                                 naula_refusal *refusal);
 int naula_forge_read_exact_number(const cJSON *object, const char *member, uint64_t *number);
 const char *naula_forge_text_member(const cJSON *object, const char *member);
 
@@ -171,9 +175,12 @@ naula_status naula_forge_fill_repository(const forge_flavor *flavor, const cJSON
 /** Whether a repository answer belongs to account/name, which a host that follows renames with a redirect may not. */
 int naula_forge_answers_to_the_name(const cJSON *json, const char *account, const char *name);
 
+/** Empties `out` when its size covers the first shape, so a caller may release it after any failure; 0 otherwise. */
+int naula_forge_empty_release_index(naula_release_index *out);
+
 /**
- * Refuses, before any request, a number of 0, an `out` smaller than its first shape, a missing or empty asset name,
- * and a tag that is empty or starts with `-`; empties `out` otherwise.
+ * Empties `out` first, then refuses, before any request, a number of 0, an `out` smaller than its first shape, a
+ * missing or empty asset name, and a tag that is empty or starts with `-`.
  */
 naula_status naula_forge_check_release_request(const forge_flavor *flavor, uint64_t number, const char *tag,
                                                const char *asset, naula_release_index *out, naula_refusal *refusal);

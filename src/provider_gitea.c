@@ -532,7 +532,7 @@ static naula_status read_release(const gitea_target *at, const naula_repository 
     snprintf(route, sizeof route, "%s/%s", prefix, suffix);
     naula_status status = get(at, route, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
     if (status == NAULA_OK) {
-        *release = naula_forge_parse_reply(&at->edition->flavor, &reply, &status, refusal);
+        *release = naula_forge_parse_release(&at->edition->flavor, &reply, &status, refusal);
         naula_forge_reply_release(&reply);
     }
     return status;

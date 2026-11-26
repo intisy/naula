@@ -280,17 +280,29 @@ naula_status naula_forge_send(const forge_flavor *flavor, const char *method, co
     return status;
 }
 
-cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
-                               naula_refusal *refusal) {
+typedef naula_status (*json_parser)(const uint8_t *bytes, size_t length, cJSON **root, const char **reason);
+
+static cJSON *parse_reply_with(json_parser parse, const forge_flavor *flavor, const forge_reply *reply,
+                               naula_status *status, naula_refusal *refusal) {
     cJSON *json = NULL;
     const char *reason = NULL;
-    naula_status parsed = naula_json_parse(reply->body, reply->length, &json, &reason);
+    naula_status parsed = parse(reply->body, reply->length, &json, &reason);
     if (parsed == NAULA_MALFORMED) {
         *status = naula_forge_refuse_malformed(flavor, refusal, "something that is not JSON");
     } else if (parsed != NAULA_OK) {
         *status = parsed;
     }
     return json;
+}
+
+cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
+                               naula_refusal *refusal) {
+    return parse_reply_with(naula_json_parse, flavor, reply, status, refusal);
+}
+
+cJSON *naula_forge_parse_release(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
+                                 naula_refusal *refusal) {
+    return parse_reply_with(naula_json_parse_keeping_last_value, flavor, reply, status, refusal);
 }
 
 int naula_forge_read_exact_number(const cJSON *object, const char *member, uint64_t *number) {
@@ -338,20 +350,26 @@ void naula_release_index_release(naula_release_index *index) {
     if (!covers_release_index(index)) {
         return;
     }
-    uint32_t size = index->size;
     naula_memory_release(index->bytes);
     naula_memory_release(index->url);
-    memset(index, 0, sizeof *index);
-    index->size = size;
+    naula_forge_empty_release_index(index);
+}
+
+int naula_forge_empty_release_index(naula_release_index *out) {
+    if (!covers_release_index(out)) {
+        return 0;
+    }
+    uint32_t size = out->size;
+    memset(out, 0, offsetof(naula_release_index, url) + sizeof out->url);
+    out->size = size;
+    return 1;
 }
 
 naula_status naula_forge_check_release_request(const forge_flavor *flavor, uint64_t number, const char *tag,
                                                const char *asset, naula_release_index *out, naula_refusal *refusal) {
-    if (!covers_release_index(out) || number == 0) {
+    if (!naula_forge_empty_release_index(out) || number == 0) {
         return naula_forge_refuse_input(flavor, refusal, "the repository number or the result struct");
     }
-    memset(out, 0, sizeof *out);
-    out->size = sizeof *out;
     if (asset == NULL || asset[0] == '\0') {
         return naula_forge_refuse_input(flavor, refusal, "the asset name");
     }
@@ -380,7 +398,8 @@ const cJSON *naula_forge_release_asset(const forge_flavor *flavor, const cJSON *
     }
     cJSON_ArrayForEach(each, assets) {
         const char *name = naula_forge_text_member(each, "name");
-        if (name != NULL && strcmp(name, asset) == 0) {
+        const char *url = naula_forge_text_member(each, "browser_download_url");
+        if (name != NULL && strcmp(name, asset) == 0 && url != NULL && url[0] != '\0') {
             return each;
         }
     }

@@ -689,6 +689,80 @@ static void release_index_refuses_an_index_from_a_repository_renamed_during_the_
     naula_memory_release(body);
 }
 
+static void release_index_empties_a_garbage_result_before_refusing_it(void) {
+    const naula_provider *words[] = {naula_provider_gitea(), naula_provider_forgejo()};
+    for (size_t at = 0; at < 2; at++) {
+        naula_release_index index;
+        memset(&index, 0xAB, sizeof index);
+        index.size = sizeof index;
+        naula_refusal refusal = fresh_refusal();
+        CHECK(words[at]->release_index(words[at]->context, HOST, 0, NULL, INDEX_ASSET, TOKEN_TEXT, &index,
+                                       &refusal) == NAULA_REFUSED);
+        CHECK(index.bytes == NULL && index.url == NULL && index.length == 0);
+        naula_release_index_release(&index);
+    }
+}
+
+#define TWICE_NAMED_RELEASE                                                                                           \
+    "{\"assets\":[{\"name\":\"" INDEX_ASSET "\",\"uuid\":\"00000000-0000-0000-0000-000000000000\"},"                 \
+    "{\"name\":\"" INDEX_ASSET "\",\"uuid\":\"92e3c606-69a4-4c32-94fe-c28942633339\",\"browser_download_url\":\""   \
+    INDEX_URL "\"}]}"
+
+#define LAST_ASSETS_RELEASE                                                                                           \
+    "{\"assets\":[],\"assets\":[{\"name\":\"" INDEX_ASSET "\",\"uuid\":\"92e3c606-69a4-4c32-94fe-c28942633339\","   \
+    "\"browser_download_url\":\"" INDEX_URL "\"}]}"
+
+static void release_index_takes_the_addressed_asset_and_the_last_value_of_a_member(void) {
+    const char *const releases[] = {TWICE_NAMED_RELEASE, LAST_ASSETS_RELEASE};
+    char *body = load("repository.json");
+    for (size_t at = 0; at < 2; at++) {
+        http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                                route(RELEASE_LATEST_ROUTE, 200, releases[at]),
+                                route(ATTACHMENT_ROUTE, 200, INDEX_BYTES)};
+        http_fixture *server = serve(routes, 4);
+        naula_release_index index = fresh_index();
+        naula_refusal refusal = fresh_refusal();
+        CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_OK);
+        check_text(index.url, INDEX_URL, releases[at]);
+        naula_release_index_release(&index);
+        naula_memory_release(finish(server));
+    }
+    naula_memory_release(body);
+}
+
+#define INDEX_CAP (4u * 1024u * 1024u)
+
+static void release_index_refuses_an_index_past_four_mebibytes(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    char *large = malloc(INDEX_CAP + 2);
+    CHECK(large != NULL);
+    if (large == NULL) {
+        return;
+    }
+    memset(large, 'x', INDEX_CAP + 1);
+    large[INDEX_CAP + 1] = '\0';
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RELEASE_LATEST_ROUTE, 200, release), route(ATTACHMENT_ROUTE, 200, large)};
+    http_fixture *server = serve(routes, 4);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "answer_too_large", "an index past the cap");
+    CHECK(index.bytes == NULL && index.url == NULL);
+    naula_memory_release(finish(server));
+    large[INDEX_CAP] = '\0';
+    routes[3] = route(ATTACHMENT_ROUTE, 200, large);
+    server = serve(routes, 4);
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == INDEX_CAP);
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+    free(large);
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
 static void release_index_refuses_an_unusable_attachment_id_before_asking_for_it(void) {
     char *body = load("repository.json");
     const char release[] = "{\"assets\":[{\"name\":\"index.json\",\"uuid\":\"../../x\","
@@ -757,6 +831,9 @@ int main(void) {
     release_index_refuses_a_missing_release_or_asset_of_a_live_repository();
     release_index_refuses_an_index_from_a_repository_renamed_during_the_read();
     release_index_refuses_an_unusable_attachment_id_before_asking_for_it();
+    release_index_empties_a_garbage_result_before_refusing_it();
+    release_index_takes_the_addressed_asset_and_the_last_value_of_a_member();
+    release_index_refuses_an_index_past_four_mebibytes();
     forgejo_answers_from_its_own_word_and_the_registry_holds_every_built_in();
     return check_summary("provider_gitea_test");
 }

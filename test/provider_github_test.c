@@ -652,6 +652,77 @@ static void release_index_refuses_a_missing_release_or_asset_of_a_live_repositor
     naula_memory_release(repository_body);
 }
 
+static void release_index_empties_a_garbage_result_before_refusing_it(void) {
+    naula_release_index index;
+    memset(&index, 0xAB, sizeof index);
+    index.size = sizeof index;
+    naula_refusal refusal = fresh_refusal();
+    CHECK(github()->release_index(NULL, NULL, 0, NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+    CHECK(index.bytes == NULL && index.url == NULL && index.length == 0);
+    naula_release_index_release(&index);
+}
+
+#define TWICE_NAMED_RELEASE                                                                                           \
+    "{\"assets\":[{\"id\":1,\"name\":\"" INDEX_ASSET "\"},"                                                           \
+    "{\"id\":793444804,\"name\":\"" INDEX_ASSET "\",\"browser_download_url\":\"" INDEX_URL "\"}]}"
+
+static void release_index_takes_the_asset_of_that_name_that_has_an_address(void) {
+    http_route routes[2] = {route(RELEASE_LATEST_ROUTE, 200, TWICE_NAMED_RELEASE),
+                            route(INDEX_ASSET_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = serve(routes, 2);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_OK);
+    check_text(index.url, INDEX_URL, "the second asset of the name");
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+}
+
+#define LAST_ASSETS_RELEASE                                                                                           \
+    "{\"assets\":[],\"assets\":[{\"id\":793444804,\"name\":\"" INDEX_ASSET "\",\"browser_download_url\":\"" INDEX_URL \
+    "\"}]}"
+
+static void release_index_reads_the_last_value_of_a_duplicated_member(void) {
+    http_route routes[2] = {route(RELEASE_LATEST_ROUTE, 200, LAST_ASSETS_RELEASE),
+                            route(INDEX_ASSET_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = serve(routes, 2);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_OK);
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+}
+
+#define INDEX_CAP (4u * 1024u * 1024u)
+
+static void release_index_refuses_an_index_past_four_mebibytes(void) {
+    char *release = load("release.json");
+    char *large = malloc(INDEX_CAP + 2);
+    CHECK(large != NULL);
+    if (large == NULL) {
+        return;
+    }
+    memset(large, 'x', INDEX_CAP + 1);
+    large[INDEX_CAP + 1] = '\0';
+    http_route routes[2] = {route(RELEASE_LATEST_ROUTE, 200, release), route(INDEX_ASSET_ROUTE, 200, large)};
+    http_fixture *server = serve(routes, 2);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "answer_too_large", "an index past the cap");
+    CHECK(index.bytes == NULL && index.url == NULL);
+    naula_memory_release(finish(server));
+    large[INDEX_CAP] = '\0';
+    routes[1] = route(INDEX_ASSET_ROUTE, 200, large);
+    server = serve(routes, 2);
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == INDEX_CAP);
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+    free(large);
+    naula_memory_release(release);
+}
+
 static void release_index_refuses_what_it_cannot_address_before_any_request(void) {
     naula_release_index index = fresh_index();
     naula_refusal refusal = fresh_refusal();
@@ -738,6 +809,10 @@ int main(void) {
     release_index_follows_the_asset_redirect_without_the_token();
     release_index_refuses_a_missing_release_or_asset_of_a_live_repository();
     release_index_refuses_what_it_cannot_address_before_any_request();
+    release_index_empties_a_garbage_result_before_refusing_it();
+    release_index_takes_the_asset_of_that_name_that_has_an_address();
+    release_index_reads_the_last_value_of_a_duplicated_member();
+    release_index_refuses_an_index_past_four_mebibytes();
     unknown_word_names_the_fix();
     register_refuses_a_second_provider_for_a_word();
     a_timeout_is_timed_out_not_not_found();

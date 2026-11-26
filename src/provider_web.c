@@ -192,7 +192,7 @@ static naula_status web_release_index(void *context, const char *host, uint64_t 
     (void)tag;
     (void)asset;
     (void)token;
-    (void)out;
+    naula_forge_empty_release_index(out);
     return unsupported("release_index", refusal);
 }
 
