@@ -11,9 +11,7 @@
 #include <shlwapi.h>
 #include <winhttp.h>
 
-#ifdef NAULA_TEST_HOOKS
 #include "transport_hooks.h"
-#endif
 
 #define READ_CHUNK 65536
 #define CONNECT_MILLISECONDS 15000u
@@ -298,62 +296,6 @@ typedef struct body_reading {
     ULONGLONG deadline;
 } body_reading;
 
-static void read_body(const naula_fetch_request *request, HINTERNET handle, const body_reading *reading,
-                      naula_fetch_sink *sink, naula_fetch_answer *answer) {
-    uint8_t *chunk = naula_memory_allocate(READ_CHUNK);
-    if (chunk == NULL) {
-        naula_fetch_out_of_memory(answer);
-        return;
-    }
-    DWORD read = 1;
-    int failed = 0;
-    while (!failed && read > 0 && !is_past(reading->deadline)) {
-        failed = !WinHttpReadData(handle, chunk, READ_CHUNK, &read);
-        if (!failed && read > 0 && !naula_fetch_sink_take(sink, chunk, read)) {
-            naula_memory_release(chunk);
-            answer->outcome = NAULA_FETCH_STOPPED_BY_SINK;
-            return;
-        }
-    }
-    DWORD error = failed ? GetLastError() : (read > 0 ? ERROR_WINHTTP_TIMEOUT : ERROR_SUCCESS);
-    naula_memory_release(chunk);
-    if (reading->declared_known && sink->bytes < reading->declared && error != ERROR_WINHTTP_TIMEOUT) {
-        answer->outcome = NAULA_FETCH_CUT_OFF;
-        answer->declared = reading->declared;
-    } else if (error != ERROR_SUCCESS) {
-        refuse_error(request, error, answer);
-    } else {
-        answer->outcome = NAULA_FETCH_RECEIVED;
-    }
-}
-
-static void take_response(const naula_fetch_request *request, HINTERNET handle, ULONGLONG deadline,
-                          naula_fetch_sink *sink, naula_fetch_answer *answer) {
-    int out_of_memory = 0;
-    answer->status = status_of(handle);
-    answer->etag = header_text(handle, WINHTTP_QUERY_ETAG, &out_of_memory);
-    answer->last_modified = header_text(handle, WINHTTP_QUERY_LAST_MODIFIED, &out_of_memory);
-    body_reading reading = {0, 0, deadline};
-    reading.declared_known = declared_length(handle, &reading.declared, &out_of_memory);
-    if (out_of_memory) {
-        naula_fetch_out_of_memory(answer);
-        return;
-    }
-    if (answer->status == 304) {
-        answer->outcome = NAULA_FETCH_NOT_MODIFIED;
-        return;
-    }
-    if (answer->status < 200 || answer->status > 299) {
-        answer->outcome = NAULA_FETCH_STATUS;
-        return;
-    }
-    if (reading.declared_known && !naula_fetch_sink_admits(sink, reading.declared)) {
-        answer->outcome = NAULA_FETCH_STOPPED_BY_SINK;
-        return;
-    }
-    read_body(request, handle, &reading, sink, answer);
-}
-
 static int is_redirect(long status) {
     return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
@@ -384,22 +326,74 @@ typedef enum hop_outcome {
 /**
  * Closes a request handle once the deadline passes, which is how WinHTTP cancels a synchronous call: its own timeouts
  * bound each send and receive alone, so an answer that trickles in could otherwise run far past the deadline.
+ *
+ * @implNote `lock` guards `request` and `fired`. Every call that does not block (the header queries) runs holding it,
+ * so the callback never closes the handle under one and none reads a value already closed. The blocking calls (send,
+ * receive, read) cannot hold it, since closing the handle under them is what cancels them: each takes the value under
+ * the lock just before the call. The one window no test can reach is the callback closing the handle between that
+ * read and the call, where WinHTTP may be handed a closed value another thread has meanwhile been given again.
  */
 typedef struct deadline_watch {
     PTP_TIMER timer;
+    SRWLOCK lock;
     HINTERNET request;
-    volatile LONG fired;
+    int fired;
 } deadline_watch;
 
+static void close_now(deadline_watch *watch) {
+    AcquireSRWLockExclusive(&watch->lock);
+    if (!watch->fired) {
+        watch->fired = 1;
+        WinHttpCloseHandle(watch->request);
+        watch->request = NULL;
+    }
+    ReleaseSRWLockExclusive(&watch->lock);
+}
+
 static VOID CALLBACK close_at_deadline(PTP_CALLBACK_INSTANCE instance, PVOID context, PTP_TIMER timer) {
-    deadline_watch *watch = context;
     (void)instance;
     (void)timer;
-    InterlockedExchange(&watch->fired, 1);
-    WinHttpCloseHandle(watch->request);
+    close_now(context);
+}
+
+#ifdef NAULA_TEST_HOOKS
+static int test_close_point;
+
+void naula_fetch_windows_close_at(int point) {
+    test_close_point = point;
+}
+
+static void close_at_test_point(deadline_watch *watch, int point) {
+    if (test_close_point == point) {
+        close_now(watch);
+    }
+}
+#else
+static void close_at_test_point(deadline_watch *watch, int point) {
+    (void)watch;
+    (void)point;
+}
+#endif
+
+/** The request handle with the lock held, NULL once the deadline closed it; release_request ends the hold. */
+static HINTERNET hold_request(deadline_watch *watch) {
+    AcquireSRWLockShared(&watch->lock);
+    return watch->request;
+}
+
+static void release_request(deadline_watch *watch) {
+    ReleaseSRWLockShared(&watch->lock);
+}
+
+/** The handle a blocking call is made on, NULL once the deadline closed it. */
+static HINTERNET blocking_request(deadline_watch *watch) {
+    HINTERNET handle = hold_request(watch);
+    release_request(watch);
+    return handle;
 }
 
 static int start_watch(deadline_watch *watch, HINTERNET request, ULONGLONG deadline) {
+    InitializeSRWLock(&watch->lock);
     watch->request = request;
     watch->fired = 0;
     watch->timer = CreateThreadpoolTimer(close_at_deadline, watch, NULL);
@@ -416,32 +410,137 @@ static int start_watch(deadline_watch *watch, HINTERNET request, ULONGLONG deadl
     return 1;
 }
 
-/** Disarms the timer and waits out a callback in flight, so the handle is never used after it closed; 1 if it fired. */
+/** Disarms the timer and waits out a callback in flight, so nothing runs on the watch after; 1 if it fired. */
 static int stop_watch(deadline_watch *watch) {
     SetThreadpoolTimer(watch->timer, NULL, 0, 0);
     WaitForThreadpoolTimerCallbacks(watch->timer, TRUE);
     CloseThreadpoolTimer(watch->timer);
-    return InterlockedCompareExchange(&watch->fired, 0, 0) != 0;
+    return watch->fired;
 }
 
-static void exchange(const naula_fetch_request *request, const url_parts *parts, HINTERNET handle, int is_authorized,
-                     ULONGLONG deadline, naula_fetch_sink *sink, naula_fetch_answer *answer, wchar_t **next,
-                     hop_outcome *outcome) {
-    int sent = send_request(request, handle, is_authorized);
+/** 1 when the body was read to its end or stopped by the sink or memory, 0 when a call failed or the time ran out. */
+static int read_body(const naula_fetch_request *request, deadline_watch *watch, const body_reading *reading,
+                     naula_fetch_sink *sink, naula_fetch_answer *answer) {
+    uint8_t *chunk = naula_memory_allocate(READ_CHUNK);
+    if (chunk == NULL) {
+        naula_fetch_out_of_memory(answer);
+        return 1;
+    }
+    DWORD read = 1;
+    int failed = 0;
+    int closed = 0;
+    while (!failed && read > 0 && !is_past(reading->deadline)) {
+        HINTERNET handle = blocking_request(watch);
+        closed = handle == NULL;
+        failed = closed || !WinHttpReadData(handle, chunk, READ_CHUNK, &read);
+        if (!failed && read > 0 && !naula_fetch_sink_take(sink, chunk, read)) {
+            naula_memory_release(chunk);
+            answer->outcome = NAULA_FETCH_STOPPED_BY_SINK;
+            return 1;
+        }
+    }
+    DWORD error = closed ? ERROR_WINHTTP_OPERATION_CANCELLED
+                         : (failed ? GetLastError() : (read > 0 ? ERROR_WINHTTP_TIMEOUT : ERROR_SUCCESS));
+    naula_memory_release(chunk);
+    int cancelled = error == ERROR_WINHTTP_OPERATION_CANCELLED || error == ERROR_INVALID_HANDLE;
+    if (reading->declared_known && sink->bytes < reading->declared && error != ERROR_WINHTTP_TIMEOUT && !cancelled) {
+        answer->outcome = NAULA_FETCH_CUT_OFF;
+        answer->declared = reading->declared;
+        return 1;
+    }
+    if (error != ERROR_SUCCESS) {
+        refuse_error(request, error, answer);
+        return 0;
+    }
+    answer->outcome = NAULA_FETCH_RECEIVED;
+    return 1;
+}
+
+typedef struct response_head {
+    long status;
+    char *etag;
+    char *last_modified;
+    body_reading reading;
+    wchar_t *next;
+    int out_of_memory;
+} response_head;
+
+/** Reads the head holding the lock; 0 when the deadline closed the handle first. */
+static int read_head(deadline_watch *watch, const wchar_t *current, int follows, response_head *head) {
+    HINTERNET handle = hold_request(watch);
+    if (handle != NULL) {
+        head->status = status_of(handle);
+        if (is_redirect(head->status) && follows) {
+            head->next = redirect_target(handle, current, &head->out_of_memory);
+        } else {
+            head->etag = header_text(handle, WINHTTP_QUERY_ETAG, &head->out_of_memory);
+            head->last_modified = header_text(handle, WINHTTP_QUERY_LAST_MODIFIED, &head->out_of_memory);
+            head->reading.declared_known =
+                declared_length(handle, &head->reading.declared, &head->out_of_memory);
+        }
+    }
+    release_request(watch);
+    return handle != NULL;
+}
+
+/** Settles an answer from its head and body; 1 when the answer is the host's own, 0 when the hop has not finished. */
+static int take_response(const naula_fetch_request *request, deadline_watch *watch, response_head *head,
+                         naula_fetch_sink *sink, naula_fetch_answer *answer) {
+    answer->status = head->status;
+    answer->etag = head->etag;
+    answer->last_modified = head->last_modified;
+    if (head->out_of_memory) {
+        naula_fetch_out_of_memory(answer);
+        return 1;
+    }
+    if (answer->status == 304) {
+        answer->outcome = NAULA_FETCH_NOT_MODIFIED;
+        return 1;
+    }
+    if (answer->status < 200 || answer->status > 299) {
+        answer->outcome = NAULA_FETCH_STATUS;
+        return 1;
+    }
+    if (head->reading.declared_known && !naula_fetch_sink_admits(sink, head->reading.declared)) {
+        answer->outcome = NAULA_FETCH_STOPPED_BY_SINK;
+        return 1;
+    }
+    return read_body(request, watch, &head->reading, sink, answer);
+}
+
+/** One request and its answer; 1 when the answer is complete, 0 when a call failed or the hop redirected. */
+static int exchange(const naula_fetch_request *request, const url_parts *parts, deadline_watch *watch,
+                    int is_authorized, ULONGLONG deadline, naula_fetch_sink *sink, naula_fetch_answer *answer,
+                    wchar_t **next, hop_outcome *outcome) {
+    HINTERNET handle = blocking_request(watch);
+    int sent = handle == NULL ? 0 : send_request(request, handle, is_authorized);
     if (sent < 0) {
         naula_fetch_out_of_memory(answer);
-    } else if (sent == 0) {
-        refuse_error(request, GetLastError(), answer);
-    } else if (is_redirect(status_of(handle)) && naula_fetch_request_follows_redirects(request)) {
-        int out_of_memory = 0;
-        *next = redirect_target(handle, parts->wide_url, &out_of_memory);
-        *outcome = out_of_memory ? HOP_ANSWERED : HOP_REDIRECTED;
-        if (out_of_memory) {
-            naula_fetch_out_of_memory(answer);
-        }
-    } else {
-        take_response(request, handle, deadline, sink, answer);
+        return 1;
     }
+    if (sent == 0) {
+        refuse_error(request, handle == NULL ? ERROR_WINHTTP_OPERATION_CANCELLED : GetLastError(), answer);
+        return 0;
+    }
+    close_at_test_point(watch, NAULA_FETCH_CLOSE_AFTER_RECEIVE);
+    int follows = naula_fetch_request_follows_redirects(request);
+    response_head head;
+    memset(&head, 0, sizeof head);
+    head.reading.deadline = deadline;
+    if (!read_head(watch, parts->wide_url, follows, &head)) {
+        refuse_error(request, ERROR_WINHTTP_OPERATION_CANCELLED, answer);
+        return 0;
+    }
+    if (is_redirect(head.status) && follows) {
+        if (head.out_of_memory) {
+            naula_fetch_out_of_memory(answer);
+            return 1;
+        }
+        *next = head.next;
+        *outcome = HOP_REDIRECTED;
+        return 0;
+    }
+    return take_response(request, watch, &head, sink, answer);
 }
 
 static hop_outcome take_hop(const naula_fetch_request *request, const url_parts *parts, int is_authorized,
@@ -455,14 +554,15 @@ static hop_outcome take_hop(const naula_fetch_request *request, const url_parts 
     } else if (!start_watch(&watch, handles.request, deadline)) {
         naula_fetch_out_of_memory(answer);
     } else {
-        exchange(request, parts, handles.request, is_authorized, deadline, sink, answer, next, &outcome);
-        if (stop_watch(&watch)) {
-            handles.request = NULL;
+        int completed = exchange(request, parts, &watch, is_authorized, deadline, sink, answer, next, &outcome);
+        close_at_test_point(&watch, NAULA_FETCH_CLOSE_AFTER_EXCHANGE);
+        if (stop_watch(&watch) && !completed) {
             naula_memory_release(*next);
             *next = NULL;
             outcome = HOP_ANSWERED;
             naula_fetch_deadline_passed(answer, request);
         }
+        handles.request = watch.request;
     }
     close_handles(&handles);
     return outcome;

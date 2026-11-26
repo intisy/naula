@@ -410,6 +410,35 @@ static void a_request_without_the_appended_members_is_a_get(void) {
 }
 
 #if defined(_WIN32)
+static naula_fetch_answer fetch_closed_at(unsigned short port, int point, naula_fetch_sink *sink) {
+    char url[128];
+    url_of(url, sizeof url, "127.0.0.1", port, "/file");
+    naula_fetch_windows_close_at(point);
+    naula_fetch_answer answer = fetch_into_buffer(url, NULL, 5000, BODY_LENGTH, sink);
+    naula_fetch_windows_close_at(0);
+    return answer;
+}
+
+static void a_handle_the_deadline_closed_is_never_read_and_a_settled_answer_stands(void) {
+    const http_route routes[] = {
+        {"/file", 200, NULL, body, BODY_LENGTH, HTTP_ROUTE_BODY_LENGTH, ETAG, LAST_MODIFIED, 0, 0}};
+    http_fixture *server = http_fixture_start(routes, 1);
+    CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    naula_fetch_sink sink;
+    naula_fetch_answer answer = fetch_closed_at(http_fixture_port(server), NAULA_FETCH_CLOSE_AFTER_RECEIVE, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_CUT_OFF && answer.declared == 0 && answer.status == 0);
+    CHECK(sink.bytes == 0);
+    release(&answer);
+    answer = fetch_closed_at(http_fixture_port(server), NAULA_FETCH_CLOSE_AFTER_EXCHANGE, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_RECEIVED && sink.bytes == BODY_LENGTH);
+    check_text(answer.etag, ETAG, "etag of an answer settled before the close");
+    release(&answer);
+    naula_memory_release(http_fixture_stop(server));
+}
+
 static void winhttp_takes_the_system_proxy(void) {
     CHECK(naula_fetch_windows_access_type() == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY);
 }
@@ -493,6 +522,7 @@ int main(void) {
     a_request_without_the_appended_members_is_a_get();
 #if defined(_WIN32)
     winhttp_takes_the_system_proxy();
+    a_handle_the_deadline_closed_is_never_read_and_a_settled_answer_stands();
 #else
     libcurl_honours_https_proxy_and_no_proxy();
 #endif
