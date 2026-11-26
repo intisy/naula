@@ -136,3 +136,49 @@ naula_status naula_cache_file_replace(const char *directory, const char *path, c
     naula_memory_release(temporary);
     return status;
 }
+
+static naula_status append_name(char ***names, size_t *count, size_t *capacity, const char *name) {
+    if (*count == *capacity) {
+        size_t grown = *capacity == 0 ? 16 : *capacity * 2;
+        char **resized = naula_memory_reallocate(*names, grown * sizeof *resized);
+        if (resized == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        *names = resized;
+        *capacity = grown;
+    }
+    (*names)[*count] = naula_memory_duplicate_text(name);
+    if ((*names)[*count] == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    (*count)++;
+    return NAULA_OK;
+}
+
+naula_status naula_cache_file_names(const char *directory, char ***names, size_t *count) {
+    char *identities = joined(directory, "/identities");
+    size_t capacity = 0;
+    *names = NULL;
+    *count = 0;
+    if (identities == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    DIR *folder = opendir(identities);
+    naula_memory_release(identities);
+    if (folder == NULL) {
+        return NAULA_OK;
+    }
+    naula_status status = NAULA_OK;
+    for (struct dirent *entry = readdir(folder); entry != NULL && status == NAULA_OK; entry = readdir(folder)) {
+        if (entry->d_name[0] != '.') {
+            status = append_name(names, count, &capacity, entry->d_name);
+        }
+    }
+    closedir(folder);
+    if (status != NAULA_OK) {
+        naula_cache_release_texts(*names, *count);
+        *names = NULL;
+        *count = 0;
+    }
+    return status;
+}

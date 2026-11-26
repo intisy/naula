@@ -77,7 +77,13 @@ typedef struct resolver {
     size_t capacity;
     size_t at_count;
     char anchor[NAULA_CACHE_ANCHOR_SIZE];
+    char **at_texts;
+    size_t at_text_count;
     identity_cache cache;
+    identity_cache guards;
+    naula_place baseline;
+    int baseline_present;
+    int baseline_conflicting;
 } resolver;
 
 /** The homes a readable candidate lists: its repo.json's, or a web home's document's. */

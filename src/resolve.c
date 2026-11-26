@@ -301,14 +301,22 @@ static naula_status follow_primary(const resolver *subject, size_t anchor, size_
     return status;
 }
 
-/** A primary other than the one this anchor's record confirmed needs the user's accept. */
+/**
+ * A primary other than the one this anchor's record confirmed needs the user's accept. With no record of its own, the
+ * baseline is the primary of the records of this id whose `at` shares a place with this one, and records that
+ * disagree on it ask in any case, so a consumer that edits its `at` during a move keeps the prompt.
+ */
 static naula_status check_primary_change(const resolver *subject, size_t primary, naula_refusal *refusal) {
-    if (!subject->cache.present || !subject->cache.has_primary) {
-        return NAULA_OK;
+    const naula_place *was = NULL;
+    int conflicting = 0;
+    if (subject->cache.present && subject->cache.has_primary) {
+        was = &subject->cache.homes[subject->cache.primary].place;
+    } else if (subject->baseline_present) {
+        was = &subject->baseline;
+        conflicting = subject->baseline_conflicting;
     }
-    const naula_place *was = &subject->cache.homes[subject->cache.primary].place;
     const naula_place *becomes = &subject->candidates[primary]->place;
-    if (naula_resolver_same_place(was, NULL, becomes, NULL)) {
+    if (was == NULL || (!conflicting && naula_resolver_same_place(was, NULL, becomes, NULL))) {
         return NAULA_OK;
     }
     const naula_session *session = subject->session;
@@ -379,8 +387,16 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
     size_t capacity = subject->count + subject->cache.count;
     memset(next, 0, sizeof *next);
     next->homes = naula_memory_allocate(capacity * sizeof *next->homes);
-    if (next->homes == NULL) {
+    next->at = naula_memory_allocate(subject->at_text_count * sizeof *next->at);
+    if (next->homes == NULL || next->at == NULL) {
         return NAULA_OUT_OF_MEMORY;
+    }
+    for (size_t index = 0; index < subject->at_text_count; index++) {
+        next->at[index] = naula_memory_duplicate_text(subject->at_texts[index]);
+        if (next->at[index] == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        next->at_count++;
     }
     for (size_t index = 0; index < subject->count; index++) {
         if (!is_confirmed(subject->candidates[index])) {
@@ -396,7 +412,7 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
         }
     }
     for (size_t entry = 0; entry < subject->cache.count; entry++) {
-        if (primary != NAULA_NO_CANDIDATE && is_reconfirmed(subject, &subject->cache.homes[entry])) {
+        if (is_reconfirmed(subject, &subject->cache.homes[entry])) {
             continue;
         }
         naula_status status = copy_cache_entry(&subject->cache.homes[entry], CACHE_GUARD, &next->homes[next->count++]);
@@ -413,9 +429,13 @@ static naula_status write_cache(const resolver *subject, size_t primary, naula_r
     }
     identity_cache next;
     naula_status status = build_cache(subject, primary, &next);
-    if (status == NAULA_OK) {
+    if (status == NAULA_OK && !subject->cache.foreign) {
         status = naula_cache_write(subject->session->cache_directory, subject->hex, subject->anchor, &next,
                                    resolution->cache_problem);
+    }
+    if (status == NAULA_OK) {
+        status = naula_cache_write_guards(subject->session->cache_directory, subject->hex, &subject->guards, &next,
+                                          resolution->cache_problem);
     }
     naula_cache_release(&next);
     return status;
@@ -515,12 +535,6 @@ static naula_status answer_unconfirmed(const resolver *subject, naula_resolution
     status = status_for(subject, decisive);
     naula_refuse(refusal, decisive->code, is_unheard(decisive) ? NETWORK_FIX : HOME_FIX, "%s: %s", text,
                  decisive->detail);
-    if (status == NAULA_NOT_FOUND && subject->cache.present) {
-        naula_status written = write_cache(subject, NAULA_NO_CANDIDATE, resolution);
-        if (written != NAULA_OK) {
-            return written;
-        }
-    }
     return status;
 }
 
@@ -634,6 +648,75 @@ static naula_status resolve_online(resolver *subject, const naula_reference *ref
     return status == NAULA_OK ? answer(subject, resolution, refusal) : status;
 }
 
+static int shares_a_place(char *const *left, size_t left_count, char *const *right, size_t right_count) {
+    for (size_t one = 0; one < left_count; one++) {
+        for (size_t other = 0; other < right_count; other++) {
+            if (strcmp(left[one], right[other]) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static naula_status take_baseline(resolver *subject, const identity_cache *other) {
+    if (!other->present || !other->has_primary ||
+        !shares_a_place(other->at, other->at_count, subject->at_texts, subject->at_text_count)) {
+        return NAULA_OK;
+    }
+    const naula_place *primary = &other->homes[other->primary].place;
+    if (subject->baseline_present) {
+        subject->baseline_conflicting |= !naula_resolver_same_place(&subject->baseline, NULL, primary, NULL);
+        return NAULA_OK;
+    }
+    naula_status status = naula_resolver_copy_place(primary, &subject->baseline);
+    subject->baseline_present = status == NAULA_OK;
+    return status;
+}
+
+/** With no record of this anchor's own, the primaries of the id's other records that share a place of `at`. */
+static naula_status read_baseline(resolver *subject) {
+    const char *directory = subject->session->cache_directory;
+    char **anchors = NULL;
+    size_t count = 0;
+    if (directory == NULL || subject->cache.present) {
+        return NAULA_OK;
+    }
+    naula_status status = naula_cache_other_anchors(directory, subject->hex, subject->anchor, &anchors, &count);
+    for (size_t index = 0; status == NAULA_OK && index < count; index++) {
+        identity_cache other;
+        char ignored[NAULA_CACHE_PROBLEM_SIZE] = "";
+        status = naula_cache_read(directory, subject->hex, anchors[index], NULL, 0, &other, ignored);
+        if (status == NAULA_OK) {
+            status = take_baseline(subject, &other);
+        }
+        naula_cache_release(&other);
+    }
+    naula_cache_release_texts(anchors, count);
+    return status;
+}
+
+static naula_status read_cache(resolver *subject, const naula_reference *reference, naula_resolution *resolution) {
+    const char *directory = subject->session->cache_directory;
+    naula_status status =
+        naula_cache_normal_at(reference->at, reference->at_count, &subject->at_texts, &subject->at_text_count);
+    if (status == NAULA_OK) {
+        status = naula_cache_anchor(reference->at, reference->at_count, subject->anchor);
+    }
+    if (status == NAULA_OK) {
+        status = naula_cache_read(directory, subject->hex, subject->anchor, subject->at_texts, subject->at_text_count,
+                                  &subject->cache, resolution->cache_problem);
+    }
+    if (status == NAULA_OK) {
+        char problem[NAULA_CACHE_PROBLEM_SIZE] = "";
+        status = naula_cache_read_guards(directory, subject->hex, &subject->guards, problem);
+        if (resolution->cache_problem[0] == '\0') {
+            snprintf(resolution->cache_problem, sizeof resolution->cache_problem, "%s", problem);
+        }
+    }
+    return status == NAULA_OK ? read_baseline(subject) : status;
+}
+
 static naula_status resolve_with(resolver *subject, const naula_reference *reference, naula_resolution *resolution,
                                  naula_refusal *refusal) {
     naula_status status = read_id(reference->id, subject, refusal);
@@ -645,11 +728,7 @@ static naula_status resolve_with(resolver *subject, const naula_reference *refer
                      subject->id_text);
         return NAULA_REFUSED;
     }
-    status = naula_cache_anchor(reference->at, reference->at_count, subject->anchor);
-    if (status == NAULA_OK) {
-        status = naula_cache_read(subject->session->cache_directory, subject->hex, subject->anchor, &subject->cache,
-                                  resolution->cache_problem);
-    }
+    status = read_cache(subject, reference, resolution);
     if (status != NAULA_OK) {
         return status;
     }
@@ -688,6 +767,9 @@ naula_status naula_resolve(naula_session *session, const naula_reference *refere
     naula_status status = resolve_with(&subject, reference, resolution, refusal);
     naula_resolver_release_candidates(&subject);
     naula_cache_release(&subject.cache);
+    naula_cache_release(&subject.guards);
+    naula_cache_release_texts(subject.at_texts, subject.at_text_count);
+    naula_place_release(&subject.baseline);
     if (status == NAULA_OUT_OF_MEMORY) {
         naula_resolution_release(resolution);
     }

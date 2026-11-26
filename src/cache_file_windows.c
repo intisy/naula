@@ -239,3 +239,59 @@ naula_status naula_cache_file_replace(const char *directory, const char *path, c
     release_paths(&paths);
     return status;
 }
+
+static naula_status append_name(char ***names, size_t *count, size_t *capacity, const char *name) {
+    if (*count == *capacity) {
+        size_t grown = *capacity == 0 ? 16 : *capacity * 2;
+        char **resized = naula_memory_reallocate(*names, grown * sizeof *resized);
+        if (resized == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        *names = resized;
+        *capacity = grown;
+    }
+    (*names)[*count] = naula_memory_duplicate_text(name);
+    if ((*names)[*count] == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    (*count)++;
+    return NAULA_OK;
+}
+
+naula_status naula_cache_file_names(const char *directory, char ***names, size_t *count) {
+    char identities[PATH_TEXT_SIZE];
+    wchar_t *wide = NULL;
+    wchar_t pattern[PATH_TEXT_SIZE];
+    char name[MAX_PATH];
+    size_t capacity = 0;
+    WIN32_FIND_DATAW found;
+    memset(&found, 0, sizeof found);
+    *names = NULL;
+    *count = 0;
+    if (snprintf(identities, sizeof identities, "%s/identities", directory) >= (int)sizeof identities) {
+        return NAULA_OK;
+    }
+    naula_status status = widen_path(identities, &wide);
+    if (status != NAULA_OK) {
+        return status == NAULA_OUT_OF_MEMORY ? status : NAULA_OK;
+    }
+    int fits = swprintf(pattern, sizeof pattern / sizeof pattern[0], L"%ls\\*", wide) >= 0;
+    naula_memory_release(wide);
+    HANDLE search = fits ? FindFirstFileW(pattern, &found) : INVALID_HANDLE_VALUE;
+    if (search == INVALID_HANDLE_VALUE) {
+        return NAULA_OK;
+    }
+    do {
+        if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            narrow_ascii(found.cFileName, name, sizeof name)) {
+            status = append_name(names, count, &capacity, name);
+        }
+    } while (status == NAULA_OK && FindNextFileW(search, &found));
+    FindClose(search);
+    if (status != NAULA_OK) {
+        naula_cache_release_texts(*names, *count);
+        *names = NULL;
+        *count = 0;
+    }
+    return status;
+}

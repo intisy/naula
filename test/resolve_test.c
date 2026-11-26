@@ -3,6 +3,7 @@
 #endif
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -332,10 +333,18 @@ static naula_status fake_release_index(void *context, const char *host, uint64_t
     return fake_refuse(refusal, NAULA_REFUSED, "unsupported_operation");
 }
 
-static const naula_provider fake_provider = {sizeof(naula_provider), "forge",          NULL,
-                                             fake_describe,          fake_lookup,      fake_find,
-                                             fake_read_file,         fake_contains,    fake_parent_count,
-                                             fake_list_repos,        fake_release_index};
+/** A reader only: its size ends at the first shape, so the registry asks it for no writes. */
+static const naula_provider fake_provider = {.size = (uint32_t)(offsetof(naula_provider, release_index) +
+                                                                sizeof(((const naula_provider *)0)->release_index)),
+                                             .word = "forge",
+                                             .describe = fake_describe,
+                                             .lookup = fake_lookup,
+                                             .find = fake_find,
+                                             .read_file = fake_read_file,
+                                             .contains = fake_contains,
+                                             .parent_count = fake_parent_count,
+                                             .list_repos = fake_list_repos,
+                                             .release_index = fake_release_index};
 
 static const char *fake_token(void *context, const char *provider, const char *host) {
     (void)context;
@@ -356,6 +365,42 @@ static void cache_directory(const char *test, char *out, size_t size) {
     snprintf(out, size, "%s/resolve-cache-%s", NAULA_TEST_SCRATCH, test);
 }
 
+#if defined(_WIN32)
+/** The long path form, since a record named for a 64 hex id under the build tree passes 260 characters. */
+static void long_path(const char *path, wchar_t *out, size_t size) {
+    wchar_t plain[4096];
+    wchar_t full[4096];
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, plain, 4096);
+    for (wchar_t *at = plain; *at != L'\0'; at++) {
+        *at = *at == L'/' ? L'\\' : *at;
+    }
+    GetFullPathNameW(plain, 4096, full, NULL);
+    swprintf(out, size, L"\\\\?\\%ls", full);
+}
+
+static FILE *open_file(const char *path, const char *mode) {
+    wchar_t wide[4200];
+    wchar_t wide_mode[8];
+    long_path(path, wide, sizeof wide / sizeof wide[0]);
+    MultiByteToWideChar(CP_UTF8, 0, mode, -1, wide_mode, 8);
+    return _wfopen(wide, wide_mode);
+}
+
+static void remove_file(const char *path) {
+    wchar_t wide[4200];
+    long_path(path, wide, sizeof wide / sizeof wide[0]);
+    DeleteFileW(wide);
+}
+#else
+static FILE *open_file(const char *path, const char *mode) {
+    return fopen(path, mode);
+}
+
+static void remove_file(const char *path) {
+    remove(path);
+}
+#endif
+
 /** Removes every record in the cache, whichever anchor wrote it. */
 static void forget_cache(const char *directory) {
     char folder[1024];
@@ -372,7 +417,7 @@ static void forget_cache(const char *directory) {
     do {
         if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
             snprintf(path, sizeof path, "%s/%s", folder, found.cFileName);
-            remove(path);
+            remove_file(path);
         }
     } while (FindNextFileA(search, &found));
     FindClose(search);
@@ -384,7 +429,7 @@ static void forget_cache(const char *directory) {
     for (struct dirent *entry = readdir(opened); entry != NULL; entry = readdir(opened)) {
         if (entry->d_name[0] != '.') {
             snprintf(path, sizeof path, "%s/%s", folder, entry->d_name);
-            remove(path);
+            remove_file(path);
         }
     }
     closedir(opened);
@@ -414,7 +459,7 @@ static naula_session *open_session(const char *cache, int offline, const naula_h
     options.accept_primary = fake_accept;
     options.offline = offline;
     naula_session *session = NULL;
-    CHECK(naula_session_open(&options, &session) == NAULA_OK);
+    CHECK(naula_session_open(&options, &session, NULL) == NAULA_OK);
     return session;
 }
 
@@ -504,7 +549,7 @@ static uint64_t primary_number(const naula_resolution *resolution) {
 }
 
 static char *read_text_file(const char *path) {
-    FILE *file = fopen(path, "rb");
+    FILE *file = open_file(path, "rb");
     if (file == NULL) {
         return NULL;
     }
@@ -518,7 +563,7 @@ static char *read_text_file(const char *path) {
 }
 
 static void write_text_file(const char *path, const char *text) {
-    FILE *file = fopen(path, "wb");
+    FILE *file = open_file(path, "wb");
     CHECK(file != NULL);
     if (file != NULL) {
         fwrite(text, 1, strlen(text), file);
@@ -1004,7 +1049,7 @@ static void session_refuses_options_smaller_than_their_first_shape(void) {
     memset(&options, 0, sizeof options);
     options.size = 8;
     naula_session *session = NULL;
-    CHECK(naula_session_open(&options, &session) == NAULA_REFUSED && session == NULL);
+    CHECK(naula_session_open(&options, &session, NULL) == NAULA_REFUSED && session == NULL);
 }
 
 static const char base64_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1288,7 +1333,7 @@ static void matches_a_listed_home_only_to_one_holding_the_id(void) {
 /** A record of `count` homes; the first is CONFIRMED and the primary when `first_confirmed`, every other is `state`. */
 static void write_record_of(const char *path, int count, int first_confirmed, const char *state) {
     static char record[32768];
-    size_t used = (size_t)snprintf(record, sizeof record, "{\"id\":\"" ID "\",%s\"homes\":[",
+    size_t used = (size_t)snprintf(record, sizeof record, "{\"at\":[\"forge:10\"],\"id\":\"" ID "\",%s\"homes\":[",
                                    first_confirmed ? "\"primary\":0," : "");
     for (int index = 0; index < count; index++) {
         used += (size_t)snprintf(record + used, sizeof record - used,
@@ -1358,11 +1403,13 @@ static void the_anchor_is_the_sorted_places_hashed(void) {
     static const char *const one[1] = {"forge:10"};
     char anchor[NAULA_CACHE_ANCHOR_SIZE];
     anchor_of(listed, 3, anchor);
-    check_text(anchor, "ca6e43e082b3", "sha256 of the sorted places joined by newlines");
+    check_text(anchor, "ca6e43e082b3e59c206ff2cb54cee7a4ecc279fc403bdcc4fcc343d2fc52760e",
+               "sha256 of the sorted places joined by newlines");
     anchor_of(reordered, 3, anchor);
-    check_text(anchor, "ca6e43e082b3", "the order of at does not change the anchor");
+    check_text(anchor, "ca6e43e082b3e59c206ff2cb54cee7a4ecc279fc403bdcc4fcc343d2fc52760e",
+               "the order of at does not change the anchor");
     anchor_of(one, 1, anchor);
-    check_text(anchor, "9e602b6f27a8", "one place");
+    check_text(anchor, "9e602b6f27a80f1e8c1dc1b3a84d6e173e1f480d501a96767167267d0f50e5ae", "one place");
 }
 
 static void another_consumers_first_contact_never_shapes_this_answer(void) {
@@ -1442,6 +1489,226 @@ static void another_consumers_first_contact_never_shapes_this_answer(void) {
     naula_resolution_release(&resolution);
 }
 
+static void expect_one_record(const char *label, const char *const *left, size_t left_count, const char *const *right,
+                              size_t right_count) {
+    char one[NAULA_CACHE_ANCHOR_SIZE];
+    char two[NAULA_CACHE_ANCHOR_SIZE];
+    anchor_of(left, left_count, one);
+    anchor_of(right, right_count, two);
+    if (strcmp(one, two) != 0) {
+        fprintf(stderr, "%s: %s and %s are two records for one at\n", label, one, two);
+        check_failures++;
+    }
+}
+
+static void places_naming_one_home_share_one_record(void) {
+    static const char *const bare[1] = {"github:7"};
+    static const char *const hosted[1] = {"github@github.com:7"};
+    static const char *const hosted_upper[1] = {"github@GitHub.com:7"};
+    static const char *const zeros[1] = {"github:007"};
+    static const char *const upper_domain[1] = {"web:Naula.dev"};
+    static const char *const lower_domain[1] = {"web:naula.dev"};
+    static const char *const upper_host[1] = {"gitea@Git.Example.com:12"};
+    static const char *const lower_host[1] = {"gitea@git.example.com:12"};
+    static const char *const twice[2] = {"github:7", "github:7"};
+    static const char *const forward[2] = {"github:7", "github:8"};
+    static const char *const backward[2] = {"github:8", "github@github.com:7"};
+    char anchor[NAULA_CACHE_ANCHOR_SIZE];
+    expect_one_record("github with and without its host", bare, 1, hosted, 1);
+    expect_one_record("github's host in another case", bare, 1, hosted_upper, 1);
+    expect_one_record("leading zeros", bare, 1, zeros, 1);
+    expect_one_record("domain case", upper_domain, 1, lower_domain, 1);
+    expect_one_record("host case", upper_host, 1, lower_host, 1);
+    expect_one_record("a duplicate place", bare, 1, twice, 2);
+    expect_one_record("order and a written host", forward, 2, backward, 2);
+    anchor_of(bare, 1, anchor);
+    check_text(anchor, "2a47f80988756f901c09a18fc3fe67263fe52b6ed0eaac9012e26bdacb426c47", "github:7");
+    anchor_of(forward, 2, anchor);
+    check_text(anchor, "686548fde7ce4158a664b2c83df5127a842b41aa82bc79af4c082f507e05d752", "github:7 and github:8");
+    naula_place place;
+    memset(&place, 0, sizeof place);
+    place.size = sizeof place;
+    CHECK(naula_place_parse("web:a\nb", &place, NULL) != NAULA_OK);
+    naula_place_release(&place);
+}
+
+static void guards_survive_a_change_of_at(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("at-changes", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("bee") "," HOME("alpha") "," HOME("gamma"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    add_repo(NULL, 30, "gamma", "lib", genuine);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(primary_number(&resolution) == 20);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    accept_answer = 0;
+    accept_calls = 0;
+    naula_status status = resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+    if (has_home(&resolution, NULL, 21)) {
+        fprintf(stderr, "a new at lost the guard for bee, and its re-registered repository 21 became a home\n");
+        check_failures++;
+    }
+    CHECK(status == NAULA_REFUSED && accept_calls == 1 && accepted_was == 20);
+    check_text(refusal.code, "primary-changed", "a new at keeps the primary prompt of the at it grew from");
+    CHECK(verdict_is(&resolution, NULL, 21, "number-changed", 0));
+    naula_resolution_release(&resolution);
+
+    accept_answer = 1;
+    CHECK(resolve_once(cache, ID, "forge:30", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(!has_home(&resolution, NULL, 21) && has_home(&resolution, NULL, 30));
+    naula_resolution_release(&resolution);
+}
+
+static void records_that_disagree_on_the_primary_ask(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("baselines-disagree", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    fake_repo *first = add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha") "," HOME("beta"), NULL));
+    fake_repo *second = add_repo(NULL, 20, "beta", "lib", first->development);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    const char *swapped = repo_file("lib", HOME("beta") "," HOME("alpha"), NULL);
+    first->development = swapped;
+    second->development = swapped;
+    accept_answer = 1;
+    CHECK(resolve_once(cache, ID, "forge:20", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    accept_answer = 0;
+    accept_calls = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", "forge:20", &resolution, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "primary-changed", "records sharing a place disagree on the primary");
+    CHECK(accept_calls == 1);
+    naula_resolution_release(&resolution);
+}
+
+static void a_record_for_another_at_is_ignored_and_kept(void) {
+    char cache[512];
+    char path[1024];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("foreign-record", cache, sizeof cache);
+    forget_cache(cache);
+    record_path(cache, X, "forge:10", path, sizeof path);
+    forge_reset();
+    add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha"), NULL));
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    static const char *const foreign =
+        "{\"at\":[\"forge:66\"],\"id\":\"" ID "\",\"primary\":0,\"homes\":[{\"state\":\"confirmed\",\"provider\":"
+        "\"forge\",\"account\":\"mallory\",\"number\":66,\"confirmed\":1}]}";
+    write_text_file(path, foreign);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(strstr(resolution.cache_problem, "another at") != NULL && !has_home(&resolution, NULL, 66));
+    naula_resolution_release(&resolution);
+    char *kept = read_text_file(path);
+    check_text(kept, foreign, "a record for another at is never overwritten");
+    naula_memory_release(kept);
+    naula_session *offline = open_session(cache, 1, NULL);
+    CHECK(resolve_from(offline, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_UNREACHABLE);
+    CHECK(!has_home(&resolution, NULL, 66));
+    naula_resolution_release(&resolution);
+    naula_session_close(offline);
+}
+
+static void one_run_of_404s_never_demotes_a_confirmed_home(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("one-bad-run", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *moved = repo_file("lib", HOME_AT("new.example", "alpha") "," HOME("alpha"), NULL);
+    fake_repo *old_home = add_repo(NULL, 10, "alpha", "lib", moved);
+    fake_repo *new_home = add_repo("new.example", 20, "alpha", "lib", moved);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    old_home->gone = 1;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(has_home(&resolution, "new.example", 20));
+    naula_resolution_release(&resolution);
+    new_home->gone = 1;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_NOT_FOUND);
+    CHECK(resolution.home_count == 0);
+    naula_resolution_release(&resolution);
+    new_home->gone = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    if (!has_home(&resolution, "new.example", 20)) {
+        fprintf(stderr, "one run of 404s ended the consumer's only way to its repository\n");
+        check_failures++;
+    }
+    naula_resolution_release(&resolution);
+}
+
+static void a_relative_cache_folder_is_refused(void) {
+    naula_session_options options;
+    memset(&options, 0, sizeof options);
+    options.size = sizeof options;
+    options.cache_directory = "relative/cache";
+    naula_session *session = NULL;
+    naula_refusal refusal = fresh_refusal();
+    CHECK(naula_session_open(&options, &session, &refusal) == NAULA_REFUSED && session == NULL);
+    check_text(refusal.code, "invalid_options", "a relative cache folder");
+}
+
+#if defined(_WIN32)
+static void windows_cache_folders_in_every_form(void) {
+    char base[512];
+    char deep[2048];
+    wchar_t wide[4096];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("forms", base, sizeof base);
+    CreateDirectoryA(base, NULL);
+    snprintf(deep, sizeof deep, "%s", base);
+    for (int level = 0; level < 6; level++) {
+        size_t length = strlen(deep);
+        snprintf(deep + length, sizeof deep - length, "/%s", "a-folder-name-that-is-forty-characters-x");
+        int written = swprintf(wide, sizeof wide / sizeof wide[0], L"\\\\?\\%hs", deep);
+        for (int index = 4; written > 0 && wide[index] != L'\0'; index++) {
+            wide[index] = wide[index] == L'/' ? L'\\' : wide[index];
+        }
+        CreateDirectoryW(wide, NULL);
+    }
+    forge_reset();
+    add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha"), NULL));
+    CHECK(resolve_once(deep, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(resolution.cache_problem[0] == '\0');
+    naula_resolution_release(&resolution);
+    naula_session *offline = open_session(deep, 1, NULL);
+    CHECK(resolve_from(offline, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(resolution.state == NAULA_STALE);
+    naula_resolution_release(&resolution);
+    naula_session_close(offline);
+
+    char prefixed[1024];
+    snprintf(prefixed, sizeof prefixed, "\\\\?\\%s", base);
+    for (char *at = prefixed + 4; *at != '\0'; at++) {
+        *at = *at == '/' ? '\\' : *at;
+    }
+    CHECK(resolve_once(prefixed, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    if (resolution.cache_problem[0] != '\0') {
+        fprintf(stderr, "a cache folder written with the long path prefix was not written: %s\n",
+                resolution.cache_problem);
+        check_failures++;
+    }
+    naula_resolution_release(&resolution);
+    offline = open_session(prefixed, 1, NULL);
+    CHECK(resolve_from(offline, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    naula_session_close(offline);
+}
+#endif
+
 static void a_number_that_answered_gone_is_asked_again(void) {
     char cache[512];
     naula_resolution resolution;
@@ -1517,11 +1784,8 @@ static void a_dead_at_starts_from_the_new_home_the_record_keeps(void) {
     CHECK(resolution.home_count == 0);
     naula_resolution_release(&resolution);
     offline = open_session(cache, 1, NULL);
-    CHECK(resolve_from(offline, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_UNREACHABLE);
-    if (resolution.home_count != 0) {
-        fprintf(stderr, "offline served %zu homes that every answered gone online\n", resolution.home_count);
-        check_failures++;
-    }
+    CHECK(resolve_from(offline, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(resolution.state == NAULA_STALE && resolution.home_count == 2);
     naula_resolution_release(&resolution);
     naula_session_close(offline);
 }
@@ -1563,7 +1827,9 @@ static void a_development_branch_without_repo_json_is_not_listed(void) {
 static void set_written_time(const char *path, time_t when) {
 #if defined(_WIN32)
     struct _utimbuf times = {when, when};
-    CHECK(_utime(path, &times) == 0);
+    wchar_t wide[4200];
+    long_path(path, wide, sizeof wide / sizeof wide[0]);
+    CHECK(_wutime(wide, &times) == 0);
 #else
     struct utimbuf times = {when, when};
     CHECK(utime(path, &times) == 0);
@@ -1571,7 +1837,7 @@ static void set_written_time(const char *path, time_t when) {
 }
 
 static int file_exists(const char *path) {
-    FILE *file = fopen(path, "rb");
+    FILE *file = open_file(path, "rb");
     if (file != NULL) {
         fclose(file);
     }
@@ -1627,7 +1893,7 @@ static void a_writer_removes_temporary_files_left_behind(void) {
     naula_resolution_release(&resolution);
     CHECK(!file_exists(old_temporary));
     CHECK(file_exists(new_temporary));
-    remove(new_temporary);
+    remove_file(new_temporary);
 }
 
 static naula_status resolve_counted(naula_session *session, const naula_reference *reference,
@@ -1638,27 +1904,23 @@ static naula_status resolve_counted(naula_session *session, const naula_referenc
     return naula_resolve(session, reference, resolution, &refusal);
 }
 
-/**
- * Fails every allocation one resolution makes, once each, after two runs that settle what the cache holds.
- *
- * @implNote `through_transport` tolerates two answers other than NAULA_OUT_OF_MEMORY, each reported as a note, until
- * task 8's round lands `fix(transport): answer out of memory wherever a fetch runs out`, when it is deleted: an OK
- * that equals the settled answer, since the transport drops an ETag it cannot copy and still answers the body, and on
- * libcurl alone an UNREACHABLE, since it answers a header line it cannot allocate as unreachable. Every other answer
- * is held to NAULA_OUT_OF_MEMORY with an empty resolution.
- */
-static void fails_cleanly(naula_session *session, const char *first, naula_status expected, int through_transport,
+/** Fails every allocation one resolution makes, once each, after two runs that settle what the cache holds. */
+static void fails_cleanly(naula_session *session, const char *first, const char *second, naula_status expected,
                           const char *label) {
-    naula_place place;
-    memset(&place, 0, sizeof place);
-    place.size = sizeof place;
-    CHECK(naula_place_parse(first, &place, NULL) == NAULA_OK);
+    naula_place places[2];
+    const char *texts[2] = {first, second};
+    size_t place_count = second == NULL ? 1 : 2;
+    for (size_t index = 0; index < place_count; index++) {
+        memset(&places[index], 0, sizeof places[index]);
+        places[index].size = sizeof places[index];
+        CHECK(naula_place_parse(texts[index], &places[index], NULL) == NAULA_OK);
+    }
     naula_reference reference;
     memset(&reference, 0, sizeof reference);
     reference.size = sizeof reference;
     reference.id = ID;
-    reference.at = &place;
-    reference.at_count = 1;
+    reference.at = places;
+    reference.at_count = place_count;
     naula_resolution resolution;
     resolve_counted(session, &reference, &resolution, 0);
     naula_resolution_release(&resolution);
@@ -1668,39 +1930,28 @@ static void fails_cleanly(naula_session *session, const char *first, naula_statu
         fprintf(stderr, "%s: answered %d, expected %d\n", label, (int)settled, (int)expected);
         check_failures++;
     }
-    size_t settled_homes = resolution.home_count;
-    uint64_t settled_primary = primary_number(&resolution);
-    uint32_t settled_state = resolution.state;
     naula_resolution_release(&resolution);
     CHECK(attempts > 0);
     for (uint64_t attempt = 1; attempt <= attempts; attempt++) {
         naula_status status = resolve_counted(session, &reference, &resolution, attempt);
         naula_memory_fail_at(0);
-        int same_answer = status == NAULA_OK && status == settled && resolution.home_count == settled_homes &&
-                          primary_number(&resolution) == settled_primary && resolution.state == settled_state;
-#if defined(_WIN32)
-        int curl_header = 0;
-#else
-        int curl_header = status == NAULA_UNREACHABLE;
-#endif
-        if (through_transport && (same_answer || curl_header)) {
-            printf("%s: note: failing allocation %llu inside the transport answered %d\n", label,
-                   (unsigned long long)attempt, (int)status);
-        } else if (status != NAULA_OUT_OF_MEMORY || resolution.homes != NULL || resolution.verdicts != NULL ||
-                   resolution.file.name != NULL || resolution.primary_repository.account != NULL) {
+        if (status != NAULA_OUT_OF_MEMORY || resolution.homes != NULL || resolution.verdicts != NULL ||
+            resolution.file.name != NULL || resolution.primary_repository.account != NULL) {
             fprintf(stderr, "%s: failing allocation %llu answered %d\n", label, (unsigned long long)attempt,
                     (int)status);
             check_failures++;
         }
         naula_resolution_release(&resolution);
     }
-    naula_place_release(&place);
+    for (size_t index = 0; index < place_count; index++) {
+        naula_place_release(&places[index]);
+    }
 }
 
 static void fails_cleanly_in_a_session(const char *cache, int offline, const char *first, naula_status expected,
                                        const char *label) {
     naula_session *session = open_session(cache, offline, NULL);
-    fails_cleanly(session, first, expected, 0, label);
+    fails_cleanly(session, first, NULL, expected, label);
     naula_session_close(session);
 }
 
@@ -1745,6 +1996,22 @@ static void out_of_memory_on_the_cache_paths(void) {
     second->development = first->development;
     accept_answer = 0;
     fails_cleanly_in_a_session(cache, 0, "forge:10", NAULA_REFUSED, "a primary change refused");
+
+    fresh_cache("oom-at-changes", cache, sizeof cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("bee") "," HOME("alpha") "," HOME("gamma"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    add_repo(NULL, 30, "gamma", "lib", genuine);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    accept_answer = 0;
+    naula_session *session = open_session(cache, 0, NULL);
+    fails_cleanly(session, "forge:10", "forge:30", NAULA_REFUSED, "a new at, with guards and a baseline");
+    naula_session_close(session);
+    accept_answer = 0;
 }
 
 static void out_of_memory_on_the_web_and_fork_paths(void) {
@@ -1760,7 +2027,7 @@ static void out_of_memory_on_the_web_and_fork_paths(void) {
     http_fixture *server = serve(routes, 1, 1);
     naula_history history = {sizeof(naula_history), NULL, web_history_contains, web_history_parent_count};
     naula_session *session = open_session(NULL, 0, &history);
-    fails_cleanly(session, "web:naula.dev", NAULA_OK, 1, "a web home");
+    fails_cleanly(session, "web:naula.dev", NULL, NAULA_OK, "a web home");
     naula_session_close(session);
     naula_web_use_root(NULL);
     naula_memory_release(http_fixture_stop(server));
@@ -1785,13 +2052,13 @@ static void out_of_memory_is_answered_at_every_allocation(void) {
     options.cache_directory = cache;
     naula_memory_fail_at(0);
     naula_session *session = NULL;
-    CHECK(naula_session_open(&options, &session) == NAULA_OK);
+    CHECK(naula_session_open(&options, &session, NULL) == NAULA_OK);
     uint64_t attempts = naula_memory_attempts();
     naula_session_close(session);
     for (uint64_t attempt = 1; attempt <= attempts; attempt++) {
         session = NULL;
         naula_memory_fail_at(attempt);
-        naula_status status = naula_session_open(&options, &session);
+        naula_status status = naula_session_open(&options, &session, NULL);
         naula_memory_fail_at(0);
         CHECK(status == NAULA_OUT_OF_MEMORY && session == NULL);
         naula_session_close(session);
@@ -1837,6 +2104,15 @@ int main(void) {
     a_number_that_answered_gone_is_asked_again();
     a_dead_at_starts_from_the_new_home_the_record_keeps();
     the_anchor_comes_first_in_the_confirmed_homes();
+    places_naming_one_home_share_one_record();
+    guards_survive_a_change_of_at();
+    records_that_disagree_on_the_primary_ask();
+    a_record_for_another_at_is_ignored_and_kept();
+    one_run_of_404s_never_demotes_a_confirmed_home();
+    a_relative_cache_folder_is_refused();
+#if defined(_WIN32)
+    windows_cache_folders_in_every_form();
+#endif
     out_of_memory_is_answered_at_every_allocation();
     naula_providers_close(registry);
     return check_summary("resolve_test");

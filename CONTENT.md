@@ -9,8 +9,10 @@ A C library and command line that lays out, identifies and renames git repos fro
   test-only `naula_allocator_counting`, and the configure refuses a plain `malloc` anywhere else in `src/`.
 - **The resolver** (`naula/resolve.h`, `naula/session.h`, `naula/history.h`): from a dependency's `{ id, at }` to the
   homes that speak for that id. Trust starts at the numbers `at` holds, never at a name, and the answer is every home
-  linked both ways to the first of them that confirms. The cache keeps one record per `at` and confirms nothing on
-  its own: it guards the number each account was confirmed at, starts the search only when every place of `at`
-  answered gone, and answers offline. Only a definite answer in the run that heard it (a 404 by number, a provider
-  that is not installed) counts a home as gone, so a timeout or an unresolved host never lets a copy past the home that
-  would disown it.
+  linked both ways to the first of them that confirms. The cache keeps one record per normalised `at`, named by its
+  full sha256 and stating that `at`, plus one file of guards per id that every record adds to; it confirms nothing on
+  its own: a guard only refuses a number another than the one an account was confirmed at, the record starts the
+  search only when every place of `at` answered gone, and it answers offline. A run that confirms nothing never
+  demotes a home. Records are never removed: nothing collects old ones yet. Only a definite answer in the run that
+  heard it (a 404 by number, a provider that is not installed) counts a home as gone, so a timeout or an unresolved
+  host never lets a copy past the home that would disown it.

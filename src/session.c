@@ -5,6 +5,8 @@
 #include "naula/session.h"
 #include "resolve_internal.h"
 
+#define OPTIONS_FIX "fill the options to their first shape, with a history whose functions are all set"
+
 static int covers_first_shape(const naula_session_options *options) {
     return options->size >= offsetof(naula_session_options, context) + sizeof options->context;
 }
@@ -14,13 +16,35 @@ static int history_is_whole(const naula_history *history) {
            history->contains != NULL && history->parent_count != NULL;
 }
 
-naula_status naula_session_open(const naula_session_options *options, naula_session **session) {
+/** A drive path (`C:/`, `C:\`), a UNC or `\\?\` path, or a POSIX path from the root. */
+static int is_absolute(const char *path) {
+    int drive = ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' &&
+                (path[2] == '/' || path[2] == '\\');
+#if defined(_WIN32)
+    return drive || (path[0] == '\\' && path[1] == '\\') || (path[0] == '/' && path[1] == '/');
+#else
+    (void)drive;
+    return path[0] == '/';
+#endif
+}
+
+naula_status naula_session_open(const naula_session_options *options, naula_session **session,
+                                naula_refusal *refusal) {
     if (session == NULL) {
+        naula_refuse(refusal, "invalid_options", OPTIONS_FIX, "no session to open into");
         return NAULA_REFUSED;
     }
     *session = NULL;
     if (options == NULL || !covers_first_shape(options) ||
         (options->history != NULL && !history_is_whole(options->history))) {
+        naula_refuse(refusal, "invalid_options", OPTIONS_FIX,
+                     "the options or the history are smaller than their first shape");
+        return NAULA_REFUSED;
+    }
+    if (options->cache_directory != NULL && !is_absolute(options->cache_directory)) {
+        naula_refuse(refusal, "invalid_options", "name the cache folder by an absolute path",
+                     "the cache folder %s is relative, and is never read against the working directory",
+                     options->cache_directory);
         return NAULA_REFUSED;
     }
     naula_session *opened = naula_memory_allocate(sizeof *opened);

@@ -533,30 +533,48 @@ static naula_status check_fork_parent(resolver *subject, candidate *home, unsign
     return NAULA_OK;
 }
 
+static int guards_account(const cache_home *cached, const naula_home *home) {
+    return cached->place.kind == NAULA_HOME_PROVIDER && strcmp(cached->place.provider, home->provider) == 0 &&
+           naula_resolver_same_host(home->provider, cached->place.host, home->host) &&
+           naula_resolver_equals_ignoring_case(cached->account, home->account);
+}
+
 /**
- * The cached home for a listed account: one confirmed last time before one kept as a guard, which still guards the
- * account when its number answered gone.
+ * The number a listed account was confirmed at: this anchor's record first, a home confirmed there before one kept as
+ * a guard, then the newest of the id's guards, which every record of this id adds to.
  */
-static const cache_home *cache_for_account(const resolver *subject, const naula_home *home) {
+static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number) {
     const cache_home *best = NULL;
     for (size_t index = 0; index < subject->cache.count; index++) {
         const cache_home *cached = &subject->cache.homes[index];
-        if (cached->place.kind == NAULA_HOME_PROVIDER && strcmp(cached->place.provider, home->provider) == 0 &&
-            naula_resolver_same_host(home->provider, cached->place.host, home->host) &&
-            naula_resolver_equals_ignoring_case(cached->account, home->account) &&
-            (best == NULL || cached->state < best->state)) {
+        if (guards_account(cached, home) && (best == NULL || cached->state < best->state)) {
             best = cached;
         }
     }
-    return best;
+    for (size_t index = 0; best == NULL && index < subject->guards.count; index++) {
+        const cache_home *guard = &subject->guards.homes[index];
+        if (guards_account(guard, home) && (best == NULL || guard->confirmed > best->confirmed)) {
+            best = guard;
+        }
+    }
+    if (best != NULL) {
+        *number = best->place.number;
+    }
+    return best != NULL;
 }
 
-static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number) {
-    const cache_home *cached = cache_for_account(subject, home);
-    if (cached != NULL) {
-        *number = cached->place.number;
+/** Whether any record or guard of this id holds `number` for the listed account. */
+static int is_guarded_number(const resolver *subject, const naula_home *home, uint64_t number) {
+    const identity_cache *sources[2] = {&subject->cache, &subject->guards};
+    for (int source = 0; source < 2; source++) {
+        for (size_t index = 0; index < sources[source]->count; index++) {
+            const cache_home *cached = &sources[source]->homes[index];
+            if (guards_account(cached, home) && cached->place.number == number) {
+                return 1;
+            }
+        }
     }
-    return cached != NULL;
+    return 0;
 }
 
 /**
@@ -657,6 +675,9 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
         }
     }
     if (known) {
+        if (found != 0 && found != cached && is_guarded_number(subject, home, found)) {
+            cached = found;
+        }
         if (found != 0 && found != cached) {
             snprintf(detail, sizeof detail, "%s/%s is repository %llu now, not %llu as confirmed before", home->account,
                      name, (unsigned long long)found, (unsigned long long)cached);
