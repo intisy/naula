@@ -19,8 +19,6 @@
 
 static const char *const HOME_FIX =
     "write the home as { \"provider\", \"account\" }, { \"provider\": \"web\", \"domain\" } or { \"url\": \"https://...\" }";
-static const char *const PLACE_FIX =
-    "write the place as <provider>:<number>, <provider>@<host>:<number>, web:<domain> or an https url";
 
 static int is_lowercase_letter(char character) {
     return character >= 'a' && character <= 'z';
@@ -146,7 +144,7 @@ static naula_status refuse_home(naula_refusal *refusal, const char *format, cons
 }
 
 static naula_status refuse_place(naula_refusal *refusal, const char *text, const char *reason) {
-    naula_refuse(refusal, "invalid_place", PLACE_FIX, "\"%s\" %s", text, reason);
+    naula_refuse(refusal, "invalid_place", NAULA_HOME_PLACE_FIX, "\"%s\" %s", text, reason);
     return NAULA_REFUSED;
 }
 

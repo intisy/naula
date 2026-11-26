@@ -4,6 +4,7 @@
 
 #include "check.h"
 #include "cJSON.h"
+#include "home_internal.h"
 #include "memory_testing.h"
 #include "naula/repo_file.h"
 #include "naula/json.h"
@@ -442,6 +443,17 @@ static void references_by_url_or_local_id(void) {
     naula_repo_file_release(&file);
 }
 
+static void a_url_out_of_shape_is_named_with_the_place_fix(void) {
+    naula_repo_file file;
+    naula_refusal refusal;
+    const char *text = FILE_HEAD GITHUB_HOME ", \"dependencies\": [ { \"url\": \"http://github.com/a/b\", "
+                                             "\"importName\": \"b\", \"commit\": \"" HEX40 "\" } ] }";
+    CHECK(parse_text(text, &file, &refusal) == NAULA_REFUSED);
+    CHECK(strstr(refusal.detail, "dependencies[0].url: \"http://github.com/a/b\" is not an https or ssh git url") !=
+          NULL);
+    check_text(refusal.fix, NAULA_HOME_PLACE_FIX, "the fix for a url out of shape");
+}
+
 static void write_refuses_a_struct_smaller_than_its_first_shape(void) {
     naula_repo_file file;
     naula_refusal refusal;
@@ -780,6 +792,7 @@ int main(void) {
     a_local_parent_or_hold_is_refused();
     a_parent_or_hold_naming_a_part_of_a_repo_is_refused();
     references_by_url_or_local_id();
+    a_url_out_of_shape_is_named_with_the_place_fix();
     write_refuses_a_struct_smaller_than_its_first_shape();
     format_one_reads_a_forge_id_from_the_left();
     out_of_memory_is_answered_at_every_allocation();

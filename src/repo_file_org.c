@@ -87,7 +87,8 @@ static naula_status read_url(const cJSON *url, const member_path *path, naula_re
         return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not a string");
     }
     if (!naula_home_is_git_url(url->valuestring)) {
-        return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not an https or ssh git url");
+        return repo_file_refuse(refusal, path, NAULA_HOME_PLACE_FIX, "\"%.200s\" is not an https or ssh git url",
+                                url->valuestring);
     }
     reference->url = naula_memory_duplicate_text(url->valuestring);
     return reference->url == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;

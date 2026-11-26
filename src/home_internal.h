@@ -1,6 +1,9 @@
 #ifndef NAULA_HOME_INTERNAL_H
 #define NAULA_HOME_INTERNAL_H
 
+#define NAULA_HOME_PLACE_FIX \
+    "write the place as <provider>:<number>, <provider>@<host>:<number>, web:<domain> or an https url"
+
 /** The checks naula_home_from_json and naula_place_parse apply, each to one whole text. */
 
 int naula_home_is_provider(const char *text);
