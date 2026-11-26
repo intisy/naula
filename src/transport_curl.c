@@ -173,6 +173,7 @@ typedef struct transfer {
     int declared_known;
     uint64_t declared;
     int refused_status;
+    int out_of_memory;
 } transfer;
 
 static int is_redirect(long status) {
@@ -226,12 +227,25 @@ static void begin_response(transfer *state, const char *line) {
     replace_text(&state->answer->last_modified, NULL);
 }
 
-static void take_declared_length(transfer *state, const char *line, size_t length) {
+/** Copies the header's value into *slot, marking the transfer out of memory when it cannot. */
+static int take_value(transfer *state, char **slot, const char *line, size_t length, const char *name) {
+    char *value = header_value(line, length, strlen(name));
+    state->out_of_memory = state->out_of_memory || value == NULL;
+    replace_text(slot, value);
+    return value != NULL;
+}
+
+static int take_declared_length(transfer *state, const char *line, size_t length) {
     char *value = header_value(line, length, strlen("content-length"));
+    if (value == NULL) {
+        state->out_of_memory = 1;
+        return 0;
+    }
     int digits = value != NULL && value[0] != 0 && strspn(value, "0123456789") == strlen(value) && strlen(value) < 20;
     state->declared_known = digits;
     state->declared = digits ? strtoull(value, NULL, 10) : 0;
     naula_memory_release(value);
+    return 1;
 }
 
 static int headers_end(transfer *state) {
@@ -249,11 +263,11 @@ static size_t take_header(char *line, size_t size, size_t count, void *context) 
     } else if (length <= 2 && (line[0] == '\r' || line[0] == '\n')) {
         return headers_end(state) ? length : 0;
     } else if (name_is(line, length, "etag")) {
-        replace_text(&state->answer->etag, header_value(line, length, strlen("etag")));
+        return take_value(state, &state->answer->etag, line, length, "etag") ? length : 0;
     } else if (name_is(line, length, "last-modified")) {
-        replace_text(&state->answer->last_modified, header_value(line, length, strlen("last-modified")));
+        return take_value(state, &state->answer->last_modified, line, length, "last-modified") ? length : 0;
     } else if (name_is(line, length, "content-length")) {
-        take_declared_length(state, line, length);
+        return take_declared_length(state, line, length) ? length : 0;
     }
     return length;
 }
@@ -275,7 +289,11 @@ static void overwrite_header_lines(curl_slist *headers) {
     }
 }
 
-/** @implNote A write names its Content-Type, or sends an empty one so libcurl adds no form type of its own. */
+/**
+ * The request's header lines; *built is 0 when memory ran out, naula's for a line or libcurl's for the list.
+ *
+ * @implNote A write names its Content-Type, or sends an empty one so libcurl adds no form type of its own.
+ */
 static curl_slist *request_headers(const curl_api *api, const naula_fetch_request *request, int *built) {
     enum { NAMED_COUNT = 4 };
     curl_slist *headers = NULL;
@@ -380,7 +398,9 @@ static void settle_completed(transfer *state) {
 static void settle(const curl_api *api, const naula_fetch_request *request, int code, transfer *state,
                    const char *error_buffer) {
     naula_fetch_answer *answer = state->answer;
-    if (code == CURLE_OK) {
+    if (state->out_of_memory) {
+        naula_fetch_out_of_memory(answer);
+    } else if (code == CURLE_OK) {
         settle_completed(state);
     } else if (state->refused_status) {
         answer->outcome = NAULA_FETCH_STATUS;
@@ -411,7 +431,9 @@ static void perform(const curl_api *api, curl_handle *curl, const naula_fetch_re
     char error_buffer[ERROR_BUFFER_SIZE] = "";
     int built = 0;
     curl_slist *headers = request_headers(api, request, &built);
-    if (!built || !configure(api, curl, request, state, headers, error_buffer)) {
+    if (!built) {
+        naula_fetch_out_of_memory(state->answer);
+    } else if (!configure(api, curl, request, state, headers, error_buffer)) {
         naula_fetch_refuse(state->answer, "report this as a defect in naula",
                              "libcurl refused the options for %s", request->url);
     } else {
@@ -443,7 +465,7 @@ void naula_fetch_over_network(const naula_fetch_request *request, naula_fetch_si
                              request->url);
         return;
     }
-    transfer state = {sink, answer, 0, 0, 0, 0};
+    transfer state = {sink, answer, 0, 0, 0, 0, 0};
     perform(api, curl, request, &state);
     api->easy_cleanup(curl);
 }

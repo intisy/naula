@@ -246,13 +246,16 @@ static int send_request(const naula_fetch_request *request, HINTERNET handle, in
     return sent;
 }
 
-static char *header_text(HINTERNET handle, DWORD query) {
+/** The header's text, NULL when the answer carries none; *out_of_memory is set when it does but cannot be copied. */
+static char *header_text(HINTERNET handle, DWORD query, int *out_of_memory) {
     wchar_t value[HEADER_TEXT_LIMIT];
     DWORD size = sizeof value;
     if (!WinHttpQueryHeaders(handle, query, WINHTTP_HEADER_NAME_BY_INDEX, value, &size, WINHTTP_NO_HEADER_INDEX)) {
         return NULL;
     }
-    return to_utf8(value);
+    char *text = to_utf8(value);
+    *out_of_memory = *out_of_memory || text == NULL;
+    return text;
 }
 
 static long status_of(HINTERNET handle) {
@@ -263,8 +266,8 @@ static long status_of(HINTERNET handle) {
     return known ? (long)status : 0;
 }
 
-static int declared_length(HINTERNET handle, uint64_t *declared) {
-    char *text = header_text(handle, WINHTTP_QUERY_CONTENT_LENGTH);
+static int declared_length(HINTERNET handle, uint64_t *declared, int *out_of_memory) {
+    char *text = header_text(handle, WINHTTP_QUERY_CONTENT_LENGTH, out_of_memory);
     int known = text != NULL && text[0] != 0 && strspn(text, "0123456789") == strlen(text) && strlen(text) < 20;
     if (known) {
         *declared = strtoull(text, NULL, 10);
@@ -326,9 +329,16 @@ static void read_body(const naula_fetch_request *request, HINTERNET handle, cons
 
 static void take_response(const naula_fetch_request *request, HINTERNET handle, ULONGLONG deadline,
                           naula_fetch_sink *sink, naula_fetch_answer *answer) {
+    int out_of_memory = 0;
     answer->status = status_of(handle);
-    answer->etag = header_text(handle, WINHTTP_QUERY_ETAG);
-    answer->last_modified = header_text(handle, WINHTTP_QUERY_LAST_MODIFIED);
+    answer->etag = header_text(handle, WINHTTP_QUERY_ETAG, &out_of_memory);
+    answer->last_modified = header_text(handle, WINHTTP_QUERY_LAST_MODIFIED, &out_of_memory);
+    body_reading reading = {0, 0, deadline};
+    reading.declared_known = declared_length(handle, &reading.declared, &out_of_memory);
+    if (out_of_memory) {
+        naula_fetch_out_of_memory(answer);
+        return;
+    }
     if (answer->status == 304) {
         answer->outcome = NAULA_FETCH_NOT_MODIFIED;
         return;
@@ -337,8 +347,6 @@ static void take_response(const naula_fetch_request *request, HINTERNET handle, 
         answer->outcome = NAULA_FETCH_STATUS;
         return;
     }
-    body_reading reading = {0, 0, deadline};
-    reading.declared_known = declared_length(handle, &reading.declared);
     if (reading.declared_known && !naula_fetch_sink_admits(sink, reading.declared)) {
         answer->outcome = NAULA_FETCH_STOPPED_BY_SINK;
         return;
@@ -350,7 +358,8 @@ static int is_redirect(long status) {
     return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
-static wchar_t *redirect_target(HINTERNET handle, const wchar_t *current) {
+/** The url a redirect names, NULL when it names none it can be resolved to, with *out_of_memory set if memory ran out. */
+static wchar_t *redirect_target(HINTERNET handle, const wchar_t *current, int *out_of_memory) {
     wchar_t location[URL_LIMIT];
     DWORD size = sizeof location;
     if (!WinHttpQueryHeaders(handle, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location, &size,
@@ -358,6 +367,7 @@ static wchar_t *redirect_target(HINTERNET handle, const wchar_t *current) {
         return NULL;
     }
     wchar_t *target = naula_memory_allocate(URL_LIMIT * sizeof(wchar_t));
+    *out_of_memory = target == NULL;
     DWORD length = URL_LIMIT;
     if (target != NULL && UrlCombineW(current, location, target, &length, 0) != S_OK) {
         naula_memory_release(target);
@@ -423,8 +433,12 @@ static void exchange(const naula_fetch_request *request, const url_parts *parts,
     } else if (sent == 0) {
         refuse_error(request, GetLastError(), answer);
     } else if (is_redirect(status_of(handle)) && naula_fetch_request_follows_redirects(request)) {
-        *next = redirect_target(handle, parts->wide_url);
-        *outcome = HOP_REDIRECTED;
+        int out_of_memory = 0;
+        *next = redirect_target(handle, parts->wide_url, &out_of_memory);
+        *outcome = out_of_memory ? HOP_ANSWERED : HOP_REDIRECTED;
+        if (out_of_memory) {
+            naula_fetch_out_of_memory(answer);
+        }
     } else {
         take_response(request, handle, deadline, sink, answer);
     }
@@ -463,9 +477,11 @@ typedef struct origin {
     INTERNET_PORT port;
 } origin;
 
-static void remember_origin(origin *known, const url_parts *parts) {
+/** 0 when memory ran out, which leaves no origin to send the authorization to. */
+static int remember_origin(origin *known, const url_parts *parts) {
     known->host = copy_wide(parts->host, wcslen(parts->host));
     known->port = parts->port;
+    return known->host != NULL;
 }
 
 static int is_origin(const origin *known, const url_parts *parts) {
@@ -500,8 +516,10 @@ static void take_hops(const naula_fetch_request *request, origin *first, naula_f
             return;
         }
         current = NULL;
-        if (hop == 0) {
-            remember_origin(first, &parts);
+        if (hop == 0 && !remember_origin(first, &parts)) {
+            free_parts(&parts);
+            naula_fetch_out_of_memory(answer);
+            return;
         }
         hop_outcome outcome = take_hop(request, &parts, is_origin(first, &parts), deadline, sink, answer, &current);
         free_parts(&parts);

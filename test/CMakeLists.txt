@@ -42,7 +42,11 @@ if(NOT WIN32)
     target_compile_definitions(transport_test PRIVATE NAULA_FAKE_CURL="$<TARGET_FILE:fake_curl_reporting_receive_error>")
 endif()
 
+naula_test(transport_memory_test http_fixture.c)
+target_link_libraries(transport_memory_test PRIVATE naula_test_hooks naula_allocator_counting)
+
 if(WIN32)
+    target_link_libraries(transport_memory_test PRIVATE ws2_32)
     target_link_libraries(transport_shipped_test PRIVATE ws2_32)
     target_link_libraries(transport_test PRIVATE ws2_32)
 endif()
