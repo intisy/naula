@@ -195,9 +195,76 @@ static naula_status web_release_index(void *context, const char *host, uint64_t 
     return unsupported("release_index", refusal);
 }
 
-static const naula_provider web_provider = {sizeof(naula_provider), "web",           NULL,           web_describe,
-                                            web_lookup,             web_find,        web_read_file,  web_contains,
-                                            web_parent_count,       web_list_repos,  web_release_index};
+static naula_status web_create(void *context, const char *host, const char *account, const char *name,
+                               const naula_metadata *metadata, const char *token, uint64_t *number,
+                               naula_refusal *refusal) {
+    (void)context;
+    (void)host;
+    (void)account;
+    (void)name;
+    (void)metadata;
+    (void)token;
+    *number = 0;
+    return unsupported("create", refusal);
+}
+
+static naula_status web_rename(void *context, const char *host, uint64_t number, const char *name, const char *token,
+                               naula_refusal *refusal) {
+    (void)context;
+    (void)host;
+    (void)number;
+    (void)name;
+    (void)token;
+    return unsupported("rename", refusal);
+}
+
+static naula_status web_transfer(void *context, const char *host, uint64_t number, const char *account,
+                                 const char *token, naula_refusal *refusal) {
+    (void)context;
+    (void)host;
+    (void)number;
+    (void)account;
+    (void)token;
+    return unsupported("transfer", refusal);
+}
+
+static naula_status web_archive(void *context, const char *host, uint64_t number, const char *token,
+                                naula_refusal *refusal) {
+    (void)context;
+    (void)host;
+    (void)number;
+    (void)token;
+    return unsupported("archive", refusal);
+}
+
+static naula_status web_read_metadata(void *context, const char *host, uint64_t number, const char *token,
+                                      naula_metadata *out, naula_refusal *refusal) {
+    (void)context;
+    (void)host;
+    (void)number;
+    (void)token;
+    (void)out;
+    return unsupported("read_metadata", refusal);
+}
+
+static naula_status web_write_metadata(void *context, const char *host, uint64_t number,
+                                       const naula_metadata *wanted, const char *token, uint32_t *applied,
+                                       naula_refusal *refusal) {
+    (void)context;
+    (void)host;
+    (void)number;
+    (void)wanted;
+    (void)token;
+    *applied = 0;
+    return unsupported("write_metadata", refusal);
+}
+
+static const naula_provider web_provider = {sizeof(naula_provider), "web",           NULL,
+                                            web_describe,           web_lookup,      web_find,
+                                            web_read_file,          web_contains,    web_parent_count,
+                                            web_list_repos,         web_release_index, web_create,
+                                            web_rename,             web_transfer,    web_archive,
+                                            web_read_metadata,      web_write_metadata};
 
 const naula_provider *naula_provider_web(void) {
     return &web_provider;

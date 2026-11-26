@@ -1,4 +1,5 @@
 #include "naula/transport.h"
+#include "naula/memory.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -69,6 +70,10 @@ void naula_fetch_mark_host_unresolved(naula_fetch_answer *answer) {
 }
 
 void naula_fetch_out_of_memory(naula_fetch_answer *answer) {
+    naula_memory_release(answer->etag);
+    naula_memory_release(answer->last_modified);
+    answer->etag = NULL;
+    answer->last_modified = NULL;
     answer->detail[0] = '\0';
     answer->outcome = NAULA_FETCH_OUT_OF_MEMORY;
     answer->fix = NULL;

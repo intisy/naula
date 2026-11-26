@@ -16,6 +16,7 @@
 #define PAGE_CAPACITY 100u
 #define COMMIT_HEX_MINIMUM 7u
 #define COMMIT_HEX_MAXIMUM 64u
+#define JSON_CONTENT_TYPE "application/json"
 
 void naula_forge_reply_release(forge_reply *reply) {
     naula_memory_release(reply->body);
@@ -136,6 +137,13 @@ naula_status naula_forge_refuse_unsupported(const forge_flavor *flavor, naula_re
 
 static naula_status refuse_answer(const forge_flavor *flavor, const naula_fetch_answer *answer, const char *url,
                                   naula_refusal *refusal) {
+    if (answer->status >= 300 && answer->status <= 399) {
+        naula_refuse(refusal, "redirected",
+                     "check that the home names the repository's current host; naula never repeats a write elsewhere",
+                     "%s answered %s with a redirect naula does not follow (%ld)", flavor->label, url,
+                     answer->status);
+        return NAULA_REFUSED;
+    }
     if (answer->status == 404) {
         naula_refuse(refusal, "not_found", "check the number or the name, and that the repository is public or the token reaches it",
                      "%s answered 404 for %s", flavor->label, url);
@@ -189,7 +197,29 @@ static naula_status settle_answer(const forge_flavor *flavor, const naula_fetch_
     }
 }
 
-static naula_status fetch_with_authorization(const forge_flavor *flavor, const char *url, const char *token,
+typedef struct forge_request {
+    const char *method;
+    const char *url;
+    const char *body;
+} forge_request;
+
+static naula_fetch_request fetch_request_of(const forge_flavor *flavor, const forge_request *sent,
+                                            const char *authorization) {
+    naula_fetch_request request;
+    memset(&request, 0, sizeof request);
+    request.size = sizeof request;
+    request.url = sent->url;
+    request.deadline_milliseconds = DEADLINE_MILLISECONDS;
+    request.authorization = authorization;
+    request.extra_headers = flavor->request_headers;
+    request.method = sent->method;
+    request.body = (const uint8_t *)sent->body;
+    request.body_length = sent->body == NULL ? 0 : strlen(sent->body);
+    request.content_type = sent->body == NULL ? NULL : JSON_CONTENT_TYPE;
+    return request;
+}
+
+static naula_status fetch_with_authorization(const forge_flavor *flavor, const forge_request *sent, const char *token,
                                              size_t capacity, forge_reply *reply, naula_refusal *refusal) {
     char authorization[AUTHORIZATION_SIZE];
     if (token != NULL) {
@@ -205,29 +235,49 @@ static naula_status fetch_with_authorization(const forge_flavor *flavor, const c
     naula_fetch_answer answer;
     memset(&answer, 0, sizeof answer);
     answer.size = sizeof answer;
-    naula_fetch_into_memory_with_headers(url, token == NULL ? NULL : authorization, flavor->request_headers,
-                                         DEADLINE_MILLISECONDS, &sink, &answer);
+    naula_fetch_request request = fetch_request_of(flavor, sent, token == NULL ? NULL : authorization);
+    naula_fetch_send_into_memory(&request, &sink, &answer);
     naula_overwrite(authorization, sizeof authorization);
-    naula_status status = settle_answer(flavor, &answer, url, refusal);
+    naula_status status = settle_answer(flavor, &answer, sent->url, refusal);
     reply->length = (size_t)sink.bytes;
     reply->etag = answer.etag;
     answer.etag = NULL;
     naula_memory_release(answer.last_modified);
     if (status != NAULA_OK) {
         naula_forge_reply_release(reply);
+        reply->status = answer.outcome == NAULA_FETCH_STATUS ? answer.status : 0;
     }
     return status;
 }
 
-naula_status naula_forge_fetch(const forge_flavor *flavor, const char *url, const char *token, size_t capacity,
-                               forge_reply *reply, naula_refusal *refusal) {
+static naula_status send_text(const forge_flavor *flavor, const forge_request *sent, const char *token,
+                              size_t capacity, forge_reply *reply, naula_refusal *refusal) {
     memset(reply, 0, sizeof *reply);
     if (token != NULL && !is_token_text(token)) {
         naula_refuse(refusal, "invalid_token", "pass the token itself, on one line with no spaces",
                      "the token is not usable");
         return NAULA_REFUSED;
     }
-    return fetch_with_authorization(flavor, url, token, capacity, reply, refusal);
+    return fetch_with_authorization(flavor, sent, token, capacity, reply, refusal);
+}
+
+naula_status naula_forge_fetch(const forge_flavor *flavor, const char *url, const char *token, size_t capacity,
+                               forge_reply *reply, naula_refusal *refusal) {
+    forge_request sent = {NULL, url, NULL};
+    return send_text(flavor, &sent, token, capacity, reply, refusal);
+}
+
+naula_status naula_forge_send(const forge_flavor *flavor, const char *method, const char *url, const char *token,
+                              const cJSON *body, size_t capacity, forge_reply *reply, naula_refusal *refusal) {
+    memset(reply, 0, sizeof *reply);
+    char *text = body == NULL ? NULL : cJSON_PrintUnformatted(body);
+    if (body != NULL && text == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    forge_request sent = {method, url, text};
+    naula_status status = send_text(flavor, &sent, token, capacity, reply, refusal);
+    cJSON_free(text);
+    return status;
 }
 
 cJSON *naula_forge_parse_reply(const forge_flavor *flavor, const forge_reply *reply, naula_status *status,
@@ -361,3 +411,4 @@ naula_status naula_forge_append_page(const forge_flavor *flavor, forge_repositor
     cJSON_Delete(json);
     return status;
 }
+

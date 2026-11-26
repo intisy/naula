@@ -5,12 +5,14 @@
 
 #define HTTP_ROUTE_BODY_LENGTH (-1LL)
 #define HTTP_ROUTE_UNTIL_CLOSE (-2LL)
+#define HTTP_ROUTE_DRIP (-3LL)
 #define HTTP_ROUTE_LIMITED_COUNT 128
 
 /**
  * How the fixture answers a GET of path. declared_length is the Content-Length it sends:
  * HTTP_ROUTE_BODY_LENGTH sends the body's own, HTTP_ROUTE_UNTIL_CLOSE sends none and ends the body by
- * closing, and any larger number makes the answer end early, as a connection cut mid-body does. A
+ * closing, HTTP_ROUTE_DRIP sends the body's own and the whole answer one byte at a time with
+ * stall_milliseconds between bytes, and any larger number makes the answer end early, as a connection cut mid-body does. A
  * request whose If-None-Match equals etag, or whose If-Modified-Since equals last_modified, is answered
  * 304 with no body. A route with an answer_limit above zero answers that many requests and is then skipped, so a
  * later route with the same path answers next; at most HTTP_ROUTE_LIMITED_COUNT routes can be limited.
@@ -41,7 +43,7 @@ http_fixture *http_fixture_start_proxy(void);
 
 unsigned short http_fixture_port(const http_fixture *fixture);
 
-/** Stops the thread and answers every request head it received, in order, freed. */
+/** Stops the thread and answers every request it received, each head followed by its body, in order, freed. */
 char *http_fixture_stop(http_fixture *fixture);
 
 #endif

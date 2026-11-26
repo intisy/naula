@@ -6,6 +6,7 @@
 #include "naula/memory.h"
 #include "naula/provider.h"
 #include "provider_github_hooks.h"
+#include "provider_github_internal.h"
 
 #define API_ROOT_DEFAULT "https://api.github.com"
 #define API_VERSION_HEADER "X-GitHub-Api-Version: 2022-11-28"
@@ -62,8 +63,12 @@ static naula_status build_root(const char *host, char *root, naula_refusal *refu
     return NAULA_OK;
 }
 
-static naula_status github_get(const char *host, const char *route, const char *token, size_t capacity,
-                               forge_reply *reply, naula_refusal *refusal) {
+const forge_flavor *naula_github_flavor(void) {
+    return &flavor;
+}
+
+naula_status naula_github_request(const char *host, const char *method, const char *route, const char *token,
+                                  const cJSON *body, size_t capacity, forge_reply *reply, naula_refusal *refusal) {
     char root[ROOT_SIZE];
     char url[URL_SIZE];
     memset(reply, 0, sizeof *reply);
@@ -74,7 +79,12 @@ static naula_status github_get(const char *host, const char *route, const char *
     if (snprintf(url, sizeof url, "%s/%s", root, route) >= (int)sizeof url) {
         return naula_forge_refuse_input(&flavor, refusal, "the request address (too long)");
     }
-    return naula_forge_fetch(&flavor, url, token, capacity, reply, refusal);
+    return naula_forge_send(&flavor, method, url, token, body, capacity, reply, refusal);
+}
+
+static naula_status github_get(const char *host, const char *route, const char *token, size_t capacity,
+                               forge_reply *reply, naula_refusal *refusal) {
+    return naula_github_request(host, NULL, route, token, NULL, capacity, reply, refusal);
 }
 
 static naula_status github_lookup(void *context, const char *host, uint64_t number, const char *token,
@@ -222,8 +232,8 @@ static naula_status build_file_route(uint64_t number, const char *ref, const cha
     return NAULA_OK;
 }
 
-static naula_status still_the_same_number(const char *host, uint64_t number, const char *token,
-                                          naula_refusal *refusal) {
+naula_status naula_github_still_the_same_number(const char *host, uint64_t number, const char *token,
+                                               naula_refusal *refusal) {
     naula_repository repository;
     memset(&repository, 0, sizeof repository);
     repository.size = sizeof repository;
@@ -235,7 +245,7 @@ static naula_status still_the_same_number(const char *host, uint64_t number, con
 /** A 404 on a file or a commit reads the same as a repository that is gone, so the repository decides which. */
 static naula_status settle_missing(const char *host, uint64_t number, const char *token, const char *code,
                                    const char *what, const char *fix, naula_refusal *refusal) {
-    naula_status status = still_the_same_number(host, number, token, refusal);
+    naula_status status = naula_github_still_the_same_number(host, number, token, refusal);
     if (status != NAULA_OK) {
         return status;
     }
@@ -272,7 +282,7 @@ static naula_status github_read_file(void *context, const char *host, uint64_t n
     cJSON_Delete(json);
     naula_forge_reply_release(&reply);
     if (status == NAULA_OK) {
-        status = still_the_same_number(host, number, token, refusal);
+        status = naula_github_still_the_same_number(host, number, token, refusal);
         if (status != NAULA_OK) {
             naula_memory_release(*bytes);
             *bytes = NULL;
@@ -414,15 +424,21 @@ static naula_status github_release_index(void *context, const char *host, uint64
 static naula_status github_describe(void *context, uint32_t *supported, int *anonymous_lookup) {
     (void)context;
     *supported = NAULA_OP_LOOKUP | NAULA_OP_FIND | NAULA_OP_READ_FILE | NAULA_OP_CONTAINS | NAULA_OP_PARENT_COUNT |
-                 NAULA_OP_LIST_REPOS;
+                 NAULA_OP_LIST_REPOS | NAULA_OP_CREATE | NAULA_OP_RENAME | NAULA_OP_TRANSFER | NAULA_OP_ARCHIVE |
+                 NAULA_OP_READ_METADATA | NAULA_OP_WRITE_METADATA;
     *anonymous_lookup = 1;
     return NAULA_OK;
 }
 
-static const naula_provider github_provider = {sizeof(naula_provider), "github", NULL,           github_describe,
-                                               github_lookup,          github_find, github_read_file,
-                                               github_contains,        github_parent_count,
-                                               github_list_repos,      github_release_index};
+static const naula_provider github_provider = {sizeof(naula_provider), "github",
+                                               NULL,                   github_describe,
+                                               github_lookup,          github_find,
+                                               github_read_file,       github_contains,
+                                               github_parent_count,    github_list_repos,
+                                               github_release_index,   naula_github_create,
+                                               naula_github_rename,    naula_github_transfer,
+                                               naula_github_archive,   naula_github_read_metadata,
+                                               naula_github_write_metadata};
 
 const naula_provider *naula_provider_github(void) {
     return &github_provider;

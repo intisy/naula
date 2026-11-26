@@ -22,6 +22,7 @@ typedef SOCKET fixture_socket;
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -33,6 +34,28 @@ typedef int fixture_socket;
 #endif
 
 #define REQUEST_LIMIT 8192
+
+#if defined(_WIN32)
+typedef volatile LONG fixture_flag;
+
+static void raise_flag(fixture_flag *flag) {
+    InterlockedExchange(flag, 1);
+}
+
+static int is_raised(fixture_flag *flag) {
+    return InterlockedCompareExchange(flag, 0, 0) != 0;
+}
+#else
+typedef atomic_int fixture_flag;
+
+static void raise_flag(fixture_flag *flag) {
+    atomic_store(flag, 1);
+}
+
+static int is_raised(fixture_flag *flag) {
+    return atomic_load(flag) != 0;
+}
+#endif
 #define LOG_LIMIT 65536
 
 struct http_fixture {
@@ -42,7 +65,7 @@ struct http_fixture {
     int is_proxy;
     fixture_socket listener;
     unsigned short port;
-    volatile int stopping;
+    fixture_flag stopping;
     char log[LOG_LIMIT];
     size_t log_length;
 #if defined(_WIN32)
@@ -73,23 +96,6 @@ static void send_all(fixture_socket connection, const char *bytes, size_t length
     }
 }
 
-static size_t read_request_head(fixture_socket connection, char *head, size_t capacity) {
-    size_t length = 0;
-    while (length + 1 < capacity) {
-        int received = (int)recv(connection, head + length, (int)(capacity - 1 - length), 0);
-        if (received <= 0) {
-            break;
-        }
-        length += (size_t)received;
-        head[length] = 0;
-        if (strstr(head, "\r\n\r\n") != NULL) {
-            break;
-        }
-    }
-    head[length] = 0;
-    return length;
-}
-
 static void record(http_fixture *fixture, const char *head, size_t length) {
     if (fixture->log_length + length + 1 < LOG_LIMIT) {
         memcpy(fixture->log + fixture->log_length, head, length);
@@ -107,6 +113,37 @@ static int starts_with_ignoring_case(const char *text, const char *prefix) {
         }
     }
     return 1;
+}
+
+static size_t declared_request_body(const char *head) {
+    for (const char *line = strstr(head, "\r\n"); line != NULL && line[2] != '\r'; line = strstr(line + 2, "\r\n")) {
+        const char *start = line + 2;
+        if (starts_with_ignoring_case(start, "Content-Length:")) {
+            return (size_t)strtoul(start + strlen("Content-Length:"), NULL, 10);
+        }
+    }
+    return 0;
+}
+
+static int is_whole_request(const char *head, size_t length) {
+    const char *end = strstr(head, "\r\n\r\n");
+    return end != NULL && length >= (size_t)(end + 4 - head) + declared_request_body(head);
+}
+
+/** Reads the head and the body its Content-Length declares, so closing never resets a client still sending. */
+static size_t read_request(fixture_socket connection, char *head, size_t capacity) {
+    size_t length = 0;
+    head[0] = 0;
+    while (length + 1 < capacity && !is_whole_request(head, length)) {
+        int received = (int)recv(connection, head + length, (int)(capacity - 1 - length), 0);
+        if (received <= 0) {
+            break;
+        }
+        length += (size_t)received;
+        head[length] = 0;
+    }
+    head[length] = 0;
+    return length;
 }
 
 static int header_equals(const char *head, const char *name, const char *expected) {
@@ -157,6 +194,16 @@ static void answer_not_found(fixture_socket connection) {
     send_all(connection, answer, strlen(answer));
 }
 
+/** Sends bytes one at a time, pausing between them, and stops once the client has gone. */
+static void drip(fixture_socket connection, const char *bytes, size_t length, unsigned pause) {
+    for (size_t index = 0; index < length; index++) {
+        if ((int)send(connection, bytes + index, 1, SEND_FLAGS) != 1) {
+            return;
+        }
+        pause_milliseconds(pause);
+    }
+}
+
 static void answer_route(fixture_socket connection, const http_route *route, const char *head) {
     char status_line[4096];
     if (header_equals(head, "If-None-Match", route->etag) ||
@@ -165,7 +212,8 @@ static void answer_route(fixture_socket connection, const http_route *route, con
         send_all(connection, status_line, strlen(status_line));
         return;
     }
-    if (route->stall_milliseconds > 0) {
+    int drips = route->declared_length == HTTP_ROUTE_DRIP;
+    if (route->stall_milliseconds > 0 && !drips) {
         pause_milliseconds(route->stall_milliseconds);
     }
     int length = snprintf(status_line, sizeof status_line, "HTTP/1.1 %d Fixture\r\nConnection: close\r\n%s",
@@ -178,19 +226,25 @@ static void answer_route(fixture_socket connection, const http_route *route, con
                            route->last_modified);
     }
     if (route->declared_length != HTTP_ROUTE_UNTIL_CLOSE) {
-        long long declared = route->declared_length == HTTP_ROUTE_BODY_LENGTH ? (long long)route->body_length
-                                                                               : route->declared_length;
+        long long declared = route->declared_length == HTTP_ROUTE_BODY_LENGTH || drips
+                                 ? (long long)route->body_length
+                                 : route->declared_length;
         length += snprintf(status_line + length, sizeof status_line - (size_t)length, "Content-Length: %lld\r\n",
                            declared);
     }
     snprintf(status_line + length, sizeof status_line - (size_t)length, "\r\n");
+    if (drips) {
+        drip(connection, status_line, strlen(status_line), route->stall_milliseconds);
+        drip(connection, route->body == NULL ? "" : route->body, route->body_length, route->stall_milliseconds);
+        return;
+    }
     send_all(connection, status_line, strlen(status_line));
     send_all(connection, route->body == NULL ? "" : route->body, route->body_length);
 }
 
 static void serve_connection(http_fixture *fixture, fixture_socket connection) {
     char head[REQUEST_LIMIT];
-    size_t length = read_request_head(connection, head, sizeof head);
+    size_t length = read_request(connection, head, sizeof head);
     if (length == 0) {
         return;
     }
@@ -209,12 +263,12 @@ static void serve_connection(http_fixture *fixture, fixture_socket connection) {
 }
 
 static void serve(http_fixture *fixture) {
-    while (!fixture->stopping) {
+    while (!is_raised(&fixture->stopping)) {
         fixture_socket connection = accept(fixture->listener, NULL, NULL);
         if (connection == INVALID_FIXTURE_SOCKET) {
             continue;
         }
-        if (!fixture->stopping) {
+        if (!is_raised(&fixture->stopping)) {
             serve_connection(fixture, connection);
         }
 #if defined(_WIN32)
@@ -321,7 +375,7 @@ static void wake_listener(const http_fixture *fixture) {
 }
 
 char *http_fixture_stop(http_fixture *fixture) {
-    fixture->stopping = 1;
+    raise_flag(&fixture->stopping);
     wake_listener(fixture);
 #if defined(_WIN32)
     WaitForSingleObject(fixture->thread, INFINITE);

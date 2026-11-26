@@ -16,6 +16,15 @@ void naula_fetch_use_deadline(unsigned milliseconds);
 #if defined(_WIN32)
 /** The WinHTTP access type every session is opened with. */
 unsigned long naula_fetch_windows_access_type(void);
+
+/**
+ * Closes each request's handle as the deadline would, at point: NAULA_FETCH_CLOSE_AFTER_RECEIVE once the answer's head
+ * arrived and before it is read, NAULA_FETCH_CLOSE_AFTER_EXCHANGE once the answer is settled; 0 never.
+ */
+void naula_fetch_windows_close_at(int point);
+
+#define NAULA_FETCH_CLOSE_AFTER_RECEIVE 1
+#define NAULA_FETCH_CLOSE_AFTER_EXCHANGE 2
 #else
 /**
  * Forgets any loaded libcurl and makes the next fetch open the shared object called library_name instead

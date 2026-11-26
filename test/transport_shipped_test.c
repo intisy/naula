@@ -35,7 +35,7 @@ static void plain_http_is_refused_without_the_hook(void) {
     CHECK(sink.bytes == 0);
 
     answer = empty_answer();
-    naula_fetch_request request = {sizeof request, url, NULL, NULL, 5000, NULL, NULL};
+    naula_fetch_request request = {sizeof request, url, NULL, NULL, 5000, NULL, NULL, NULL, NULL, 0, NULL};
     naula_fetch_over_network(&request, &sink, &answer);
     CHECK(answer.outcome == NAULA_FETCH_REFUSED);
     CHECK(sink.bytes == 0);

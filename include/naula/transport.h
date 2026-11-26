@@ -47,7 +47,12 @@ int naula_fetch_sink_admits(naula_fetch_sink *sink, uint64_t declared);
 
 /**
  * First shape ends at `authorization`; `extra_headers`, a NULL-terminated list of whole `Name: value` lines sent on
- * every hop and overwritten after use, was appended and is read only when `size` covers it.
+ * every hop and overwritten after use, was appended and is read only when `size` covers it. `method` (NULL is GET,
+ * otherwise 1 to 16 capital letters), `body` with `body_length`, and `content_type` (NULL sends none) were appended
+ * after it and are read only when `size` covers `content_type`.
+ *
+ * @implNote A request whose method is not GET is never redirected: a 3xx answers STATUS with that status, so a body
+ * is never sent to an address the caller did not name, whatever the transport would do with it on a redirect.
  */
 typedef struct naula_fetch_request {
     uint32_t size;
@@ -57,6 +62,10 @@ typedef struct naula_fetch_request {
     unsigned deadline_milliseconds;
     const char *authorization;
     const char *const *extra_headers;
+    const char *method;
+    const uint8_t *body;
+    size_t body_length;
+    const char *content_type;
 } naula_fetch_request;
 
 typedef enum naula_fetch_outcome {
@@ -93,7 +102,7 @@ void naula_fetch_refuse(naula_fetch_answer *answer, const char *fix, const char 
 /** Marks a REFUSED answer as one whose host name did not resolve; does nothing for an answer too small to carry it. */
 void naula_fetch_mark_host_unresolved(naula_fetch_answer *answer);
 
-/** Answers that memory ran out before the transport could answer. */
+/** Answers that memory ran out, releasing any validators already taken so the answer carries nothing. */
 void naula_fetch_out_of_memory(naula_fetch_answer *answer);
 
 /** Answers CUT_OFF for a transfer that did not finish within request->deadline_milliseconds. */
@@ -115,6 +124,13 @@ void naula_fetch_into_memory(const char *url, const char *authorization, unsigne
 void naula_fetch_into_memory_with_headers(const char *url, const char *authorization, const char *const *extra_headers,
                                           unsigned deadline_milliseconds, naula_fetch_sink *sink,
                                           naula_fetch_answer *answer);
+
+/**
+ * naula_fetch_over_network under the rules of naula_fetch_into_memory: https only, and the deadline override, for a
+ * request of any method and body.
+ */
+void naula_fetch_send_into_memory(const naula_fetch_request *request, naula_fetch_sink *sink,
+                                  naula_fetch_answer *answer);
 
 /** Whether the test hook has allowed plain http; always 0 in the shipped library. */
 int naula_fetch_plain_http_is_allowed(void);

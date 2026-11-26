@@ -42,7 +42,11 @@ if(NOT WIN32)
     target_compile_definitions(transport_test PRIVATE NAULA_FAKE_CURL="$<TARGET_FILE:fake_curl_reporting_receive_error>")
 endif()
 
+naula_test(transport_memory_test http_fixture.c)
+target_link_libraries(transport_memory_test PRIVATE naula_test_hooks naula_allocator_counting)
+
 if(WIN32)
+    target_link_libraries(transport_memory_test PRIVATE ws2_32)
     target_link_libraries(transport_shipped_test PRIVATE ws2_32)
     target_link_libraries(transport_test PRIVATE ws2_32)
 endif()
@@ -72,6 +76,13 @@ naula_test(provider_gitea_test http_fixture.c)
 target_link_libraries(provider_gitea_test PRIVATE naula_test_hooks naula_allocator)
 target_compile_definitions(provider_gitea_test PRIVATE NAULA_FORGEJO_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/forgejo")
 
+naula_test(provider_github_write_test http_fixture.c)
+target_link_libraries(provider_github_write_test PRIVATE naula_test_hooks naula_allocator)
+
+naula_test(provider_gitea_write_test http_fixture.c)
+target_link_libraries(provider_gitea_write_test PRIVATE naula_test_hooks naula_allocator)
+target_compile_definitions(provider_gitea_write_test PRIVATE NAULA_FORGEJO_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/forgejo")
+
 naula_test(provider_web_test http_fixture.c)
 target_link_libraries(provider_web_test PRIVATE naula_test_hooks naula_allocator)
 
@@ -81,6 +92,8 @@ set_tests_properties(provider_network_test PROPERTIES LABELS network)
 if(WIN32)
     target_link_libraries(provider_gitea_test PRIVATE ws2_32)
     target_link_libraries(provider_web_test PRIVATE ws2_32)
+    target_link_libraries(provider_github_write_test PRIVATE ws2_32)
+    target_link_libraries(provider_gitea_write_test PRIVATE ws2_32)
 endif()
 
 naula_test(repo_file_test)

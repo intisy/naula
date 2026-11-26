@@ -14,10 +14,26 @@ static int covers_first_shape(const naula_provider *provider) {
     return provider->size >= offsetof(naula_provider, release_index) + sizeof provider->release_index;
 }
 
+int naula_provider_offers_writes(const naula_provider *provider) {
+    return provider->size >= offsetof(naula_provider, write_metadata) + sizeof provider->write_metadata;
+}
+
+static int has_every_write(const naula_provider *provider) {
+    return provider->create != NULL && provider->rename != NULL && provider->transfer != NULL &&
+           provider->archive != NULL && provider->read_metadata != NULL && provider->write_metadata != NULL;
+}
+
 static int has_every_function(const naula_provider *provider) {
     return provider->describe != NULL && provider->lookup != NULL && provider->find != NULL &&
            provider->read_file != NULL && provider->contains != NULL && provider->parent_count != NULL &&
-           provider->list_repos != NULL && provider->release_index != NULL;
+           provider->list_repos != NULL && provider->release_index != NULL &&
+           (!naula_provider_offers_writes(provider) || has_every_write(provider));
+}
+
+naula_status naula_refuse_account_rename(const char *word, naula_refusal *refusal) {
+    naula_refuse(refusal, "unsupported_operation", NAULA_ACCOUNT_RENAME_FIX,
+                 "the %s provider cannot rename an account over its API", word);
+    return NAULA_REFUSED;
 }
 
 static const naula_provider *entry_for(const naula_providers *providers, const char *word) {
@@ -47,7 +63,7 @@ naula_status naula_providers_register(naula_providers *providers, const naula_pr
                                       naula_refusal *refusal) {
     if (!covers_first_shape(provider) || !has_every_function(provider) || provider->word == NULL ||
         provider->word[0] == '\0') {
-        naula_refuse(refusal, "invalid_provider", "fill every function of the provider's first shape and name its word",
+        naula_refuse(refusal, "invalid_provider", "fill every function the provider's size covers and name its word",
                      "the provider is smaller than its first shape or names no word");
         return NAULA_REFUSED;
     }
@@ -62,8 +78,9 @@ naula_status naula_providers_register(naula_providers *providers, const naula_pr
         return NAULA_OUT_OF_MEMORY;
     }
     memset(copy, 0, sizeof *copy);
-    memcpy(copy, provider, provider->size < sizeof *copy ? provider->size : sizeof *copy);
-    copy->size = sizeof *copy;
+    uint32_t kept = provider->size < sizeof *copy ? provider->size : (uint32_t)sizeof *copy;
+    memcpy(copy, provider, kept);
+    copy->size = kept;
     providers->entries[providers->count++] = copy;
     return NAULA_OK;
 }

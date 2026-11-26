@@ -442,6 +442,27 @@ static void gitea_1_20_and_later_and_every_forgejo_scheme_on_it_are_accepted(voi
     }
 }
 
+static void the_version_is_checked_after_the_lookup(void) {
+    http_route routes[2] = {route(REPOSITORY_ROUTE, 401, "{\"message\":\"token is required\"}"),
+                            route(VERSION_ROUTE, 200, "{\"version\":\"1.19.4\"}")};
+    http_fixture *server = serve(routes, 2);
+    naula_refusal refusal = fresh_refusal();
+    int contained = 1;
+    size_t count = 0;
+    CHECK(contains("main", &contained, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "token_needed", "an old host that wants a token");
+    CHECK(gitea()->parent_count(gitea()->context, HOST, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "token_needed", "parent_count on an old host that wants a token");
+    naula_memory_release(finish(server));
+    routes[0] = route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY);
+    server = serve(routes, 2);
+    CHECK(contains("main", &contained, &refusal) == NAULA_NOT_FOUND && contained == 0);
+    CHECK(gitea()->parent_count(gitea()->context, HOST, NUMBER, COMMIT, NULL, &count, &refusal) == NAULA_NOT_FOUND);
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "GET " VERSION_ROUTE " ") == NULL);
+    naula_memory_release(log);
+}
+
 static void read_file_and_parent_count_check_the_version_too(void) {
     char *repository = load("repository.json");
     http_route routes[2] = {route(REPOSITORY_ROUTE, 200, repository),
@@ -574,6 +595,7 @@ int main(void) {
     contains_refuses_a_commit_that_is_not_hex_or_a_ref_that_reads_as_an_option();
     a_host_older_than_gitea_1_20_is_refused_before_any_call_it_would_misread();
     gitea_1_20_and_later_and_every_forgejo_scheme_on_it_are_accepted();
+    the_version_is_checked_after_the_lookup();
     read_file_and_parent_count_check_the_version_too();
     parent_count_reads_the_commit();
     list_repos_reads_pages_until_an_empty_one();
