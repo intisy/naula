@@ -4,6 +4,7 @@
 
 #include "cJSON.h"
 #include "check.h"
+#include "home_internal.h"
 #include "naula/repo_file.h"
 #include "repo_file_rules.h"
 #include "schema_json.h"
@@ -264,6 +265,46 @@ static void every_pattern_has_its_matcher(void) {
     }
 }
 
+static const char *const HOME_OBJECTS[] = {"/definitions/providerHome/properties/", "/definitions/webHome/properties/",
+                                           "/definitions/urlHome/properties/"};
+static const char *const HOME_MEMBERS[] = {REPO_FILE_HOME_PROVIDER, REPO_FILE_HOME_HOST, REPO_FILE_HOME_ACCOUNT,
+                                           REPO_FILE_HOME_DOMAIN, REPO_FILE_HOME_URL};
+
+static int is_home_member_in_table(const char *name) {
+    for (size_t index = 0; index < sizeof HOME_OBJECTS / sizeof HOME_OBJECTS[0]; index++) {
+        char location[LOCATION_CAPACITY];
+        size_t at = 0;
+        snprintf(location, sizeof location, "%s%s", HOME_OBJECTS[index], name);
+        if (rule_at(location, &at) != NULL && REPO_FILE_RULES[at].kind == REPO_FILE_RULE_MEMBER) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** A home is read member by member in home.c, so its names must be exactly the members the three home shapes name. */
+static void home_members_are_the_tables(void) {
+    for (size_t index = 0; index < sizeof HOME_MEMBERS / sizeof HOME_MEMBERS[0]; index++) {
+        if (!naula_home_names_member(HOME_MEMBERS[index]) || !is_home_member_in_table(HOME_MEMBERS[index])) {
+            fprintf(stderr, "the home member %s is not both read by home.c and named by the table\n",
+                    HOME_MEMBERS[index]);
+            check_failures++;
+        }
+    }
+    for (size_t rule = 0; rule < REPO_FILE_RULE_COUNT; rule++) {
+        for (size_t index = 0; index < sizeof HOME_OBJECTS / sizeof HOME_OBJECTS[0]; index++) {
+            size_t length = strlen(HOME_OBJECTS[index]);
+            const char *name = REPO_FILE_RULES[rule].location + length;
+            if (REPO_FILE_RULES[rule].kind == REPO_FILE_RULE_MEMBER &&
+                strncmp(REPO_FILE_RULES[rule].location, HOME_OBJECTS[index], length) == 0 &&
+                !naula_home_names_member(name)) {
+                fprintf(stderr, "the table names the home member %s, which home.c does not read\n", name);
+                check_failures++;
+            }
+        }
+    }
+}
+
 static int ends_with(const char *text, const char *suffix) {
     size_t length = strlen(text);
     size_t suffix_length = strlen(suffix);
@@ -384,8 +425,8 @@ static void every_document_has_one_verdict(const cJSON *schema, const cJSON *doc
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(each, "name");
         const cJSON *accepted = cJSON_GetObjectItemCaseSensitive(each, "accepted");
         const cJSON *written = cJSON_GetObjectItemCaseSensitive(each, "text");
-        char *text = cJSON_IsString(written) ? NULL
-                                             : cJSON_PrintUnformatted(cJSON_GetObjectItemCaseSensitive(each, "document"));
+        const cJSON *document = cJSON_GetObjectItemCaseSensitive(each, "document");
+        char *text = cJSON_IsString(written) ? NULL : cJSON_PrintUnformatted(document);
         const char *bytes = cJSON_IsString(written) ? written->valuestring : text;
         CHECK(cJSON_IsString(name) && cJSON_IsBool(accepted) && bytes != NULL);
         if (cJSON_IsString(name) && cJSON_IsBool(accepted) && bytes != NULL) {
@@ -414,6 +455,7 @@ int main(void) {
     walk_schema(&state, schema, "");
     every_rule_is_stated_once(&state);
     every_pattern_has_its_matcher();
+    home_members_are_the_tables();
     every_matcher_agrees_with_its_pattern(schema, vectors);
     every_fixture_keeps_its_verdict(schema);
     every_document_has_one_verdict(schema, documents);

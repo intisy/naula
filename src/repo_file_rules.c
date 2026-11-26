@@ -27,7 +27,11 @@
 #define OWN_ID_PATTERN "^(?:git:" HASH "|" LOCAL_NAME ")$"
 #define REFERENCE_ID_PATTERN "^(?:git:" HASH "|" LOCAL_NAME ")(?:/(?!\\.{1,2}(?:/|$))[a-z0-9._-]+)*$"
 #define NUMBERED_PLACE_PATTERN                                                                                        \
-    "^(?!web[:@])" PROVIDER "(?:@" DOMAIN PORT ")?:(?!0+$)[0-9]{1," TEXT_OF(REPO_FILE_NUMBER_DIGITS_LIMIT) "}$"
+    "^(?!" WEB "[:@])" PROVIDER "(?:@" DOMAIN PORT ")?:(?!0+$)[0-9]{1," TEXT_OF(REPO_FILE_NUMBER_DIGITS_LIMIT) "}$"
+
+#define WEB REPO_FILE_WEB_PROVIDER
+#define ENUM_FIRST(name) "[\"" name "\""
+#define ENUM_NEXT(name) ", \"" name "\""
 
 #define DEPENDENCY REPO_FILE_DEPENDENCY
 #define ORG REPO_FILE_ORG
@@ -71,7 +75,7 @@ const repo_file_rule REPO_FILE_RULES[] = {
     VALUE(SETTINGS "/type", "object"),
     VALUE(SETTINGS "/additionalProperties", "false"),
     MEMBER(SETTINGS "/properties/visibility"),
-    VALUE(SETTINGS "/properties/visibility/enum", "[\"public\", \"private\"]"),
+    VALUE(SETTINGS "/properties/visibility/enum", REPO_FILE_VISIBILITIES(ENUM_FIRST, ENUM_NEXT) "]"),
     MEMBER_OF(SETTINGS "/properties/defaultBranch", "branch"),
     MEMBER(SETTINGS "/properties/issues"),
     VALUE(SETTINGS "/properties/issues/type", "boolean"),
@@ -160,34 +164,34 @@ const repo_file_rule REPO_FILE_RULES[] = {
             "^(?!\\.{1,2}$)" FOLDER_CHARACTER "{1," TEXT_OF(REPO_FILE_ACCOUNT_LENGTH_LIMIT) "}$",
             naula_home_is_account),
     VALUE(DEFINITION "provider/type", "string"),
-    PATTERN(DEFINITION "provider/pattern", "^(?!web$)" PROVIDER "$", naula_home_is_provider),
+    PATTERN(DEFINITION "provider/pattern", "^(?!" WEB "$)" PROVIDER "$", naula_home_is_provider),
 
     REFERENCE(DEFINITION "home/oneOf/0", "providerHome"),
     REFERENCE(DEFINITION "home/oneOf/1", "webHome"),
     REFERENCE(DEFINITION "home/oneOf/2", "urlHome"),
     VALUE(DEFINITION "providerHome/type", "object"),
     VALUE(DEFINITION "providerHome/additionalProperties", "false"),
-    REQUIRED(DEFINITION "providerHome/required/provider"),
-    REQUIRED(DEFINITION "providerHome/required/account"),
-    MEMBER_OF(DEFINITION "providerHome/properties/provider", "provider"),
-    MEMBER_OF(DEFINITION "providerHome/properties/host", "host"),
-    MEMBER_OF(DEFINITION "providerHome/properties/account", "account"),
+    REQUIRED(DEFINITION "providerHome/required/" REPO_FILE_HOME_PROVIDER),
+    REQUIRED(DEFINITION "providerHome/required/" REPO_FILE_HOME_ACCOUNT),
+    MEMBER_OF(DEFINITION "providerHome/properties/" REPO_FILE_HOME_PROVIDER, "provider"),
+    MEMBER_OF(DEFINITION "providerHome/properties/" REPO_FILE_HOME_HOST, "host"),
+    MEMBER_OF(DEFINITION "providerHome/properties/" REPO_FILE_HOME_ACCOUNT, "account"),
     VALUE(DEFINITION "webHome/type", "object"),
     VALUE(DEFINITION "webHome/additionalProperties", "false"),
-    REQUIRED(DEFINITION "webHome/required/provider"),
-    REQUIRED(DEFINITION "webHome/required/domain"),
-    MEMBER(DEFINITION "webHome/properties/provider"),
-    VALUE(DEFINITION "webHome/properties/provider/const", "web"),
-    MEMBER_OF(DEFINITION "webHome/properties/domain", "domain"),
+    REQUIRED(DEFINITION "webHome/required/" REPO_FILE_HOME_PROVIDER),
+    REQUIRED(DEFINITION "webHome/required/" REPO_FILE_HOME_DOMAIN),
+    MEMBER(DEFINITION "webHome/properties/" REPO_FILE_HOME_PROVIDER),
+    VALUE(DEFINITION "webHome/properties/" REPO_FILE_HOME_PROVIDER "/const", WEB),
+    MEMBER_OF(DEFINITION "webHome/properties/" REPO_FILE_HOME_DOMAIN, "domain"),
     VALUE(DEFINITION "urlHome/type", "object"),
     VALUE(DEFINITION "urlHome/additionalProperties", "false"),
-    REQUIRED(DEFINITION "urlHome/required/url"),
-    MEMBER_OF(DEFINITION "urlHome/properties/url", "gitUrl"),
+    REQUIRED(DEFINITION "urlHome/required/" REPO_FILE_HOME_URL),
+    MEMBER_OF(DEFINITION "urlHome/properties/" REPO_FILE_HOME_URL, "gitUrl"),
 
     VALUE(DEFINITION "numberedPlace/type", "string"),
     PATTERN(DEFINITION "numberedPlace/pattern", NUMBERED_PLACE_PATTERN, naula_home_is_numbered_place),
     VALUE(DEFINITION "webPlace/type", "string"),
-    PATTERN(DEFINITION "webPlace/pattern", "^web:" DOMAIN "$", naula_home_is_web_place),
+    PATTERN(DEFINITION "webPlace/pattern", "^" WEB ":" DOMAIN "$", naula_home_is_web_place),
     REFERENCE(DEFINITION "place/oneOf/0", "numberedPlace"),
     REFERENCE(DEFINITION "place/oneOf/1", "webPlace"),
     REFERENCE(DEFINITION "place/oneOf/2", "gitUrl"),

@@ -12,8 +12,13 @@ static const char *const UNKNOWN_MEMBER_FIX = "remove the member, or spell it as
 static const char *const TOPIC_FIX = "list at most " REPO_FILE_TEXT_OF(REPO_FILE_TOPIC_COUNT_LIMIT)
                                      " different topics of lowercase letters, digits and hyphens, "
                                      REPO_FILE_TEXT_OF(REPO_FILE_TOPIC_LENGTH_LIMIT) " characters each";
-static const char *const SETTINGS_FIX =
-    "keep settings to visibility (\"public\" or \"private\"), defaultBranch (a name), issues and wiki (true or false)";
+#define FIX_FIRST(name) "\"" name "\""
+#define FIX_NEXT(name) " or \"" name "\""
+#define LISTED(name) name,
+
+static const char *const SETTINGS_FIX = "keep settings to visibility (" REPO_FILE_VISIBILITIES(FIX_FIRST, FIX_NEXT)
+                                        "), defaultBranch (a name), issues and wiki (true or false)";
+static const char *const VISIBILITIES[] = {REPO_FILE_VISIBILITIES(LISTED, LISTED) NULL};
 
 static void path_append(member_path *path, const char *text) {
     size_t used = strlen(path->text);
@@ -311,8 +316,7 @@ static naula_status read_topics(const cJSON *topics, const member_path *path, na
 
 static int is_setting_valid(const cJSON *setting) {
     if (strcmp(setting->string, "visibility") == 0) {
-        return cJSON_IsString(setting) && (strcmp(setting->valuestring, "public") == 0 ||
-                                           strcmp(setting->valuestring, "private") == 0);
+        return cJSON_IsString(setting) && is_allowed(setting->valuestring, VISIBILITIES);
     }
     if (strcmp(setting->string, "defaultBranch") == 0) {
         return cJSON_IsString(setting) && repo_file_is_branch(setting->valuestring);

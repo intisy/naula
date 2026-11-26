@@ -25,6 +25,20 @@
 #define REPO_FILE_NUMBER_DIGITS_LIMIT 19
 #define REPO_FILE_URL_LENGTH_LIMIT 2048
 
+#define REPO_FILE_WEB_PROVIDER "web"
+
+/**
+ * The visibilities a repo may state, the first passed to `first` and each later one to `next`, so this one list
+ * builds the schema's enum text, the parser's list and the refusal's fix.
+ */
+#define REPO_FILE_VISIBILITIES(first, next) first("public") next("private")
+
+#define REPO_FILE_HOME_PROVIDER "provider"
+#define REPO_FILE_HOME_HOST "host"
+#define REPO_FILE_HOME_ACCOUNT "account"
+#define REPO_FILE_HOME_DOMAIN "domain"
+#define REPO_FILE_HOME_URL "url"
+
 #define REPO_FILE_TEXT(value) #value
 #define REPO_FILE_TEXT_OF(value) REPO_FILE_TEXT(value)
 

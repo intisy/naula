@@ -11,4 +11,7 @@ int naula_home_is_git_url(const char *text);
 int naula_home_is_numbered_place(const char *text);
 int naula_home_is_web_place(const char *text);
 
+/** Whether naula_home_from_json reads a member of this name. */
+int naula_home_names_member(const char *name);
+
 #endif

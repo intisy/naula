@@ -556,6 +556,42 @@
     }
   },
   {
+    "name": "an internal visibility",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "visibility": "internal"
+      }
+    }
+  },
+  {
+    "name": "a private visibility",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "visibility": "private"
+      }
+    }
+  },
+  {
     "name": "an empty default branch",
     "accepted": false,
     "document": {

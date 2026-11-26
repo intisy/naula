@@ -112,7 +112,7 @@ static int is_git_url(const char *text) {
 }
 
 int naula_home_is_provider(const char *text) {
-    return strcmp(text, "web") != 0 && is_word(text, strlen(text));
+    return strcmp(text, REPO_FILE_WEB_PROVIDER) != 0 && is_word(text, strlen(text));
 }
 
 int naula_home_is_account(const char *text) {
@@ -180,19 +180,24 @@ typedef struct home_members {
 } home_members;
 
 static const char **member_slot(home_members *members, const char *name) {
-    if (strcmp(name, "provider") == 0) {
+    if (strcmp(name, REPO_FILE_HOME_PROVIDER) == 0) {
         return &members->provider;
     }
-    if (strcmp(name, "host") == 0) {
+    if (strcmp(name, REPO_FILE_HOME_HOST) == 0) {
         return &members->host;
     }
-    if (strcmp(name, "account") == 0) {
+    if (strcmp(name, REPO_FILE_HOME_ACCOUNT) == 0) {
         return &members->account;
     }
-    if (strcmp(name, "domain") == 0) {
+    if (strcmp(name, REPO_FILE_HOME_DOMAIN) == 0) {
         return &members->domain;
     }
-    return strcmp(name, "url") == 0 ? &members->url : NULL;
+    return strcmp(name, REPO_FILE_HOME_URL) == 0 ? &members->url : NULL;
+}
+
+int naula_home_names_member(const char *name) {
+    home_members members;
+    return member_slot(&members, name) != NULL;
 }
 
 static naula_status read_member(const cJSON *member, home_members *members, naula_refusal *refusal) {
@@ -233,7 +238,7 @@ static naula_status check_url_home(const home_members *members, naula_refusal *r
 
 static naula_status check_web_home(const home_members *members, naula_refusal *refusal) {
     if (members->domain == NULL || members->account != NULL || members->host != NULL) {
-        return refuse_home(refusal, "a %s home names a domain and nothing else", "web");
+        return refuse_home(refusal, "a %s home names a domain and nothing else", REPO_FILE_WEB_PROVIDER);
     }
     if (!naula_home_is_domain(members->domain)) {
         return refuse_home(refusal, "the domain %s is not a bare domain name", members->domain);
@@ -265,7 +270,7 @@ static naula_status check_home(const home_members *members, uint32_t *kind, naul
     if (members->provider == NULL) {
         return refuse_home(refusal, "a home names a provider or a url, and %s does", "none");
     }
-    if (strcmp(members->provider, "web") == 0) {
+    if (strcmp(members->provider, REPO_FILE_WEB_PROVIDER) == 0) {
         *kind = NAULA_HOME_WEB;
         return check_web_home(members, refusal);
     }
@@ -347,7 +352,8 @@ static int split_named_place(const char *text, place_parts *parts) {
 }
 
 static int is_web_word(const place_parts *parts) {
-    return parts->word_length == 3 && strncmp(parts->word, "web", 3) == 0;
+    return parts->word_length == sizeof REPO_FILE_WEB_PROVIDER - 1 &&
+           strncmp(parts->word, REPO_FILE_WEB_PROVIDER, parts->word_length) == 0;
 }
 
 static int is_digit_run(const char *digits, size_t length) {
@@ -473,7 +479,7 @@ char *naula_place_text(const naula_place *place) {
     char text[PLACE_TEXT_SIZE];
     char host[PLACE_HOST_SIZE];
     if (place->kind == NAULA_HOME_WEB) {
-        snprintf(text, sizeof text, "web:%s", place->domain);
+        snprintf(text, sizeof text, "%s:%s", REPO_FILE_WEB_PROVIDER, place->domain);
         lowercase(text);
     } else if (place->kind == NAULA_HOME_URL) {
         snprintf(text, sizeof text, "%s", place->url);
