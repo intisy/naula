@@ -302,19 +302,36 @@ static naula_status follow_primary(const resolver *subject, size_t anchor, size_
 }
 
 /**
- * A primary other than the one this anchor's record confirmed needs the user's accept. With no record of its own, the
- * baseline is the primary of the records of this id whose `at` shares a place with this one, and records that
- * disagree on it ask in any case, so a consumer that edits its `at` during a move keeps the prompt.
+ * The baseline a new primary is asked against: this anchor's record's primary, or with no record of its own the
+ * primary of its lineage, any disagreement among them asking in any case, so a consumer that edits its `at` during a
+ * move keeps the prompt.
  */
+static naula_status baseline_primary(const resolver *subject, const naula_place **was, int *conflicting) {
+    *was = NULL;
+    *conflicting = 0;
+    if (subject->cache.present) {
+        *was = subject->cache.has_primary ? &subject->cache.homes[subject->cache.primary].place : NULL;
+        return NAULA_OK;
+    }
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        const identity_cache *record = &subject->lineage[index];
+        if (!record->has_primary || !naula_resolver_lineage_usable(subject, index)) {
+            continue;
+        }
+        const naula_place *primary = &record->homes[record->primary].place;
+        if (*was == NULL) {
+            *was = primary;
+        } else {
+            *conflicting |= !naula_resolver_same_place(*was, NULL, primary, NULL);
+        }
+    }
+    return NAULA_OK;
+}
+
 static naula_status check_primary_change(const resolver *subject, size_t primary, naula_refusal *refusal) {
     const naula_place *was = NULL;
     int conflicting = 0;
-    if (subject->cache.present && subject->cache.has_primary) {
-        was = &subject->cache.homes[subject->cache.primary].place;
-    } else if (subject->baseline_present) {
-        was = &subject->baseline;
-        conflicting = subject->baseline_conflicting;
-    }
+    baseline_primary(subject, &was, &conflicting);
     const naula_place *becomes = &subject->candidates[primary]->place;
     if (was == NULL || (!conflicting && naula_resolver_same_place(was, NULL, becomes, NULL))) {
         return NAULA_OK;
@@ -432,10 +449,6 @@ static naula_status write_cache(const resolver *subject, size_t primary, naula_r
     if (status == NAULA_OK && !subject->cache.foreign) {
         status = naula_cache_write(subject->session->cache_directory, subject->hex, subject->anchor, &next,
                                    resolution->cache_problem);
-    }
-    if (status == NAULA_OK) {
-        status = naula_cache_write_guards(subject->session->cache_directory, subject->hex, &subject->guards, &next,
-                                          resolution->cache_problem);
     }
     naula_cache_release(&next);
     return status;
@@ -648,34 +661,53 @@ static naula_status resolve_online(resolver *subject, const naula_reference *ref
     return status == NAULA_OK ? answer(subject, resolution, refusal) : status;
 }
 
-static int shares_a_place(char *const *left, size_t left_count, char *const *right, size_t right_count) {
-    for (size_t one = 0; one < left_count; one++) {
-        for (size_t other = 0; other < right_count; other++) {
-            if (strcmp(left[one], right[other]) == 0) {
-                return 1;
-            }
+static int holds_text(char *const *texts, size_t count, const char *text) {
+    for (size_t index = 0; index < count; index++) {
+        if (strcmp(texts[index], text) == 0) {
+            return 1;
         }
     }
     return 0;
 }
 
-static naula_status take_baseline(resolver *subject, const identity_cache *other) {
-    if (!other->present || !other->has_primary ||
-        !shares_a_place(other->at, other->at_count, subject->at_texts, subject->at_text_count)) {
-        return NAULA_OK;
+/** Whether `other` confirmed a place its own `at` holds and this `at` also names. */
+static naula_status is_lineage(const resolver *subject, const identity_cache *other, int *lineage) {
+    *lineage = 0;
+    for (size_t entry = 0; entry < other->count && !*lineage; entry++) {
+        if (other->homes[entry].state != CACHE_CONFIRMED) {
+            continue;
+        }
+        char *text = naula_cache_place_text(&other->homes[entry].place);
+        if (text == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        *lineage = holds_text(other->at, other->at_count, text) &&
+                   holds_text(subject->at_texts, subject->at_text_count, text);
+        naula_memory_release(text);
     }
-    const naula_place *primary = &other->homes[other->primary].place;
-    if (subject->baseline_present) {
-        subject->baseline_conflicting |= !naula_resolver_same_place(&subject->baseline, NULL, primary, NULL);
-        return NAULA_OK;
-    }
-    naula_status status = naula_resolver_copy_place(primary, &subject->baseline);
-    subject->baseline_present = status == NAULA_OK;
-    return status;
+    return NAULA_OK;
 }
 
-/** With no record of this anchor's own, the primaries of the id's other records that share a place of `at`. */
-static naula_status read_baseline(resolver *subject) {
+static naula_status keep_lineage(resolver *subject, identity_cache *other) {
+    if (subject->lineage_count == subject->lineage_capacity) {
+        size_t capacity = subject->lineage_capacity == 0 ? 4 : subject->lineage_capacity * 2;
+        identity_cache *grown = naula_memory_reallocate(subject->lineage, capacity * sizeof *grown);
+        if (grown == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        subject->lineage = grown;
+        subject->lineage_capacity = capacity;
+    }
+    subject->lineage[subject->lineage_count++] = *other;
+    memset(other, 0, sizeof *other);
+    return NAULA_OK;
+}
+
+/**
+ * With no record of this anchor's own, its lineage: the id's records whose stored `at` holds a place that record
+ * confirmed and that this `at` also names. Nothing else any other consumer wrote is read.
+ */
+static naula_status read_lineage(resolver *subject) {
     const char *directory = subject->session->cache_directory;
     char **anchors = NULL;
     size_t count = 0;
@@ -686,9 +718,13 @@ static naula_status read_baseline(resolver *subject) {
     for (size_t index = 0; status == NAULA_OK && index < count; index++) {
         identity_cache other;
         char ignored[NAULA_CACHE_PROBLEM_SIZE] = "";
+        int lineage = 0;
         status = naula_cache_read(directory, subject->hex, anchors[index], NULL, 0, &other, ignored);
-        if (status == NAULA_OK) {
-            status = take_baseline(subject, &other);
+        if (status == NAULA_OK && other.present) {
+            status = is_lineage(subject, &other, &lineage);
+        }
+        if (status == NAULA_OK && lineage) {
+            status = keep_lineage(subject, &other);
         }
         naula_cache_release(&other);
     }
@@ -707,14 +743,7 @@ static naula_status read_cache(resolver *subject, const naula_reference *referen
         status = naula_cache_read(directory, subject->hex, subject->anchor, subject->at_texts, subject->at_text_count,
                                   &subject->cache, resolution->cache_problem);
     }
-    if (status == NAULA_OK) {
-        char problem[NAULA_CACHE_PROBLEM_SIZE] = "";
-        status = naula_cache_read_guards(directory, subject->hex, &subject->guards, problem);
-        if (resolution->cache_problem[0] == '\0') {
-            snprintf(resolution->cache_problem, sizeof resolution->cache_problem, "%s", problem);
-        }
-    }
-    return status == NAULA_OK ? read_baseline(subject) : status;
+    return status == NAULA_OK ? read_lineage(subject) : status;
 }
 
 static naula_status resolve_with(resolver *subject, const naula_reference *reference, naula_resolution *resolution,
@@ -767,9 +796,11 @@ naula_status naula_resolve(naula_session *session, const naula_reference *refere
     naula_status status = resolve_with(&subject, reference, resolution, refusal);
     naula_resolver_release_candidates(&subject);
     naula_cache_release(&subject.cache);
-    naula_cache_release(&subject.guards);
+    for (size_t index = 0; index < subject.lineage_count; index++) {
+        naula_cache_release(&subject.lineage[index]);
+    }
+    naula_memory_release(subject.lineage);
     naula_cache_release_texts(subject.at_texts, subject.at_text_count);
-    naula_place_release(&subject.baseline);
     if (status == NAULA_OUT_OF_MEMORY) {
         naula_resolution_release(resolution);
     }

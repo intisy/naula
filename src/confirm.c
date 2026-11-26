@@ -539,42 +539,72 @@ static int guards_account(const cache_home *cached, const naula_home *home) {
            naula_resolver_equals_ignoring_case(cached->account, home->account);
 }
 
-/**
- * The number a listed account was confirmed at: this anchor's record first, a home confirmed there before one kept as
- * a guard, then the newest of the id's guards, which every record of this id adds to.
- */
-static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number) {
-    const cache_home *best = NULL;
-    for (size_t index = 0; index < subject->cache.count; index++) {
-        const cache_home *cached = &subject->cache.homes[index];
-        if (guards_account(cached, home) && (best == NULL || cached->state < best->state)) {
-            best = cached;
-        }
-    }
-    for (size_t index = 0; best == NULL && index < subject->guards.count; index++) {
-        const cache_home *guard = &subject->guards.homes[index];
-        if (guards_account(guard, home) && (best == NULL || guard->confirmed > best->confirmed)) {
-            best = guard;
-        }
-    }
-    if (best != NULL) {
-        *number = best->place.number;
-    }
-    return best != NULL;
-}
-
-/** Whether any record or guard of this id holds `number` for the listed account. */
-static int is_guarded_number(const resolver *subject, const naula_home *home, uint64_t number) {
-    const identity_cache *sources[2] = {&subject->cache, &subject->guards};
-    for (int source = 0; source < 2; source++) {
-        for (size_t index = 0; index < sources[source]->count; index++) {
-            const cache_home *cached = &sources[source]->homes[index];
-            if (guards_account(cached, home) && cached->place.number == number) {
-                return 1;
+int naula_resolver_lineage_usable(const resolver *subject, size_t index) {
+    const identity_cache *record = &subject->lineage[index];
+    for (size_t entry = 0; entry < record->count; entry++) {
+        for (size_t candidate_index = 0; candidate_index < subject->count; candidate_index++) {
+            const candidate *home = subject->candidates[candidate_index];
+            if (home->outcome == CANDIDATE_REFUSED &&
+                naula_resolver_same_place(&home->place, home->account, &record->homes[entry].place,
+                                          record->homes[entry].account)) {
+                return 0;
             }
         }
     }
-    return 0;
+    return 1;
+}
+
+/** The entries of `record` for a listed account: 0 none, 1 all one `number`, 2 more than one number. */
+static int record_number(const identity_cache *record, const naula_home *home, uint64_t *number) {
+    int found = 0;
+    for (size_t index = 0; index < record->count; index++) {
+        const cache_home *cached = &record->homes[index];
+        if (!guards_account(cached, home)) {
+            continue;
+        }
+        if (found && cached->place.number != *number) {
+            return 2;
+        }
+        *number = cached->place.number;
+        found = 1;
+    }
+    return found;
+}
+
+/**
+ * The number a listed account was confirmed at: this anchor's own record's, or with none, the one every lineage
+ * record that holds the account agrees on. `disagree` is set when lineage records hold different numbers, which
+ * refuses every number for the account, failing closed.
+ */
+static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number, int *disagree) {
+    *disagree = 0;
+    if (subject->cache.present) {
+        const cache_home *best = NULL;
+        for (size_t index = 0; index < subject->cache.count; index++) {
+            const cache_home *cached = &subject->cache.homes[index];
+            if (guards_account(cached, home) && (best == NULL || cached->state < best->state)) {
+                best = cached;
+            }
+        }
+        if (best != NULL) {
+            *number = best->place.number;
+        }
+        return best != NULL;
+    }
+    int known = 0;
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        uint64_t held = 0;
+        int holds = naula_resolver_lineage_usable(subject, index) ? record_number(&subject->lineage[index], home, &held)
+                                                                  : 0;
+        if (holds == 2 || (holds == 1 && known && held != *number)) {
+            *disagree = 1;
+        }
+        if (holds == 1 && !known) {
+            *number = held;
+            known = 1;
+        }
+    }
+    return known || *disagree;
 }
 
 /**
@@ -640,7 +670,8 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
         return note_home(subject, home, 0, CANDIDATE_DEAD, "dead-skipped", detail, &index);
     }
     uint64_t cached = 0;
-    int known = cache_number(subject, home, &cached);
+    int disagree = 0;
+    int known = cache_number(subject, home, &cached, &disagree);
     const char *name = lister->place.kind == NAULA_HOME_PROVIDER ? lister->file.name : NULL;
     if (!known) {
         *number = reached_number(subject, home, name);
@@ -674,10 +705,22 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
             found = 0;
         }
     }
-    if (known) {
-        if (found != 0 && found != cached && is_guarded_number(subject, home, found)) {
-            cached = found;
+    if (known && disagree) {
+        if (found != 0) {
+            snprintf(detail, sizeof detail, "the records %s/%s was confirmed in before hold different numbers",
+                     home->account, name);
+            naula_status status =
+                note_home(subject, home, found, CANDIDATE_REFUSED, "number-changed", detail, &index);
+            if (status != NAULA_OK) {
+                return status;
+            }
         }
+        settle(lister, CANDIDATE_UNKNOWN, "unverifiable",
+               "the records this at grew from hold different numbers for %s account %s", home->provider,
+               home->account);
+        return NAULA_OK;
+    }
+    if (known) {
         if (found != 0 && found != cached) {
             snprintf(detail, sizeof detail, "%s/%s is repository %llu now, not %llu as confirmed before", home->account,
                      name, (unsigned long long)found, (unsigned long long)cached);

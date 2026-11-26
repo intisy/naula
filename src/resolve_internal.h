@@ -80,10 +80,9 @@ typedef struct resolver {
     char **at_texts;
     size_t at_text_count;
     identity_cache cache;
-    identity_cache guards;
-    naula_place baseline;
-    int baseline_present;
-    int baseline_conflicting;
+    identity_cache *lineage;
+    size_t lineage_count;
+    size_t lineage_capacity;
 } resolver;
 
 /** The homes a readable candidate lists: its repo.json's, or a web home's document's. */
@@ -102,6 +101,9 @@ naula_status naula_resolver_add(resolver *subject, const naula_place *place, con
 naula_status naula_resolver_confirm(resolver *subject, size_t index, unsigned depth);
 
 void naula_resolver_release_candidates(resolver *subject);
+
+/** Whether lineage record `index` may still speak: none of its homes was refused or found not linked in this run. */
+int naula_resolver_lineage_usable(const resolver *subject, size_t index);
 
 naula_status naula_resolver_copy_place(const naula_place *from, naula_place *to);
 

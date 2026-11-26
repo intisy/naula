@@ -1532,7 +1532,7 @@ static void places_naming_one_home_share_one_record(void) {
     naula_place_release(&place);
 }
 
-static void guards_survive_a_change_of_at(void) {
+static void an_edited_at_keeps_its_lineage(void) {
     char cache[512];
     naula_resolution resolution;
     naula_refusal refusal;
@@ -1561,8 +1561,96 @@ static void guards_survive_a_change_of_at(void) {
     naula_resolution_release(&resolution);
 
     accept_answer = 1;
-    CHECK(resolve_once(cache, ID, "forge:30", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal) == NAULA_OK);
     CHECK(!has_home(&resolution, NULL, 21) && has_home(&resolution, NULL, 30));
+    naula_resolution_release(&resolution);
+}
+
+static void a_first_contact_elsewhere_never_accepts_a_number_here(int bee_first) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory(bee_first ? "laundered-primary" : "laundered", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = bee_first ? repo_file("lib", HOME("bee") "," HOME("alpha"), NULL)
+                                    : repo_file("lib", HOME("alpha") "," HOME("bee"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    accept_answer = 1;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(!has_home(&resolution, NULL, 21));
+    naula_resolution_release(&resolution);
+    resolve_once(cache, ID, "forge:21", NULL, &resolution, &refusal);
+    naula_resolution_release(&resolution);
+    accept_answer = 0;
+    resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal);
+    if (has_home(&resolution, NULL, 21)) {
+        fprintf(stderr, "another consumer's first contact on 21 made this consumer accept it\n");
+        check_failures++;
+    }
+    CHECK(verdict_is(&resolution, NULL, 21, "number-changed", 0));
+    naula_resolution_release(&resolution);
+}
+
+static void a_copys_homes_never_evict_what_protects_an_edited_at(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("evicted", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    add_repo(NULL, 30, "gamma", "lib", genuine);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    static char list[4096];
+    static char accounts[64][8];
+    size_t used = 0;
+    for (int index = 0; index < 64; index++) {
+        snprintf(accounts[index], sizeof accounts[index], "m%d", index);
+        used += (size_t)snprintf(list + used, sizeof list - used, "%s{\"provider\":\"forge\",\"account\":\"%s\"}",
+                                 index == 0 ? "" : ",", accounts[index]);
+    }
+    const char *copies = repo_file("lib", list, NULL);
+    for (int index = 0; index < 64; index++) {
+        add_repo(NULL, (uint64_t)(100 + index), accounts[index], "lib", copies);
+    }
+    resolve_once(cache, ID, "forge:100", NULL, &resolution, &refusal);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    accept_answer = 1;
+    resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+    if (has_home(&resolution, NULL, 21)) {
+        fprintf(stderr, "a copy's 64 homes evicted the number that protects an edited at\n");
+        check_failures++;
+    }
+    CHECK(verdict_is(&resolution, NULL, 21, "number-changed", 0));
+    naula_resolution_release(&resolution);
+}
+
+static void a_copys_record_never_sets_a_baseline(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("copy-baseline", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha"), NULL));
+    add_repo(NULL, 66, "mallory", "lib", repo_file("lib", HOME("mallory"), NULL));
+    resolve_once(cache, ID, "forge:66", "forge:10", &resolution, &refusal);
+    naula_resolution_release(&resolution);
+    accept_answer = 0;
+    accept_calls = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    CHECK(accept_calls == 0 && has_home(&resolution, NULL, 10) && !has_home(&resolution, NULL, 66));
     naula_resolution_release(&resolution);
 }
 
@@ -2009,7 +2097,7 @@ static void out_of_memory_on_the_cache_paths(void) {
     add_repo(NULL, 21, "bee", "lib", genuine);
     accept_answer = 0;
     naula_session *session = open_session(cache, 0, NULL);
-    fails_cleanly(session, "forge:10", "forge:30", NAULA_REFUSED, "a new at, with guards and a baseline");
+    fails_cleanly(session, "forge:10", "forge:30", NAULA_REFUSED, "a new at read through its lineage");
     naula_session_close(session);
     accept_answer = 0;
 }
@@ -2105,7 +2193,11 @@ int main(void) {
     a_dead_at_starts_from_the_new_home_the_record_keeps();
     the_anchor_comes_first_in_the_confirmed_homes();
     places_naming_one_home_share_one_record();
-    guards_survive_a_change_of_at();
+    an_edited_at_keeps_its_lineage();
+    a_first_contact_elsewhere_never_accepts_a_number_here(0);
+    a_first_contact_elsewhere_never_accepts_a_number_here(1);
+    a_copys_homes_never_evict_what_protects_an_edited_at();
+    a_copys_record_never_sets_a_baseline();
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();

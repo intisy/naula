@@ -14,9 +14,9 @@ extern "C" {
 
 /**
  * How a session resolves. `cache_directory` NULL keeps no cache; otherwise it is an absolute path, and confirmations
- * are kept in `<cache_directory>/identities/<hex>-<anchor>.json`, one record per consumer's `at`, beside one
- * `<hex>.guards.json` per id. `providers` NULL makes the session open and own a registry of the built-in providers,
- * and a registry passed in must outlive the session. `history` NULL reads history through each provider, the
+ * are kept in `<cache_directory>/identities/<hex>-<anchor>.json`, one record per consumer's `at`. `providers` NULL
+ * makes the session open and own a registry of the built-in providers, and a registry passed in must outlive the
+ * session. `history` NULL reads history through each provider, the
  * installer's way. `token_for` answers a token for a provider word and host, or NULL for none: naula reads it during
  * the call it was asked for and never copies it, so the caller decides how long a secret lives. `accept_primary`
  * answers nonzero to accept a primary other than the one the cache holds, and NULL refuses every such change.

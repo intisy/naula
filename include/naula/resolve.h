@@ -68,16 +68,18 @@ typedef struct naula_resolution {
  * order, `at` order deciding only between places that do not list each other; the answer is every home linked both
  * ways to it, so another place of `at` that confirms only itself is refused (`not-linked`). The cache keeps one
  * record per `at`, so one consumer's first contact never shapes another's answer. A record never confirms a home on
- * its own: with the guards every record of the id shares, it guards the number each account was confirmed at, a
- * number that answered gone included, which is asked again every run; it is the starting point only when every place
- * of `at` answered gone; a run that confirms nothing never demotes a home in it; and it answers STALE when a home
- * could not be heard, serving only homes confirmed when it was last written and not refused in this run. A `local:`
+ * its own: it guards the number each account was confirmed at, a number that answered gone included, which is asked
+ * again every run; it is the starting point only when every place of `at` answered gone; a run that confirms nothing
+ * never demotes a home in it; and it answers STALE when a home could not be heard, serving only homes confirmed when
+ * it was last written and not refused in this run. An `at` with no record yet reads only its lineage, the records
+ * that confirmed a place their `at` and this one both name, and accepts a number for an account only when every
+ * lineage record holding that account holds it. A `local:`
  * id is refused (`unresolvable`), since it names a repo with no home and is never a dependency's target, and so is a
  * reference by `url` (`unverifiable`), which only a reader of git can follow. With nothing confirmed the refusal
  * carries the verdict of the first home `at` names: NAULA_TIMED_OUT or NAULA_UNREACHABLE when that home could not be
  * heard, and NAULA_NOT_FOUND only when every place `at` names is gone. A primary other than the one the record
- * confirmed needs the session's `accept_primary` (`primary-changed`); with no record of its own, the records of the id
- * whose `at` shares a place with this one set the primary, and ask in any case when they disagree. Primary pointers
+ * confirmed needs the session's `accept_primary` (`primary-changed`); with no record of its own, the lineage sets the
+ * primary, and asks in any case when its records disagree. Primary pointers
  * that loop are refused (`cycle`).
  */
 naula_status naula_resolve(naula_session *session, const naula_reference *reference, naula_resolution *resolution,

@@ -15,7 +15,6 @@
 #define CACHE_AT_TEXT_LIMIT 2048u
 #define PLACE_TEXT_SIZE 2304
 #define LARGEST_EXACT_INTEGER 9007199254740991.0
-#define GUARDS_SUFFIX ".guards.json"
 
 static void say(char *problem, const char *format, ...) {
     va_list arguments;
@@ -68,8 +67,6 @@ int naula_cache_is_temporary_name(const char *name) {
     if (is_id_hex(hex) && name[hex] == '-' && hex_run(name + hex + 1) == NAULA_CACHE_ANCHOR_SIZE - 1) {
         rest = name + hex + NAULA_CACHE_ANCHOR_SIZE;
         rest = strncmp(rest, ".json.", 6) == 0 ? rest + 6 : NULL;
-    } else if (is_id_hex(hex) && strncmp(name + hex, GUARDS_SUFFIX ".", strlen(GUARDS_SUFFIX) + 1) == 0) {
-        rest = name + hex + strlen(GUARDS_SUFFIX) + 1;
     }
     size_t length = rest == NULL ? 0 : strlen(rest);
     return rest != NULL && length >= 4 && strcmp(rest + length - 4, ".tmp") == 0;
@@ -102,6 +99,10 @@ static char *normal_place_text(const naula_place *place) {
                  (unsigned long long)place->number);
     }
     return naula_memory_duplicate_text(text);
+}
+
+char *naula_cache_place_text(const naula_place *place) {
+    return normal_place_text(place);
 }
 
 static int compare_texts(const void *left, const void *right) {
@@ -456,37 +457,6 @@ naula_status naula_cache_read(const char *directory, const char *hex, const char
     return status;
 }
 
-naula_status naula_cache_read_guards(const char *directory, const char *hex, identity_cache *guards, char *problem) {
-    memset(guards, 0, sizeof *guards);
-    if (directory == NULL) {
-        return NAULA_OK;
-    }
-    char *path = joined_path(directory, hex, GUARDS_SUFFIX);
-    if (path == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    cJSON *json = NULL;
-    naula_status status = read_json_file(path, hex, &json, problem);
-    int valid = 0;
-    if (status == NAULA_OK && json != NULL && names_the_id(json, hex)) {
-        status = read_homes(json, "guards", guards, &valid);
-    }
-    for (size_t index = 0; status == NAULA_OK && valid && index < guards->count; index++) {
-        valid = guards->homes[index].state == CACHE_GUARD && guards->homes[index].place.kind == NAULA_HOME_PROVIDER;
-    }
-    if (status == NAULA_OK && json != NULL && !valid) {
-        say(problem, "the guards for git:%s cannot be read and were ignored", hex);
-    }
-    if (status != NAULA_OK || !valid) {
-        naula_cache_release(guards);
-    } else {
-        guards->present = 1;
-    }
-    cJSON_Delete(json);
-    naula_memory_release(path);
-    return status;
-}
-
 static int add_home(cJSON *list, const cache_home *home) {
     cJSON *item = cJSON_CreateObject();
     if (item == NULL || !cJSON_AddItemToArray(list, item)) {
@@ -539,17 +509,6 @@ static char *print_record(const char *hex, const identity_cache *cache, const un
         }
     }
     built = built && add_homes(root, "homes", cache, kept);
-    char *text = built ? cJSON_PrintUnformatted(root) : NULL;
-    cJSON_Delete(root);
-    return text;
-}
-
-static char *print_guards(const char *hex, const identity_cache *guards, const unsigned char *kept) {
-    char id[70];
-    snprintf(id, sizeof id, "git:%s", hex);
-    cJSON *root = cJSON_CreateObject();
-    int built = root != NULL && cJSON_AddStringToObject(root, "id", id) != NULL &&
-                add_homes(root, "guards", guards, kept);
     char *text = built ? cJSON_PrintUnformatted(root) : NULL;
     cJSON_Delete(root);
     return text;
@@ -614,93 +573,6 @@ naula_status naula_cache_write(const char *directory, const char *hex, const cha
         return NAULA_OUT_OF_MEMORY;
     }
     return replace_with(directory, record_path(directory, hex, anchor), text, problem);
-}
-
-static int equals_ignoring_case(const char *left, const char *right) {
-    if (left == NULL || right == NULL) {
-        return left == right;
-    }
-    for (; *left != '\0' && *right != '\0'; left++, right++) {
-        char lower_left = (*left >= 'A' && *left <= 'Z') ? (char)(*left + ('a' - 'A')) : *left;
-        char lower_right = (*right >= 'A' && *right <= 'Z') ? (char)(*right + ('a' - 'A')) : *right;
-        if (lower_left != lower_right) {
-            return 0;
-        }
-    }
-    return *left == *right;
-}
-
-static int same_guard(const cache_home *left, const cache_home *right) {
-    return strcmp(left->place.provider, right->place.provider) == 0 &&
-           equals_ignoring_case(left->place.host, right->place.host) &&
-           equals_ignoring_case(left->account, right->account) && left->place.number == right->place.number;
-}
-
-static naula_status copy_guard(const cache_home *from, cache_home *to) {
-    memset(to, 0, sizeof *to);
-    to->state = CACHE_GUARD;
-    to->confirmed = from->confirmed;
-    to->place.size = sizeof to->place;
-    to->place.kind = NAULA_HOME_PROVIDER;
-    to->place.number = from->place.number;
-    to->place.provider = copy_text(from->place.provider);
-    to->place.host = copy_text(from->place.host);
-    to->account = copy_text(from->account);
-    return to->place.provider == NULL || (from->place.host != NULL && to->place.host == NULL) || to->account == NULL
-               ? NAULA_OUT_OF_MEMORY
-               : NAULA_OK;
-}
-
-static naula_status merge_guards(const identity_cache *guards, const identity_cache *learned, identity_cache *merged) {
-    size_t capacity = guards->count + learned->count;
-    memset(merged, 0, sizeof *merged);
-    merged->homes = naula_memory_allocate((capacity == 0 ? 1 : capacity) * sizeof *merged->homes);
-    if (merged->homes == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    const identity_cache *sources[2] = {guards, learned};
-    for (int source = 0; source < 2; source++) {
-        for (size_t index = 0; index < sources[source]->count; index++) {
-            const cache_home *home = &sources[source]->homes[index];
-            if (home->place.kind != NAULA_HOME_PROVIDER || home->account == NULL) {
-                continue;
-            }
-            size_t existing = 0;
-            while (existing < merged->count && !same_guard(&merged->homes[existing], home)) {
-                existing++;
-            }
-            if (existing < merged->count) {
-                if (home->confirmed > merged->homes[existing].confirmed) {
-                    merged->homes[existing].confirmed = home->confirmed;
-                }
-                continue;
-            }
-            naula_status status = copy_guard(home, &merged->homes[merged->count++]);
-            if (status != NAULA_OK) {
-                return status;
-            }
-        }
-    }
-    return NAULA_OK;
-}
-
-naula_status naula_cache_write_guards(const char *directory, const char *hex, const identity_cache *guards,
-                                      const identity_cache *learned, char *problem) {
-    identity_cache merged;
-    naula_status status = merge_guards(guards, learned, &merged);
-    unsigned char *kept = status == NAULA_OK && merged.count > 0 ? naula_memory_allocate(merged.count) : NULL;
-    if (status == NAULA_OK && merged.count > 0 && kept == NULL) {
-        status = NAULA_OUT_OF_MEMORY;
-    }
-    if (status == NAULA_OK && merged.count > 0) {
-        choose_kept(&merged, kept);
-        char *text = print_guards(hex, &merged, kept);
-        status = text == NULL ? NAULA_OUT_OF_MEMORY
-                              : replace_with(directory, joined_path(directory, hex, GUARDS_SUFFIX), text, problem);
-    }
-    naula_memory_release(kept);
-    naula_cache_release(&merged);
-    return status;
 }
 
 naula_status naula_cache_other_anchors(const char *directory, const char *hex, const char *except, char ***anchors,

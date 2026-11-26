@@ -10,7 +10,7 @@
 #define NAULA_CACHE_PROBLEM_SIZE 256
 #define NAULA_CACHE_ANCHOR_SIZE 65
 
-/** The most homes one record, or an id's guards, holds: the writer never writes more than the reader accepts. */
+/** The most homes one record holds: the writer never writes more than the reader accepts. */
 #define NAULA_CACHE_HOME_LIMIT 64
 
 /**
@@ -31,7 +31,7 @@ typedef struct cache_home {
 } cache_home;
 
 /**
- * A record, or an id's guards. `primary` indexes a CONFIRMED home when `has_primary` is 1, which it is whenever any
+ * A record. `primary` indexes a CONFIRMED home when `has_primary` is 1, which it is whenever any
  * home is CONFIRMED. `at` is the normalised `at` the record was written for. `foreign` marks a record found under this
  * anchor's name for another `at`: it is not used, and never overwritten.
  */
@@ -55,6 +55,9 @@ typedef struct identity_cache {
 naula_status naula_cache_normal_at(const naula_place *places, size_t count, char ***texts, size_t *text_count);
 
 void naula_cache_release_texts(char **texts, size_t count);
+
+/** One place in the normalised text form an `at` is stored in; NULL only when memory runs out. */
+char *naula_cache_place_text(const naula_place *place);
 
 /**
  * The anchor a record belongs to: the 64 lowercase hex of the sha256 of the normalised `at` joined by "\n" with no
@@ -81,27 +84,13 @@ naula_status naula_cache_read(const char *directory, const char *hex, const char
 naula_status naula_cache_write(const char *directory, const char *hex, const char *anchor, const identity_cache *cache,
                                char *problem);
 
-/**
- * Reads `<directory>/identities/<hex>.guards.json`, every account-to-number guard any record of this id learned. A
- * guard only ever refuses a number, so one consumer's guards are safe to share with every other. A file that cannot
- * be read is treated as absent and reported in `problem`.
- */
-naula_status naula_cache_read_guards(const char *directory, const char *hex, identity_cache *guards, char *problem);
-
-/**
- * Writes the union of `guards` and every provider home of `learned` (a home of `learned` already guarded under that
- * account and number refreshes its time), keeping the newest NAULA_CACHE_HOME_LIMIT.
- */
-naula_status naula_cache_write_guards(const char *directory, const char *hex, const identity_cache *guards,
-                                      const identity_cache *learned, char *problem);
-
 /** The anchors of every record of `hex` in the cache, other than `except`. Release with naula_cache_release_texts. */
 naula_status naula_cache_other_anchors(const char *directory, const char *hex, const char *except, char ***anchors,
                                        size_t *count);
 
 void naula_cache_release(identity_cache *cache);
 
-/** Whether `name` is a temporary file a writer makes: `<hex>-<64 hex>.json.<any>.tmp`, or the guards' own. */
+/** Whether `name` is a temporary file a writer of records makes: `<hex>-<64 hex>.json.<anything>.tmp`. */
 int naula_cache_is_temporary_name(const char *name);
 
 /** How old a temporary file must be before a later writer removes it as left behind. */
