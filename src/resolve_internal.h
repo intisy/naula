@@ -83,6 +83,7 @@ typedef struct resolver {
     identity_cache *lineage;
     size_t lineage_count;
     size_t lineage_capacity;
+    int clock_behind;
 } resolver;
 
 /** The homes a readable candidate lists: its repo.json's, or a web home's document's. */
@@ -104,8 +105,10 @@ void naula_resolver_release_candidates(resolver *subject);
 
 /**
  * The number the lineage holds for a listed account: 0 when no lineage record holds it, 1 with `number` when the
- * records agree or one number was confirmed strictly earliest, which a re-registration never is, since it can only
- * follow the genuine confirmation, and 2 when the earliest confirmations tie on different numbers, failing closed.
+ * records agree, or when two independent signals pick one number: it was confirmed strictly earliest, and it is the
+ * lowest repository number among them, since a host numbers repositories in the order it creates them and a
+ * re-registration always follows what it replaces. 2 otherwise, failing closed: a tie, the two signals disagreeing,
+ * or a clock that is behind a stored confirmation, under which no time can be trusted.
  */
 int naula_resolver_lineage_number(const resolver *subject, const naula_home *home, uint64_t *number);
 

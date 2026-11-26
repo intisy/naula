@@ -563,6 +563,7 @@ int naula_resolver_lineage_number(const resolver *subject, const naula_home *hom
     int tie = 0;
     uint64_t first = 0;
     uint64_t earliest_number = 0;
+    uint64_t lowest_number = 0;
     int64_t earliest = 0;
     for (size_t index = 0; index < subject->lineage_count; index++) {
         const identity_cache *record = &subject->lineage[index];
@@ -573,11 +574,12 @@ int naula_resolver_lineage_number(const resolver *subject, const naula_home *hom
             }
             if (!any) {
                 any = 1;
-                first = earliest_number = cached->place.number;
+                first = earliest_number = lowest_number = cached->place.number;
                 earliest = cached->confirmed;
                 continue;
             }
             all_same &= cached->place.number == first;
+            lowest_number = cached->place.number < lowest_number ? cached->place.number : lowest_number;
             if (cached->confirmed < earliest) {
                 earliest = cached->confirmed;
                 earliest_number = cached->place.number;
@@ -591,7 +593,10 @@ int naula_resolver_lineage_number(const resolver *subject, const naula_home *hom
         return 0;
     }
     *number = all_same ? first : earliest_number;
-    return all_same || !tie ? 1 : 2;
+    if (all_same) {
+        return 1;
+    }
+    return !tie && earliest_number == lowest_number && !subject->clock_behind ? 1 : 2;
 }
 
 /**

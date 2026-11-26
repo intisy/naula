@@ -187,3 +187,22 @@ supports no `NAULA_OP_` operation, since a domain has no number to look up.
   or a blocked resolver, and reading it as dead would let whoever answers one DNS query silence a home that disowns a
   copy. The transport still marks the case in `naula_fetch_answer.host_unresolved`, which only picks the refusal code.
 - A document for another id is refused `document_for_another_id`; one that is not an identity document is MALFORMED.
+
+## Repository numbers follow creation order
+
+The resolver settles two of a consumer's records that hold different numbers for one account only when the number
+confirmed earlier is also the lower one, since a host numbers repositories in the order it creates them and a
+repository made at a re-registered account is always newer than the one it replaces. This is an assumption about
+each host, stated with what supports it:
+
+- GitHub: `id` is not documented as sequential. Measured 2026-11-26: `torvalds/linux`, created 2011-09-04, is 2325298;
+  `intisy/naula`, created 2026-11-25, is 1472199689; every repository read while building the providers fits the same
+  order.
+- Gitea: `repository.id` is the table's auto-increment primary key, `ID int64 xorm:"pk autoincr"` in
+  `models/repo/repo.go` (line 128 at v1.22.0).
+- Forgejo: the same field, `ID int64 xorm:"pk autoincr"` in `models/repo/repo.go` (line 135 on the `forgejo` branch,
+  read 2026-11-26).
+- A `web` home has no number and never settles a disagreement.
+
+A host that ever reused or reordered numbers would turn this into a refusal at worst: the resolver also requires the
+earlier confirmation, and when the two signals disagree it refuses both numbers.

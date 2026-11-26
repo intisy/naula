@@ -536,6 +536,9 @@ static naula_status write_cache(const resolver *subject, size_t primary, naula_r
     if (subject->session->cache_directory == NULL) {
         return NAULA_OK;
     }
+    if (subject->clock_behind) {
+        return NAULA_OK;
+    }
     identity_cache next;
     naula_status status = build_cache(subject, primary, &next);
     if (status == NAULA_OK && !subject->cache.foreign) {
@@ -824,6 +827,24 @@ static naula_status read_lineage(resolver *subject) {
     return status;
 }
 
+static int holds_time_after(const identity_cache *record, int64_t now) {
+    for (size_t index = 0; index < record->count; index++) {
+        if (record->homes[index].confirmed > now) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** Whether this anchor's record or its lineage holds a confirmation later than now, which a clock set back gives. */
+static int holds_a_later_time(const resolver *subject, int64_t now) {
+    int later = holds_time_after(&subject->cache, now);
+    for (size_t index = 0; index < subject->lineage_count && !later; index++) {
+        later = holds_time_after(&subject->lineage[index], now);
+    }
+    return later;
+}
+
 static naula_status read_cache(resolver *subject, const naula_reference *reference, naula_resolution *resolution) {
     const char *directory = subject->session->cache_directory;
     naula_status status =
@@ -835,7 +856,17 @@ static naula_status read_cache(resolver *subject, const naula_reference *referen
         status = naula_cache_read(directory, subject->hex, subject->anchor, subject->at_texts, subject->at_text_count,
                                   &subject->cache, resolution->cache_problem);
     }
-    return status == NAULA_OK ? read_lineage(subject) : status;
+    if (status == NAULA_OK) {
+        status = read_lineage(subject);
+    }
+    subject->clock_behind = status == NAULA_OK && holds_a_later_time(subject, confirmation_time());
+    if (subject->clock_behind && resolution->cache_problem[0] == '\0') {
+        snprintf(resolution->cache_problem, sizeof resolution->cache_problem,
+                 "the clock is behind a confirmation the cache holds for %s: no record is written and no "
+                 "disagreement settled",
+                 subject->id_text);
+    }
+    return status;
 }
 
 static naula_status resolve_with(resolver *subject, const naula_reference *reference, naula_resolution *resolution,

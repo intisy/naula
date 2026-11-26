@@ -1817,6 +1817,97 @@ static void a_later_first_contact_never_denies_an_edited_at(int genuine_lists_be
     }
 }
 
+static int is_number_character(char character) {
+    return (character >= '0' && character <= '9') || character == '.' || character == 'e' || character == 'E' ||
+           character == '+' || character == '-';
+}
+
+/**
+ * Rewrites every confirmation time in the record at `path` to `replacement`, a whole number in microseconds.
+ *
+ * @implNote The writer may print a time with an exponent (`1.764123456789e+15`) when that form reads back exactly,
+ * so the whole number token is replaced, never its digits one by one.
+ */
+static void rewrite_confirmation_times(const char *path, const char *replacement) {
+    static char rewritten[65536];
+    char *text = read_text_file(path);
+    CHECK(text != NULL);
+    if (text == NULL) {
+        return;
+    }
+    const char *marker = "\"confirmed\":";
+    size_t used = 0;
+    const char *from = text;
+    for (const char *at = strstr(from, marker); at != NULL; at = strstr(from, marker)) {
+        at += strlen(marker);
+        used += (size_t)snprintf(rewritten + used, sizeof rewritten - used, "%.*s%s", (int)(at - from), from,
+                                 replacement);
+        while (is_number_character(*at)) {
+            at++;
+        }
+        from = at;
+    }
+    snprintf(rewritten + used, sizeof rewritten - used, "%s", from);
+    write_text_file(path, rewritten);
+    naula_memory_release(text);
+}
+
+/**
+ * An install with at=[21, 30] confirms the re-registered bee (21); its record's times are then moved, to the past as
+ * a clock set back while it was written leaves them, or to the future, as a clock now behind finds them.
+ */
+static naula_status an_install_under_a_wrong_clock(int clock_was_behind, naula_resolution *resolution) {
+    char cache[512];
+    char path[1024];
+    naula_refusal refusal;
+    cache_directory(clock_was_behind ? "clock-was-behind" : "clock-is-behind", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    add_repo(NULL, 30, "gamma", "lib", genuine);
+    accept_answer = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    accept_answer = 1;
+    resolve_once(cache, ID, "forge:21", "forge:30", resolution, &refusal);
+    naula_resolution_release(resolution);
+    accept_answer = 0;
+    naula_place places[2];
+    const char *texts[2] = {"forge:21", "forge:30"};
+    char anchor[NAULA_CACHE_ANCHOR_SIZE];
+    for (size_t index = 0; index < 2; index++) {
+        memset(&places[index], 0, sizeof places[index]);
+        places[index].size = sizeof places[index];
+        CHECK(naula_place_parse(texts[index], &places[index], NULL) == NAULA_OK);
+    }
+    CHECK(naula_cache_anchor(places, 2, anchor) == NAULA_OK);
+    naula_place_release(&places[0]);
+    naula_place_release(&places[1]);
+    snprintf(path, sizeof path, "%s/identities/%s-%s.json", cache, X, anchor);
+    rewrite_confirmation_times(path, clock_was_behind ? "1000000000000000" : "9000000000000000");
+    return resolve_once(cache, ID, "forge:10", "forge:30", resolution, &refusal);
+}
+
+static void a_wrong_clock_never_settles_a_re_registered_number(void) {
+    naula_resolution resolution;
+    an_install_under_a_wrong_clock(1, &resolution);
+    if (has_home(&resolution, NULL, 21)) {
+        fprintf(stderr, "a record written while the clock was behind settled the re-registered 21 for bee\n");
+        check_failures++;
+    }
+    CHECK(verdict_is(&resolution, NULL, 21, "number-changed", 0));
+    naula_resolution_release(&resolution);
+
+    an_install_under_a_wrong_clock(0, &resolution);
+    CHECK(!has_home(&resolution, NULL, 21));
+    CHECK(strstr(resolution.cache_problem, "clock is behind") != NULL);
+    naula_resolution_release(&resolution);
+}
+
 static void records_that_disagree_on_the_primary_ask(void) {
     char cache[512];
     naula_resolution resolution;
@@ -2366,6 +2457,7 @@ int main(void) {
     a_settled_home_read_later_releases_its_file();
     a_later_first_contact_never_denies_an_edited_at(1);
     a_later_first_contact_never_denies_an_edited_at(0);
+    a_wrong_clock_never_settles_a_re_registered_number();
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();
