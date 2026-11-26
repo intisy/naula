@@ -322,14 +322,15 @@ static naula_status fake_list_repos(void *context, const char *host, const char 
 }
 
 static naula_status fake_release_index(void *context, const char *host, uint64_t number, const char *tag,
-                                       const char *token, uint8_t **bytes, size_t *length, naula_refusal *refusal) {
+                                       const char *asset, const char *token, naula_release_index *out,
+                                       naula_refusal *refusal) {
     (void)context;
     (void)host;
     (void)number;
     (void)tag;
+    (void)asset;
     (void)token;
-    *bytes = NULL;
-    *length = 0;
+    (void)out;
     return fake_refuse(refusal, NAULA_REFUSED, "unsupported_operation");
 }
 

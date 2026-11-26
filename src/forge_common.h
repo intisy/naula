@@ -13,6 +13,7 @@
 #define FORGE_SMALL_BODY_CAPACITY (256u * 1024u)
 #define FORGE_FILE_BODY_CAPACITY (2u * 1024u * 1024u)
 #define FORGE_HISTORY_BODY_CAPACITY (8u * 1024u * 1024u)
+#define FORGE_INDEX_BODY_CAPACITY (4u * 1024u * 1024u)
 #define FORGE_NAME_LENGTH_LIMIT 100u
 
 typedef struct forge_flavor {
@@ -169,6 +170,27 @@ naula_status naula_forge_fill_repository(const forge_flavor *flavor, const cJSON
 
 /** Whether a repository answer belongs to account/name, which a host that follows renames with a redirect may not. */
 int naula_forge_answers_to_the_name(const cJSON *json, const char *account, const char *name);
+
+/**
+ * Refuses, before any request, a number of 0, an `out` smaller than its first shape, a missing or empty asset name,
+ * and a tag that is empty or starts with `-`; empties `out` otherwise.
+ */
+naula_status naula_forge_check_release_request(const forge_flavor *flavor, uint64_t number, const char *tag,
+                                               const char *asset, naula_release_index *out, naula_refusal *refusal);
+
+/** `releases/latest`, or `releases/tags/<tag>` with the tag encoded; 0 when it does not fit. */
+int naula_forge_release_route(const char *tag, char *route, size_t capacity);
+
+/**
+ * The member of a release answer's `assets` named `asset`: NULL, refused `no_index_asset`, when the release has none,
+ * and refused as malformed when the answer has no assets list.
+ */
+const cJSON *naula_forge_release_asset(const forge_flavor *flavor, const cJSON *release, const char *asset,
+                                       naula_status *status, naula_refusal *refusal);
+
+/** Takes reply's body into out and a copy of the asset's `browser_download_url`, which must be there. */
+naula_status naula_forge_keep_release_index(const forge_flavor *flavor, forge_reply *reply, const cJSON *asset,
+                                            naula_release_index *out, naula_refusal *refusal);
 
 naula_status naula_forge_append_page(const forge_flavor *flavor, forge_repository_list *list, const forge_reply *reply,
                                      size_t *page_count, naula_refusal *refusal);

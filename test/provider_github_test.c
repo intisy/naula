@@ -542,12 +542,130 @@ static void describe_names_the_supported_operations(void) {
     CHECK(github()->describe(NULL, &supported, &anonymous) == NAULA_OK);
     CHECK((supported & NAULA_OP_LOOKUP) && (supported & NAULA_OP_FIND) && (supported & NAULA_OP_READ_FILE));
     CHECK((supported & NAULA_OP_CONTAINS) && (supported & NAULA_OP_PARENT_COUNT) && (supported & NAULA_OP_LIST_REPOS));
-    CHECK((supported & NAULA_OP_RELEASE_INDEX) == 0 && anonymous == 1);
+    CHECK((supported & NAULA_OP_RELEASE_INDEX) != 0 && anonymous == 1);
+}
+
+#define RELEASE_LATEST_ROUTE "/repositories/1296269/releases/latest"
+#define INDEX_ASSET "gh_2.106.0_checksums.txt"
+#define INDEX_ASSET_ROUTE "/repositories/1296269/releases/assets/793444804"
+#define INDEX_URL "https://github.com/cli/cli/releases/download/v2.106.0/gh_2.106.0_checksums.txt"
+#define INDEX_BYTES "{\"items\":{}}\n"
+
+static naula_release_index fresh_index(void) {
+    naula_release_index index;
+    memset(&index, 0, sizeof index);
+    index.size = sizeof index;
+    return index;
+}
+
+static naula_status release_index(const char *tag, const char *asset, const char *token, naula_release_index *out,
+                                  naula_refusal *refusal) {
+    return github()->release_index(github()->context, NULL, NUMBER, tag, asset, token, out, refusal);
+}
+
+static void release_index_reads_the_asset_of_the_latest_release_by_number(void) {
+    char *release = load("release.json");
+    http_route routes[2] = {route(RELEASE_LATEST_ROUTE, 200, release), route(INDEX_ASSET_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = serve(routes, 2);
+    naula_release_index index = fresh_index();
     naula_refusal refusal = fresh_refusal();
-    uint8_t *bytes = NULL;
-    size_t length = 0;
-    CHECK(github()->release_index(NULL, NULL, NUMBER, "v1", NULL, &bytes, &length, &refusal) == NAULA_REFUSED);
-    check_text(refusal.code, "unsupported_operation", "release index");
+    CHECK(release_index(NULL, INDEX_ASSET, TOKEN_TEXT, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == strlen(INDEX_BYTES) && index.bytes != NULL &&
+          memcmp(index.bytes, INDEX_BYTES, index.length) == 0);
+    check_text(index.url, INDEX_URL, "the address the release offers the index at");
+    naula_release_index_release(&index);
+    CHECK(index.bytes == NULL && index.url == NULL && index.size == sizeof index);
+    char *log = finish(server);
+    CHECK(log != NULL);
+    const char *asset_request = log == NULL ? NULL : strstr(log, "GET " INDEX_ASSET_ROUTE);
+    CHECK(asset_request != NULL && strstr(asset_request, "Accept: application/octet-stream") != NULL);
+    CHECK(asset_request != NULL && strstr(asset_request, "token " TOKEN_TEXT) != NULL);
+    CHECK(log != NULL && strstr(log, "/repos/") == NULL);
+    naula_memory_release(log);
+    naula_memory_release(release);
+}
+
+static void release_index_reads_a_tagged_release_with_the_tag_encoded(void) {
+    char *release = load("release.json");
+    http_route routes[2] = {route("/repositories/1296269/releases/tags/v2%2F1", 200, release),
+                            route(INDEX_ASSET_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = serve(routes, 2);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index("v2/1", INDEX_ASSET, NULL, &index, &refusal) == NAULA_OK);
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+    naula_memory_release(release);
+}
+
+static void release_index_follows_the_asset_redirect_without_the_token(void) {
+    char *release = load("release.json");
+    char location[160];
+    http_route routes[3] = {route(RELEASE_LATEST_ROUTE, 200, release), route(INDEX_ASSET_ROUTE, 302, ""),
+                            route("/signed-asset", 200, INDEX_BYTES)};
+    routes[1].extra_headers = location;
+    http_fixture *server = serve(routes, 3);
+    snprintf(location, sizeof location, "Location: http://localhost:%u/signed-asset\r\n",
+             (unsigned)http_fixture_port(server));
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, TOKEN_TEXT, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == strlen(INDEX_BYTES));
+    naula_release_index_release(&index);
+    char *log = finish(server);
+    const char *signed_request = log == NULL ? NULL : strstr(log, "GET /signed-asset");
+    CHECK(signed_request != NULL && strstr(signed_request, TOKEN_TEXT) == NULL);
+    naula_memory_release(log);
+    naula_memory_release(release);
+}
+
+static void release_index_refuses_a_missing_release_or_asset_of_a_live_repository(void) {
+    char *release = load("release.json");
+    char *repository_body = load("repository.json");
+    http_route routes[3] = {route(RELEASE_LATEST_ROUTE, 404, NOT_FOUND_BODY), route(REPOSITORY_ROUTE, 200, repository_body),
+                            route(INDEX_ASSET_ROUTE, 404, NOT_FOUND_BODY)};
+    http_fixture *server = serve(routes, 3);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_release", "no release on a live repository");
+    naula_memory_release(finish(server));
+
+    routes[1] = route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY);
+    server = serve(routes, 3);
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_NOT_FOUND);
+    naula_memory_release(finish(server));
+
+    routes[0] = route(RELEASE_LATEST_ROUTE, 200, release);
+    routes[1] = route(REPOSITORY_ROUTE, 200, repository_body);
+    server = serve(routes, 3);
+    refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_index", "an asset gone from a live repository");
+    refusal = fresh_refusal();
+    CHECK(release_index(NULL, "weivel-index.json", NULL, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "no_index_asset", "a release without the asset");
+    CHECK(refusal.fix != NULL && strstr(refusal.detail, "weivel-index.json") != NULL);
+    CHECK(index.bytes == NULL && index.url == NULL);
+    naula_memory_release(finish(server));
+    naula_memory_release(release);
+    naula_memory_release(repository_body);
+}
+
+static void release_index_refuses_what_it_cannot_address_before_any_request(void) {
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    const char *const tags[] = {"", "-v1"};
+    for (size_t at = 0; at < 2; at++) {
+        CHECK(release_index(tags[at], INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+        check_text(refusal.code, "invalid_request", "an unusable tag");
+    }
+    CHECK(release_index(NULL, "", NULL, &index, &refusal) == NAULA_REFUSED);
+    CHECK(release_index(NULL, NULL, NULL, &index, &refusal) == NAULA_REFUSED);
+    CHECK(github()->release_index(NULL, NULL, 0, NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+    index.size = sizeof(uint32_t);
+    CHECK(release_index(NULL, INDEX_ASSET, NULL, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "invalid_request", "a result struct smaller than its first shape");
 }
 
 static void unknown_word_names_the_fix(void) {
@@ -615,6 +733,11 @@ int main(void) {
     list_repos_falls_back_to_a_user_when_no_organization_has_the_name();
     list_repos_of_neither_an_organization_nor_a_user_is_not_found();
     describe_names_the_supported_operations();
+    release_index_reads_the_asset_of_the_latest_release_by_number();
+    release_index_reads_a_tagged_release_with_the_tag_encoded();
+    release_index_follows_the_asset_redirect_without_the_token();
+    release_index_refuses_a_missing_release_or_asset_of_a_live_repository();
+    release_index_refuses_what_it_cannot_address_before_any_request();
     unknown_word_names_the_fix();
     register_refuses_a_second_provider_for_a_word();
     a_timeout_is_timed_out_not_not_found();

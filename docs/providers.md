@@ -3,6 +3,27 @@
 What each built-in provider reads, and what it was measured to answer. A capability a host does not offer is absent
 from `describe` and answers REFUSED `unsupported_operation`; nothing fails silently.
 
+## The release index, on GitHub, Gitea and Forgejo
+
+`release_index(number, tag, asset)` reads the asset named `asset` of the release tagged `tag`, or of the latest
+release when `tag` is NULL, and answers its bytes and the asset's `browser_download_url`, the address a file the index
+lists by a relative address resolves against. naula names no asset itself: the caller says which one is the index.
+
+- **Before any request** it refuses a number of 0, a result struct smaller than its first shape, a missing asset name,
+  and a tag that is empty or starts with `-` (`invalid_request`). A tag is sent encoded, `/` included.
+- **A 404** for the release or the asset is settled by looking the number up: gone is NOT_FOUND, still there is
+  `missing_release` or `missing_index`. A release without the asset is `no_index_asset`. A host name that does not
+  resolve is UNREACHABLE (`host_not_resolved`) and a timeout TIMED_OUT, as for every read.
+- **The token goes to the host the home names and nowhere else.** The asset's bytes are read from an address naula
+  builds on that host, never from the `browser_download_url` an answer carries, and a redirect to another host is
+  followed without the token, as the transport does for every GET.
+
+| Code | Meaning |
+|---|---|
+| `missing_release` | the repository is live and has no release of that tag, or no release at all |
+| `missing_index` | the release lists the asset, and the host answers 404 for it while the repository is live |
+| `no_index_asset` | the release has no asset of that name; the detail names it |
+
 ## Writes, on every provider
 
 `create`, `rename`, `transfer`, `archive` and `write_metadata` are appended to the provider interface and read only
@@ -76,6 +97,9 @@ limits) and measured for reads only; whether GitHub takes a write on it is first
 | `archive` | `PATCH repositories/{id}` with `archived: true`; the answer must say archived |
 | `read_metadata` | `GET repositories/{id}`: `description`, `homepage`, `topics`, `private`, `default_branch`, `has_issues`, `has_wiki`, every one present in the anonymous answer for 1296269 on 2026-11-26 |
 | `write_metadata` | `PATCH repositories/{id}` with the members above, then `PUT repositories/{id}/topics` with `names` |
+| `release_index` | `GET repositories/{id}/releases/latest` or `releases/tags/{tag}`, then the asset by `GET repositories/{id}/releases/assets/{asset id}` with `Accept: application/octet-stream`; measured anonymously on 2026-11-26 for `cli/cli` (212613049): both by number, and the asset route answers 302 to `release-assets.githubusercontent.com`, which is followed without the token |
+
+`release_index` needs no lookup afterwards: every route it reads is by number, the asset's included.
 
 ## Gitea and Forgejo
 
@@ -100,7 +124,7 @@ only `Accept: application/json`.
 | `archive` | `PATCH repos/{owner}/{repo}` with `archived` | in the API definition; not exercised |
 | `read_metadata` | `GET repos/{owner}/{repo}` (`description`, `website`, `private`, `default_branch`, `has_issues`, `has_wiki`) and `GET repos/{owner}/{repo}/topics` | anonymous GETs on Codeberg on 2026-11-26 answer every member, and the topics as `{"topics": [...]}` |
 | `write_metadata` | `PATCH repos/{owner}/{repo}` with those members, then `PUT repos/{owner}/{repo}/topics` with `topics` | in the API definition; not exercised, `PUT` answers 204 |
-| `release_index` | | unsupported |
+| `release_index` | `GET repos/{owner}/{repo}/releases/latest` or `releases/tags/{tag}`, then the asset's bytes from `https://{host}/attachments/{uuid}` | anonymous GETs of `forgejo/forgejo` on Codeberg on 2026-11-26: the release lists `assets[]` with `name`, `uuid` and `browser_download_url` (`https://codeberg.org/forgejo/forgejo/releases/download/{tag}/{name}`, by name), and `/attachments/{uuid}` answers the bytes with no redirect; a tag the repository lacks is 404 |
 
 Gitea and Forgejo have no write route by number, so a write by name can land on another repository, and naula can
 only keep that window short and say when it happened. A write looks the number up and reads the version, then looks
@@ -116,12 +140,15 @@ read does.
 Every route except the number lookup is by owner and name, so each read looks the repository up by number first, builds
 the route from the names it answers, and looks it up by number again afterwards. A repository renamed in between is
 refused `repository_changed`, so bytes are never taken from another repository that holds the name. A 404 on a file,
-commit or ref is refused (`missing_file_or_ref`, `missing_commit`, `missing_commit_or_ref`) while the repository is live
-and answers NOT_FOUND only once the lookup by number says it is gone; it never becomes "not contained".
+commit, ref, release or asset is refused (`missing_file_or_ref`, `missing_commit`, `missing_commit_or_ref`,
+`missing_release`, `missing_index`) while the repository is live and answers NOT_FOUND only once the lookup by number
+says it is gone; it never becomes "not contained". `release_index` reads the release by the looked-up names, then the
+asset's bytes by its `uuid` from the web root beside the API (`/api/v1` taken off), the one address Gitea serves an
+asset at that is not by name, and looks the number up again after both.
 
 ### The minimum host: Gitea 1.20
 
-`read_file`, `contains`, `parent_count` and every write read `GET version`, after the lookup by number, and refuse a
+`read_file`, `contains`, `parent_count`, `release_index` and every write read `GET version`, after the lookup by number, and refuse a
 host older than Gitea 1.20 as `unsupported_operation`, with a fix naming the minimum. The lookup comes first so a
 host that wants a token, or has lost the repository, answers that rather than its age. Forgejo from 7 on reports its own version with the Gitea it
 carries after `+gitea-` (`7.0.0+gitea-1.22.0`), which is the part read; Gitea, and Forgejo before 7 (`1.21.11-1`), lead
@@ -139,9 +166,13 @@ the minimum, read from go-gitea/gitea on 2026-11-26:
 | `GET` and `PUT repos/{owner}/{repo}/topics` | 1.10.0 | #7963 "Add API endpoint for accessing repo topics"; the `/topics` group in `api.go` at `v1.10.0`, absent at `v1.9.0` |
 | `POST repos/{owner}/{repo}/transfer` with `new_owner` | 1.12.0 | #9947 "Add API endpoint for repo transfer"; in `api.go` at `v1.12.0`, absent at `v1.11.0` |
 | `POST orgs/{org}/repos`, `POST user/repos`, `GET orgs/{org}`, `GET user` | before 1.8.0 | in `api.go` at `v1.8.0` |
+| `GET repos/{owner}/{repo}/releases/latest` | 1.17.0 | `m.Combo("/latest").Get(repo.GetLatestRelease)` in `routers/api/v1/api.go` at `v1.17.0`, absent at `v1.16.0` |
+| `GET repos/{owner}/{repo}/releases/tags/{tag}` | before 1.16.0 | `GetReleaseByTag` in `api.go` at `v1.16.0` |
+| `GET /attachments/{uuid}` on the web root, and `uuid` in an asset | before 1.10.0 | `routers/routes/routes.go` and `modules/structs/attachment.go` at `v1.10.0` |
 
-**No write raises the minimum**: the newest route a write needs arrived in 1.12.0 (read from go-gitea/gitea on
-2026-11-26 with `gh api`), so 1.20 stays the one floor for the provider, and a write checks it as a read does.
+**Neither a write nor the release index raises the minimum**: the newest route either needs arrived in 1.17.0 (read
+from go-gitea/gitea on 2026-11-26 with `gh api`), so 1.20 stays the one floor for the provider, and every call checks
+it as a read does.
 
 A host that ignores `not` answers the commit's whole history, which would read as "not contained"; a host that ignores
 the three filters answers more than is read. Both are why the version is checked before either route is asked.
@@ -171,9 +202,13 @@ The answer is one commit at most, about 3 KB whatever the length of the history.
 - A token is needed for every call that starts from a number, which is all of them but `find` and `list_repos`.
   `find` reaches a number without one, and the number is then asked for with a token.
 - The version is read on every call that relies on it, not kept, since a provider is a constant shared by every caller.
+- Whether `/attachments/{uuid}` takes the token for an asset of a private repository is unmeasured: only public
+  assets were read. The token is sent there, to the host the home names.
 - The tests record real Forgejo answers under `test/fixtures/forgejo` (the commit answer without `files` and `stats`;
-  `commits_contained.json`, `commits_diverged.json` and `commits_unrelated.json` as the host sent them). The one live
-  test, `provider_network_test`, carries the `network` label.
+  `commits_contained.json`, `commits_diverged.json` and `commits_unrelated.json` as the host sent them;
+  `release.json`, the latest release of `forgejo/forgejo`, cut to three assets and without `author` and `body`, as
+  GitHub's `release.json` is the latest of `cli/cli`). The one live test, `provider_network_test`, carries the
+  `network` label.
 
 ## Web
 

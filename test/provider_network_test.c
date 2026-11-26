@@ -41,9 +41,25 @@ static void codeberg_answers_a_find_but_asks_for_a_token_by_number(void) {
     }
 }
 
+static void a_release_index_on_a_host_that_does_not_resolve_is_unreachable(void) {
+    const naula_provider *providers[] = {naula_provider_github(), naula_provider_forgejo()};
+    for (size_t at = 0; at < 2; at++) {
+        naula_release_index index;
+        memset(&index, 0, sizeof index);
+        index.size = sizeof index;
+        naula_refusal refusal = fresh_refusal();
+        CHECK(providers[at]->release_index(providers[at]->context, "naula-test.invalid", 7, NULL, "index.json", NULL,
+                                           &index, &refusal) == NAULA_UNREACHABLE);
+        if (!check_text(refusal.code, "host_not_resolved", providers[at]->word)) {
+            fprintf(stderr, "refusal detail: %s\n", refusal.detail);
+        }
+    }
+}
+
 int main(void) {
     naula_json_use_allocator();
     web_a_domain_that_does_not_resolve_is_unreachable();
+    a_release_index_on_a_host_that_does_not_resolve_is_unreachable();
     codeberg_answers_a_find_but_asks_for_a_token_by_number();
     return check_summary("provider_network_test");
 }

@@ -11,6 +11,7 @@
 #define API_ROOT_DEFAULT "https://api.github.com"
 #define API_VERSION_HEADER "X-GitHub-Api-Version: 2022-11-28"
 #define ACCEPT_HEADER "Accept: application/vnd.github+json"
+#define ASSET_ACCEPT_HEADER "Accept: application/octet-stream"
 #define ROOT_SIZE FORGE_ROOT_SIZE
 #define ROUTE_SIZE FORGE_ROUTE_SIZE
 #define SMALL_BODY_CAPACITY FORGE_SMALL_BODY_CAPACITY
@@ -28,6 +29,12 @@
 static const char *const request_headers[] = {API_VERSION_HEADER, ACCEPT_HEADER, NULL};
 
 static const forge_flavor flavor = {"GitHub", "check that the host is the GitHub host the home names", request_headers};
+
+/** An asset route answers the asset's bytes, by a redirect to its storage, only when asked for octet-stream. */
+static const char *const asset_request_headers[] = {API_VERSION_HEADER, ASSET_ACCEPT_HEADER, NULL};
+
+static const forge_flavor asset_flavor = {"GitHub", "check that the host is the GitHub host the home names",
+                                          asset_request_headers};
 
 static char api_root_override[ROOT_SIZE];
 
@@ -67,8 +74,9 @@ const forge_flavor *naula_github_flavor(void) {
     return &flavor;
 }
 
-naula_status naula_github_request(const char *host, const char *method, const char *route, const char *token,
-                                  const cJSON *body, size_t capacity, forge_reply *reply, naula_refusal *refusal) {
+static naula_status github_send(const forge_flavor *sent_as, const char *host, const char *method, const char *route,
+                                const char *token, const cJSON *body, size_t capacity, forge_reply *reply,
+                                naula_refusal *refusal) {
     char root[ROOT_SIZE];
     char url[URL_SIZE];
     memset(reply, 0, sizeof *reply);
@@ -77,9 +85,14 @@ naula_status naula_github_request(const char *host, const char *method, const ch
         return status;
     }
     if (snprintf(url, sizeof url, "%s/%s", root, route) >= (int)sizeof url) {
-        return naula_forge_refuse_input(&flavor, refusal, "the request address (too long)");
+        return naula_forge_refuse_input(sent_as, refusal, "the request address (too long)");
     }
-    return naula_forge_send(&flavor, method, url, token, body, capacity, reply, refusal);
+    return naula_forge_send(sent_as, method, url, token, body, capacity, reply, refusal);
+}
+
+naula_status naula_github_request(const char *host, const char *method, const char *route, const char *token,
+                                  const cJSON *body, size_t capacity, forge_reply *reply, naula_refusal *refusal) {
+    return github_send(&flavor, host, method, route, token, body, capacity, reply, refusal);
 }
 
 static naula_status github_get(const char *host, const char *route, const char *token, size_t capacity,
@@ -408,24 +421,75 @@ static naula_status github_list_repos(void *context, const char *host, const cha
     return NAULA_OK;
 }
 
+static naula_status read_release(const char *host, uint64_t number, const char *tag, const char *token,
+                                 cJSON **release, naula_refusal *refusal) {
+    char suffix[ROUTE_SIZE / 2];
+    char route[ROUTE_SIZE];
+    forge_reply reply;
+    *release = NULL;
+    if (!naula_forge_release_route(tag, suffix, sizeof suffix)) {
+        return naula_forge_refuse_input(&flavor, refusal, "the tag");
+    }
+    snprintf(route, sizeof route, "repositories/%llu/%s", (unsigned long long)number, suffix);
+    naula_status status = github_get(host, route, token, SMALL_BODY_CAPACITY, &reply, refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return settle_missing(host, number, token, "missing_release", "release",
+                              "publish a release, or name a tag the repository has", refusal);
+    }
+    if (status == NAULA_OK) {
+        *release = naula_forge_parse_reply(&flavor, &reply, &status, refusal);
+        naula_forge_reply_release(&reply);
+    }
+    return status;
+}
+
+/** The asset by its id under the repository's number, so the token goes to the API alone and no name is read. */
+static naula_status read_asset(const char *host, uint64_t number, const cJSON *asset, const char *token,
+                               naula_release_index *out, naula_refusal *refusal) {
+    char route[ROUTE_SIZE];
+    forge_reply reply;
+    uint64_t asset_id = 0;
+    if (!naula_forge_read_exact_number(asset, "id", &asset_id)) {
+        return naula_forge_refuse_malformed(&flavor, refusal, "an asset with no number that can be read exactly");
+    }
+    snprintf(route, sizeof route, "repositories/%llu/releases/assets/%llu", (unsigned long long)number,
+             (unsigned long long)asset_id);
+    naula_status status = github_send(&asset_flavor, host, NULL, route, token, NULL, FORGE_INDEX_BODY_CAPACITY, &reply,
+                                      refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return settle_missing(host, number, token, "missing_index", "index asset",
+                              "publish the index with the release again", refusal);
+    }
+    if (status == NAULA_OK) {
+        status = naula_forge_keep_release_index(&flavor, &reply, asset, out, refusal);
+        naula_forge_reply_release(&reply);
+    }
+    return status;
+}
+
 static naula_status github_release_index(void *context, const char *host, uint64_t number, const char *tag,
-                                         const char *token, uint8_t **bytes, size_t *length, naula_refusal *refusal) {
+                                         const char *asset, const char *token, naula_release_index *out,
+                                         naula_refusal *refusal) {
+    cJSON *release = NULL;
     (void)context;
-    (void)host;
-    (void)number;
-    (void)tag;
-    (void)token;
-    *bytes = NULL;
-    *length = 0;
-    return refuse_with(refusal, NAULA_REFUSED, "unsupported_operation", "read the index from a web or url home",
-                       "the github provider does not support %s", "release_index");
+    naula_status status = naula_forge_check_release_request(&flavor, number, tag, asset, out, refusal);
+    if (status == NAULA_OK) {
+        status = read_release(host, number, tag, token, &release, refusal);
+    }
+    const cJSON *found = status == NAULA_OK ? naula_forge_release_asset(&flavor, release, asset, &status, refusal)
+                                            : NULL;
+    if (found != NULL) {
+        status = read_asset(host, number, found, token, out, refusal);
+    }
+    cJSON_Delete(release);
+    return status;
 }
 
 static naula_status github_describe(void *context, uint32_t *supported, int *anonymous_lookup) {
     (void)context;
     *supported = NAULA_OP_LOOKUP | NAULA_OP_FIND | NAULA_OP_READ_FILE | NAULA_OP_CONTAINS | NAULA_OP_PARENT_COUNT |
-                 NAULA_OP_LIST_REPOS | NAULA_OP_CREATE | NAULA_OP_RENAME | NAULA_OP_TRANSFER | NAULA_OP_ARCHIVE |
-                 NAULA_OP_READ_METADATA | NAULA_OP_WRITE_METADATA;
+                 NAULA_OP_LIST_REPOS | NAULA_OP_RELEASE_INDEX | NAULA_OP_CREATE | NAULA_OP_RENAME | NAULA_OP_TRANSFER |
+                 NAULA_OP_ARCHIVE | NAULA_OP_READ_METADATA | NAULA_OP_WRITE_METADATA;
     *anonymous_lookup = 1;
     return NAULA_OK;
 }

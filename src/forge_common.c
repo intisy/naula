@@ -330,6 +330,87 @@ void naula_repository_list_release(naula_repository *repositories, size_t count)
     naula_memory_release(repositories);
 }
 
+static int covers_release_index(const naula_release_index *index) {
+    return index != NULL && index->size >= offsetof(naula_release_index, url) + sizeof index->url;
+}
+
+void naula_release_index_release(naula_release_index *index) {
+    if (!covers_release_index(index)) {
+        return;
+    }
+    uint32_t size = index->size;
+    naula_memory_release(index->bytes);
+    naula_memory_release(index->url);
+    memset(index, 0, sizeof *index);
+    index->size = size;
+}
+
+naula_status naula_forge_check_release_request(const forge_flavor *flavor, uint64_t number, const char *tag,
+                                               const char *asset, naula_release_index *out, naula_refusal *refusal) {
+    if (!covers_release_index(out) || number == 0) {
+        return naula_forge_refuse_input(flavor, refusal, "the repository number or the result struct");
+    }
+    memset(out, 0, sizeof *out);
+    out->size = sizeof *out;
+    if (asset == NULL || asset[0] == '\0') {
+        return naula_forge_refuse_input(flavor, refusal, "the asset name");
+    }
+    if (tag != NULL && (tag[0] == '\0' || tag[0] == '-')) {
+        return naula_forge_refuse_input(flavor, refusal, "the tag");
+    }
+    return NAULA_OK;
+}
+
+int naula_forge_release_route(const char *tag, char *route, size_t capacity) {
+    char encoded[FORGE_ROUTE_SIZE / 2];
+    if (tag == NULL) {
+        return snprintf(route, capacity, "releases/latest") < (int)capacity;
+    }
+    return naula_forge_encode_text(tag, 0, encoded, sizeof encoded) != 0 &&
+           snprintf(route, capacity, "releases/tags/%s", encoded) < (int)capacity;
+}
+
+const cJSON *naula_forge_release_asset(const forge_flavor *flavor, const cJSON *release, const char *asset,
+                                       naula_status *status, naula_refusal *refusal) {
+    const cJSON *assets = cJSON_GetObjectItemCaseSensitive(release, "assets");
+    const cJSON *each = NULL;
+    if (!cJSON_IsArray(assets)) {
+        *status = naula_forge_refuse_malformed(flavor, refusal, "a release with no assets list");
+        return NULL;
+    }
+    cJSON_ArrayForEach(each, assets) {
+        const char *name = naula_forge_text_member(each, "name");
+        if (name != NULL && strcmp(name, asset) == 0) {
+            return each;
+        }
+    }
+    naula_refuse(refusal, "no_index_asset", "ask the owner to publish the index with each release",
+                 "the release has no asset named %s", asset);
+    *status = NAULA_REFUSED;
+    return NULL;
+}
+
+naula_status naula_forge_keep_release_index(const forge_flavor *flavor, forge_reply *reply, const cJSON *asset,
+                                            naula_release_index *out, naula_refusal *refusal) {
+    const char *url = naula_forge_text_member(asset, "browser_download_url");
+    if (url == NULL || url[0] == '\0') {
+        return naula_forge_refuse_malformed(flavor, refusal, "an asset with no download address");
+    }
+    uint8_t *bytes = naula_memory_reallocate(reply->body, reply->length == 0 ? 1 : reply->length);
+    if (bytes == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    reply->body = NULL;
+    out->bytes = bytes;
+    out->length = reply->length;
+    out->url = copy_text(url);
+    if (out->url == NULL) {
+        naula_release_index_release(out);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    return NAULA_OK;
+}
+
 naula_status naula_forge_fill_repository(const forge_flavor *flavor, const cJSON *json, naula_repository *out,
                                          naula_refusal *refusal) {
     const cJSON *owner = cJSON_GetObjectItemCaseSensitive(json, "owner");
