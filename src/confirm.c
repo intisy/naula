@@ -314,8 +314,8 @@ static naula_status read_provider_home(resolver *subject, candidate *home) {
     naula_refusal refusal = fresh_refusal();
     const naula_provider *provider = naula_providers_find(subject->session->providers, home->place.provider, &refusal);
     if (provider == NULL) {
-        settle(home, CANDIDATE_DEAD, "dead-skipped", "no provider is installed for %s: %s", home->place.provider,
-               NAULA_UNKNOWN_PROVIDER_FIX);
+        settle(home, CANDIDATE_DEAD, "dead-skipped", "no provider is installed for %s", home->place.provider);
+        home->fix = NAULA_UNKNOWN_PROVIDER_FIX;
         return NAULA_OK;
     }
     const char *token = naula_session_token(subject->session, home->place.provider, home->place.host);
@@ -710,9 +710,12 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
     *number = 0;
     const naula_provider *provider = naula_providers_find(subject->session->providers, home->provider, NULL);
     if (provider == NULL) {
-        snprintf(detail, sizeof detail, "no provider is installed for %s: %s", home->provider,
-                 NAULA_UNKNOWN_PROVIDER_FIX);
-        return note_home(subject, home, 0, CANDIDATE_DEAD, "dead-skipped", detail, &index);
+        snprintf(detail, sizeof detail, "no provider is installed for %s", home->provider);
+        naula_status status = note_home(subject, home, 0, CANDIDATE_DEAD, "dead-skipped", detail, &index);
+        if (status == NAULA_OK && index != NAULA_NO_CANDIDATE) {
+            subject->candidates[index]->fix = NAULA_UNKNOWN_PROVIDER_FIX;
+        }
+        return status;
     }
     uint64_t cached = 0;
     int disagree = 0;

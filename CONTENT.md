@@ -25,4 +25,5 @@ A C library and command line that lays out, identifies and renames git repos fro
   gone, and answers offline. A run that confirms nothing never
   demotes a home. Records are never removed: nothing collects old ones yet. Only a definite answer in the run that
   heard it (a 404 by number, a provider that is not installed) counts a home as gone, so a timeout or an unresolved
-  host never lets a copy past the home that would disown it.
+  host never lets a copy past the home that would disown it. A home on a provider that is not installed is
+  `dead-skipped`, and a refusal it decides names "install a plugin that provides a resolver" as its `fix`.
