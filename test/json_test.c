@@ -123,7 +123,7 @@ static void a_failed_allocation_is_out_of_memory_never_malformed(void) {
 
 static naula_status parse_reply(const char *text, cJSON **json) {
     static const forge_flavor flavor = {"the test forge", "name a host", NULL};
-    forge_reply reply = {(uint8_t *)text, strlen(text), NULL};
+    forge_reply reply = {(uint8_t *)text, strlen(text), NULL, 0};
     naula_refusal refusal;
     memset(&refusal, 0, sizeof refusal);
     refusal.size = sizeof refusal;

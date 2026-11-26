@@ -3,6 +3,37 @@
 What each built-in provider reads, and what it was measured to answer. A capability a host does not offer is absent
 from `describe` and answers REFUSED `unsupported_operation`; nothing fails silently.
 
+## Writes, on every provider
+
+`create`, `rename`, `transfer`, `archive` and `write_metadata` are appended to the provider interface and read only
+when a provider's size covers them (`naula_provider_offers_writes`); the registry keeps a plugin's own size, so a
+plugin of the first shape offers none. GitHub, Gitea and Forgejo offer all of them and `read_metadata`; `web` offers
+none. Nothing here has been sent to a real host: every write is tested against the loopback fixture only, and the
+live proof (plan task 20) is the first real write.
+
+- **Before any request**, a write refuses a missing token (`token_needed`) and a name or account that is not a
+  plain name of at most 100 characters or that starts with `-` (`invalid_request`).
+- **A write is never redirected.** The transport follows redirects for GET only; any other method answers its 3xx as
+  a status, refused `redirected`, so a body and its token never reach an address the home does not name.
+- **A 404 on a write** is settled by looking the number up: gone is NOT_FOUND, still there is `not_permitted` (the
+  token lacks admin rights), and on Gitea and Forgejo a repository renamed between the lookup and the write is
+  `repository_changed`.
+- **A taken name** (409 or 422 on `create` or `rename`) is `name_taken`. The transport keeps no body of a refused
+  answer, so a name the host reserves (Gitea answers 422 for those too) reads the same; naula's own name check
+  leaves only reserved names in that gap.
+- **`create`** first asks whether the account is an org (`GET orgs/{account}`); if not, it creates under the token's
+  user only when `GET user` answers that same login, and is refused `account_not_writable` otherwise, so a
+  repository is never created under the token's user in place of the account named. It sends the name and the
+  visibility only, so a private repository is never public for a moment; the caller writes the rest of the metadata
+  with `write_metadata`. An answer under another account or name is refused `created_elsewhere`.
+- **`write_metadata`** sends only the members whose bit is in `present`, and answers in `applied` what it wrote,
+  also when it fails part way. `settings` maps `visibility` to `private`, `defaultBranch` to `default_branch`,
+  `issues` to `has_issues` and `wiki` to `has_wiki`; a setting the host lacks is left out, and `settings` counts as
+  written only when one of its settings was sent. A host without topics leaves `topics` out of `applied`.
+- **An account rename** is refused `unsupported_operation` by `naula_refuse_account_rename` with the fix to rename it
+  on the website and then change `account` in `homes` (spec 7.4, whose premise that not every provider's API offers
+  it is unmeasured); naula renames no account, and `describe` has no bit for it.
+
 ## GitHub
 
 `contains` reads `GET repositories/{id}/compare/{commit}...{ref}?per_page=1` and answers contained when `status` is
@@ -10,6 +41,19 @@ from `describe` and answers REFUSED `unsupported_operation`; nothing fails silen
 by number: while it is live the 404 is refused `missing_commit_or_ref`, and only a 404 on that lookup answers NOT_FOUND.
 It is never read as "not contained", which the identity check would act on. A ref starting with `-` is refused before
 any request, as Gitea and Forgejo refuse it, so both providers refuse the same inputs.
+
+Every write but `create` goes to the repository's number, the route GitHub itself redirects a renamed repository to,
+so a write never reaches a repository that took the old name. That route is undocumented (spec section 9, known
+limits) and measured for reads only; whether GitHub takes a write on it is first shown by the live proof.
+
+| Operation | Endpoint |
+|---|---|
+| `create` | `POST orgs/{account}/repos` or `POST user/repos` with `name` and `private`; the probe measured on 2026-11-26: `GET orgs/github` 200, `GET orgs/octocat` (a user) 404 |
+| `rename` | `PATCH repositories/{id}` with `name`; the answer must carry the new name |
+| `transfer` | `POST repositories/{id}/transfer` with `new_owner`; 422 is `transfer_refused` |
+| `archive` | `PATCH repositories/{id}` with `archived: true`; the answer must say archived |
+| `read_metadata` | `GET repositories/{id}`: `description`, `homepage`, `topics`, `private`, `default_branch`, `has_issues`, `has_wiki`, every one present in the anonymous answer for 1296269 on 2026-11-26 |
+| `write_metadata` | `PATCH repositories/{id}` with the members above, then `PUT repositories/{id}/topics` with `names` |
 
 ## Gitea and Forgejo
 
@@ -28,10 +72,16 @@ only `Accept: application/json`.
 | version | `GET version` | `{"version":"17.0.0-121-39320c0+gitea-1.22.0"}` on Codeberg |
 | fork parent | `parent.id` in the repository answer | present, null for a repo that is no fork |
 | `list_repos` | `GET orgs/{org}/repos`, then `users/{user}/repos`, `limit` and `page` | `limit` is clamped to the host's `max_response_items` (50 on Codeberg), so pages are read until an empty one |
-| rename | `PATCH repos/{owner}/{repo}` with `name` | in the API definition; not exercised, nothing is written yet |
-| transfer | `POST repos/{owner}/{repo}/transfer` with `new_owner` | in the API definition; not exercised |
-| archive | `PATCH repos/{owner}/{repo}` with `archived` | in the API definition; not exercised |
+| `create` | `GET orgs/{account}`, else `GET user`; then `POST orgs/{account}/repos` or `POST user/repos` with `name` and `private` | the probe measured on 2026-11-26: `GET orgs/Codeberg` 200, a name that is no org 404; the `POST` not exercised, 409 is a taken name |
+| `rename` | `PATCH repos/{owner}/{repo}` with `name` | in the API definition; not exercised, 422 is a taken (or reserved) name |
+| `transfer` | `POST repos/{owner}/{repo}/transfer` with `new_owner` | in the API definition; not exercised, 202 with the repository |
+| `archive` | `PATCH repos/{owner}/{repo}` with `archived` | in the API definition; not exercised |
+| `read_metadata` | `GET repos/{owner}/{repo}` (`description`, `website`, `private`, `default_branch`, `has_issues`, `has_wiki`) and `GET repos/{owner}/{repo}/topics` | anonymous GETs on Codeberg on 2026-11-26 answer every member, and the topics as `{"topics": [...]}` |
+| `write_metadata` | `PATCH repos/{owner}/{repo}` with those members, then `PUT repos/{owner}/{repo}/topics` with `topics` | in the API definition; not exercised, `PUT` answers 204 |
 | `release_index` | | unsupported |
+
+Every write looks the repository up by number, reads the version, and writes to the names that lookup answered;
+`read_metadata` reads by those names and looks the number up again afterwards, as every read does.
 
 Every route except the number lookup is by owner and name, so each read looks the repository up by number first, builds
 the route from the names it answers, and looks it up by number again afterwards. A repository renamed in between is
@@ -41,8 +91,9 @@ and answers NOT_FOUND only once the lookup by number says it is gone; it never b
 
 ### The minimum host: Gitea 1.20
 
-`read_file`, `contains` and `parent_count` read `GET version` first and refuse a host older than Gitea 1.20 as
-`unsupported_operation`, with a fix naming the minimum. Forgejo from 7 on reports its own version with the Gitea it
+`read_file`, `contains`, `parent_count` and every write read `GET version`, after the lookup by number, and refuse a
+host older than Gitea 1.20 as `unsupported_operation`, with a fix naming the minimum. The lookup comes first so a
+host that wants a token, or has lost the repository, answers that rather than its age. Forgejo from 7 on reports its own version with the Gitea it
 carries after `+gitea-` (`7.0.0+gitea-1.22.0`), which is the part read; Gitea, and Forgejo before 7 (`1.21.11-1`), lead
 with the Gitea version. A host that answers 404 for its version is refused the same way, never NOT_FOUND. What sets
 the minimum, read from go-gitea/gitea on 2026-11-26:
@@ -54,6 +105,13 @@ the minimum, read from go-gitea/gitea on 2026-11-26:
 | `stat`, `verification`, `files` on `git/commits/{sha}` | 1.20.0 | #24613 "Filter get single commit" |
 | `ref` on `GET repos/{owner}/{repo}/raw/{path}` | 1.14.0 | #14602 "Add support for ref parameter to get raw file API" |
 | `GET repos/{owner}/{repo}/git/commits/{sha}` | before 1.10.0 | `routers/api/v1/api.go` at `v1.10.0` |
+| `PATCH repos/{owner}/{repo}` with `name`, `description`, `website`, `private`, `has_issues`, `has_wiki`, `default_branch`, `archived` | 1.9.0 | #7006 "Adds API Endpoint for Repo Edit"; `EditRepoOption` in `modules/structs/repo.go` at `v1.9.0` carries every one, absent at `v1.8.0` |
+| `GET` and `PUT repos/{owner}/{repo}/topics` | 1.10.0 | #7963 "Add API endpoint for accessing repo topics"; the `/topics` group in `api.go` at `v1.10.0`, absent at `v1.9.0` |
+| `POST repos/{owner}/{repo}/transfer` with `new_owner` | 1.12.0 | #9947 "Add API endpoint for repo transfer"; in `api.go` at `v1.12.0`, absent at `v1.11.0` |
+| `POST orgs/{org}/repos`, `POST user/repos`, `GET orgs/{org}`, `GET user` | before 1.8.0 | in `api.go` at `v1.8.0` |
+
+**No write raises the minimum**: the newest route a write needs arrived in 1.12.0 (read from go-gitea/gitea on
+2026-11-26 with `gh api`), so 1.20 stays the one floor for the provider, and a write checks it as a read does.
 
 A host that ignores `not` answers the commit's whole history, which would read as "not contained"; a host that ignores
 the three filters answers more than is read. Both are why the version is checked before either route is asked.

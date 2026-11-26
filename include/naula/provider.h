@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "naula/metadata.h"
 #include "naula/status.h"
 
 #ifdef __cplusplus
@@ -24,8 +25,15 @@ extern "C" {
 #define NAULA_OP_PARENT_COUNT (1u << 4)
 #define NAULA_OP_LIST_REPOS (1u << 5)
 #define NAULA_OP_RELEASE_INDEX (1u << 6)
+#define NAULA_OP_CREATE (1u << 7)
+#define NAULA_OP_RENAME (1u << 8)
+#define NAULA_OP_TRANSFER (1u << 9)
+#define NAULA_OP_ARCHIVE (1u << 10)
+#define NAULA_OP_READ_METADATA (1u << 11)
+#define NAULA_OP_WRITE_METADATA (1u << 12)
 
 #define NAULA_UNKNOWN_PROVIDER_FIX "install a plugin that provides a resolver"
+#define NAULA_ACCOUNT_RENAME_FIX "rename the account on the host's website, then change the account in homes"
 
 /**
  * What a provider knows of one repo. `fork_parent` is 0 for a repo that is no fork, `etag` NULL when the answer
@@ -49,7 +57,18 @@ void naula_repository_list_release(naula_repository *repositories, size_t count)
 /**
  * `describe` answers the NAULA_OP_ bits this provider supports; a call to an operation it lacks is refused. `word` and
  * `context` outlive the registration. Bytes answered by read_file and release_index are released with
- * naula_memory_release. First shape ends at `release_index`.
+ * naula_memory_release. First shape ends at `release_index`; the writes, `create` to `write_metadata`, were appended
+ * and are read only when `size` covers `write_metadata` (naula_provider_offers_writes).
+ *
+ * Every write needs a token and refuses NULL, and a name or account that is not a plain name or starts with `-`,
+ * before any request. `rename`, `transfer` and `archive` keep the number. A write the host refuses with a 404 is
+ * NAULA_NOT_FOUND only once a lookup by number says the repository is gone; on a live one it is refused
+ * `not_permitted`. A name the account already holds is refused `name_taken`. `create` sends the name and the
+ * visibility, so a private repository is never public for a moment, and the caller writes the rest of `metadata`
+ * with `write_metadata`. `write_metadata` writes only the members whose bit is in `wanted->present` and answers in
+ * `applied` the members it wrote, also when it fails part way; a member it cannot write, such as a setting the host
+ * lacks, is left out of `applied` and is not an error. `read_metadata` fills `out`, its `size` set by the caller,
+ * released with naula_metadata_release.
  */
 typedef struct naula_provider {
     uint32_t size;
@@ -70,14 +89,41 @@ typedef struct naula_provider {
                                naula_repository **out, size_t *count, naula_refusal *refusal);
     naula_status (*release_index)(void *context, const char *host, uint64_t number, const char *tag,
                                   const char *token, uint8_t **bytes, size_t *length, naula_refusal *refusal);
+    naula_status (*create)(void *context, const char *host, const char *account, const char *name,
+                           const naula_metadata *metadata, const char *token, uint64_t *number,
+                           naula_refusal *refusal);
+    naula_status (*rename)(void *context, const char *host, uint64_t number, const char *name, const char *token,
+                           naula_refusal *refusal);
+    naula_status (*transfer)(void *context, const char *host, uint64_t number, const char *account,
+                             const char *token, naula_refusal *refusal);
+    naula_status (*archive)(void *context, const char *host, uint64_t number, const char *token,
+                            naula_refusal *refusal);
+    naula_status (*read_metadata)(void *context, const char *host, uint64_t number, const char *token,
+                                  naula_metadata *out, naula_refusal *refusal);
+    naula_status (*write_metadata)(void *context, const char *host, uint64_t number, const naula_metadata *wanted,
+                                   const char *token, uint32_t *applied, naula_refusal *refusal);
 } naula_provider;
+
+/** Whether provider's size covers the writes, so its write members may be read. */
+int naula_provider_offers_writes(const naula_provider *provider);
+
+/**
+ * Refuses renaming the account word's homes live under, `unsupported_operation` with NAULA_ACCOUNT_RENAME_FIX: naula
+ * renames no account (spec 7.4, which leaves unmeasured whether every provider's API could), so the person renames
+ * it on the website.
+ */
+naula_status naula_refuse_account_rename(const char *word, naula_refusal *refusal);
 
 typedef struct naula_providers naula_providers;
 
 /** A registry holding the built-in providers. */
 naula_status naula_providers_open(naula_providers **providers);
 
-/** Refuses a provider whose size does not cover its first shape, and a second provider for a word. */
+/**
+ * Refuses a provider whose size does not cover its first shape, one whose size covers the writes with a write left
+ * NULL, and a second provider for a word. The registry keeps the provider's own size, so a provider of the first
+ * shape offers no writes.
+ */
 naula_status naula_providers_register(naula_providers *providers, const naula_provider *provider,
                                       naula_refusal *refusal);
 

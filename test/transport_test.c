@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,6 +214,142 @@ static void authorization_follows_a_redirect_to_the_same_host(void) {
     send_a_redirect_and_log("127.0.0.1", 1);
 }
 
+#define WRITE_BODY "{\"name\":\"renamed\"}"
+
+static naula_fetch_request write_request(const char *url, const char *method) {
+    naula_fetch_request request;
+    memset(&request, 0, sizeof request);
+    request.size = sizeof request;
+    request.url = url;
+    request.deadline_milliseconds = 5000;
+    request.authorization = SECRET;
+    request.method = method;
+    request.body = (const uint8_t *)WRITE_BODY;
+    request.body_length = strlen(WRITE_BODY);
+    request.content_type = "application/json";
+    return request;
+}
+
+static naula_fetch_answer send_request(const naula_fetch_request *request, naula_fetch_sink *sink) {
+    naula_fetch_answer answer = empty_answer();
+    naula_fetch_sink_start_memory(sink, received, BODY_LENGTH);
+    naula_fetch_send_into_memory(request, sink, &answer);
+    return answer;
+}
+
+static void post_sends_its_body_and_type(void) {
+    char url[128];
+    naula_fetch_sink sink;
+    const http_route routes[] = {{"/write", 201, NULL, "{}", 2, HTTP_ROUTE_BODY_LENGTH, NULL, NULL, 0, 0}};
+    http_fixture *server = http_fixture_start(routes, 1);
+    CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    url_of(url, sizeof url, "127.0.0.1", http_fixture_port(server), "/write");
+    const char *const methods[] = {"POST", "PATCH", "PUT"};
+    for (size_t index = 0; index < 3; index++) {
+        naula_fetch_request request = write_request(url, methods[index]);
+        naula_fetch_answer answer = send_request(&request, &sink);
+        CHECK(answer.outcome == NAULA_FETCH_RECEIVED && sink.bytes == 2);
+        release(&answer);
+    }
+    char *log = http_fixture_stop(server);
+    CHECK(log != NULL);
+    if (log == NULL) {
+        return;
+    }
+    CHECK(strstr(log, "POST /write HTTP/1.1\r\n") != NULL);
+    CHECK(strstr(log, "PATCH /write HTTP/1.1\r\n") != NULL);
+    CHECK(strstr(log, "PUT /write HTTP/1.1\r\n") != NULL);
+    CHECK(occurrences(log, "Content-Type: application/json\r\n") == 3);
+    CHECK(occurrences(log, "\r\n\r\n" WRITE_BODY) == 3);
+    naula_memory_release(log);
+}
+
+static void a_write_is_never_redirected(const char *location_host) {
+    char extra[200];
+    char url[128];
+    naula_fetch_sink sink;
+    http_route routes[2] = {
+        {"/start", 307, extra, "", 0, HTTP_ROUTE_BODY_LENGTH, NULL, NULL, 0, 0},
+        {"/target", 200, NULL, "{}", 2, HTTP_ROUTE_BODY_LENGTH, NULL, NULL, 0, 0},
+    };
+    http_fixture *server = http_fixture_start(routes, 2);
+    CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    unsigned short port = http_fixture_port(server);
+    snprintf(extra, sizeof extra, "Location: http://%s:%u/target\r\n", location_host, (unsigned)port);
+    url_of(url, sizeof url, "127.0.0.1", port, "/start");
+    naula_fetch_request request = write_request(url, "PATCH");
+    naula_fetch_answer answer = send_request(&request, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_STATUS && answer.status == 307);
+    CHECK(sink.bytes == 0);
+    release(&answer);
+    char *log = http_fixture_stop(server);
+    CHECK(log != NULL && occurrences(log, WRITE_BODY) == 1 && strstr(log, "/target") == NULL);
+    naula_memory_release(log);
+}
+
+static void a_write_is_never_redirected_to_the_same_host_or_another(void) {
+    a_write_is_never_redirected("127.0.0.1");
+    a_write_is_never_redirected("localhost");
+}
+
+static void an_unusable_method_or_body_is_refused_before_anything_is_sent(void) {
+    char url[128];
+    naula_fetch_sink sink;
+    const http_route routes[] = {{"/write", 201, NULL, "{}", 2, HTTP_ROUTE_BODY_LENGTH, NULL, NULL, 0, 0}};
+    http_fixture *server = http_fixture_start(routes, 1);
+    CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    url_of(url, sizeof url, "127.0.0.1", http_fixture_port(server), "/write");
+    const char *const methods[] = {"PO ST", "post", "", "PATCH\r\nX-Injected: 1"};
+    for (size_t index = 0; index < 4; index++) {
+        naula_fetch_request request = write_request(url, methods[index]);
+        naula_fetch_answer answer = send_request(&request, &sink);
+        CHECK(answer.outcome == NAULA_FETCH_REFUSED);
+        release(&answer);
+    }
+    naula_fetch_request missing_body = write_request(url, "POST");
+    missing_body.body = NULL;
+    naula_fetch_answer answer = send_request(&missing_body, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_REFUSED);
+    release(&answer);
+    naula_fetch_request split_type = write_request(url, "POST");
+    split_type.content_type = "application/json\r\nX-Injected: 1";
+    answer = send_request(&split_type, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_REFUSED);
+    release(&answer);
+    char *log = http_fixture_stop(server);
+    CHECK(log != NULL && log[0] == '\0');
+    naula_memory_release(log);
+}
+
+static void a_request_without_the_appended_members_is_a_get(void) {
+    char url[128];
+    naula_fetch_sink sink;
+    const http_route routes[] = {{"/write", 200, NULL, "{}", 2, HTTP_ROUTE_BODY_LENGTH, NULL, NULL, 0, 0}};
+    http_fixture *server = http_fixture_start(routes, 1);
+    CHECK(server != NULL);
+    if (server == NULL) {
+        return;
+    }
+    url_of(url, sizeof url, "127.0.0.1", http_fixture_port(server), "/write");
+    naula_fetch_request request = write_request(url, "POST");
+    request.size = (uint32_t)(offsetof(naula_fetch_request, extra_headers) + sizeof request.extra_headers);
+    naula_fetch_answer answer = send_request(&request, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_RECEIVED);
+    release(&answer);
+    char *log = http_fixture_stop(server);
+    CHECK(log != NULL && strstr(log, "GET /write ") != NULL && strstr(log, WRITE_BODY) == NULL);
+    naula_memory_release(log);
+}
+
 #if defined(_WIN32)
 static void winhttp_takes_the_system_proxy(void) {
     CHECK(naula_fetch_windows_access_type() == WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY);
@@ -258,8 +395,13 @@ static void a_stopped_transfer_is_settled_by_its_own_flag_whatever_libcurl_repor
     release(&answer);
     answer = fetch_into_buffer("https://forge.invalid/large", NULL, 5000, 1, &sink);
     CHECK(answer.outcome == NAULA_FETCH_STOPPED_BY_SINK);
-    naula_fetch_curl_use_library(NULL);
     release(&answer);
+    naula_fetch_request write = write_request("https://forge.invalid/refused", "PATCH");
+    answer = send_request(&write, &sink);
+    CHECK(answer.outcome == NAULA_FETCH_STATUS);
+    CHECK(answer.status == 401);
+    release(&answer);
+    naula_fetch_curl_use_library(NULL);
 }
 #endif
 
@@ -285,6 +427,10 @@ int main(void) {
     run_against_the_server();
     authorization_is_not_sent_after_a_cross_host_redirect();
     authorization_follows_a_redirect_to_the_same_host();
+    post_sends_its_body_and_type();
+    a_write_is_never_redirected_to_the_same_host_or_another();
+    an_unusable_method_or_body_is_refused_before_anything_is_sent();
+    a_request_without_the_appended_members_is_a_get();
 #if defined(_WIN32)
     winhttp_takes_the_system_proxy();
 #else

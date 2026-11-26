@@ -73,23 +73,6 @@ static void send_all(fixture_socket connection, const char *bytes, size_t length
     }
 }
 
-static size_t read_request_head(fixture_socket connection, char *head, size_t capacity) {
-    size_t length = 0;
-    while (length + 1 < capacity) {
-        int received = (int)recv(connection, head + length, (int)(capacity - 1 - length), 0);
-        if (received <= 0) {
-            break;
-        }
-        length += (size_t)received;
-        head[length] = 0;
-        if (strstr(head, "\r\n\r\n") != NULL) {
-            break;
-        }
-    }
-    head[length] = 0;
-    return length;
-}
-
 static void record(http_fixture *fixture, const char *head, size_t length) {
     if (fixture->log_length + length + 1 < LOG_LIMIT) {
         memcpy(fixture->log + fixture->log_length, head, length);
@@ -107,6 +90,37 @@ static int starts_with_ignoring_case(const char *text, const char *prefix) {
         }
     }
     return 1;
+}
+
+static size_t declared_request_body(const char *head) {
+    for (const char *line = strstr(head, "\r\n"); line != NULL && line[2] != '\r'; line = strstr(line + 2, "\r\n")) {
+        const char *start = line + 2;
+        if (starts_with_ignoring_case(start, "Content-Length:")) {
+            return (size_t)strtoul(start + strlen("Content-Length:"), NULL, 10);
+        }
+    }
+    return 0;
+}
+
+static int is_whole_request(const char *head, size_t length) {
+    const char *end = strstr(head, "\r\n\r\n");
+    return end != NULL && length >= (size_t)(end + 4 - head) + declared_request_body(head);
+}
+
+/** Reads the head and the body its Content-Length declares, so closing never resets a client still sending. */
+static size_t read_request(fixture_socket connection, char *head, size_t capacity) {
+    size_t length = 0;
+    head[0] = 0;
+    while (length + 1 < capacity && !is_whole_request(head, length)) {
+        int received = (int)recv(connection, head + length, (int)(capacity - 1 - length), 0);
+        if (received <= 0) {
+            break;
+        }
+        length += (size_t)received;
+        head[length] = 0;
+    }
+    head[length] = 0;
+    return length;
 }
 
 static int header_equals(const char *head, const char *name, const char *expected) {
@@ -190,7 +204,7 @@ static void answer_route(fixture_socket connection, const http_route *route, con
 
 static void serve_connection(http_fixture *fixture, fixture_socket connection) {
     char head[REQUEST_LIMIT];
-    size_t length = read_request_head(connection, head, sizeof head);
+    size_t length = read_request(connection, head, sizeof head);
     if (length == 0) {
         return;
     }

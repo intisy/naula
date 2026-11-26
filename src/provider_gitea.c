@@ -6,6 +6,7 @@
 #include "naula/memory.h"
 #include "naula/provider.h"
 #include "provider_gitea_hooks.h"
+#include "provider_gitea_internal.h"
 
 #define ACCEPT_HEADER "Accept: application/json"
 #define URL_SIZE 2048
@@ -44,12 +45,6 @@ static const struct {
             "orgs/%s/repos?limit=%u&page=%u",
             "users/%s/repos?limit=%u&page=%u"};
 
-typedef struct missing_answer {
-    const char *code;
-    const char *what;
-    const char *fix;
-} missing_answer;
-
 static const missing_answer missing_file = {"missing_file_or_ref", "file or ref",
                                             "check the path and the ref exist in the repository"};
 static const missing_answer missing_commit = {"missing_commit", "commit", "check the commit exists in the repository"};
@@ -57,11 +52,6 @@ static const missing_answer missing_commit_or_ref = {"missing_commit_or_ref", "c
                                                      "check the commit and the branch exist in the repository"};
 
 static const char *const request_headers[] = {ACCEPT_HEADER, NULL};
-
-typedef struct gitea_edition {
-    const char *word;
-    forge_flavor flavor;
-} gitea_edition;
 
 static const gitea_edition gitea_edition_gitea = {
     "gitea", {"Gitea", "check that the host runs Gitea and the home names it", request_headers}};
@@ -80,14 +70,7 @@ void naula_gitea_use_api_root(const char *root) {
 }
 #endif
 
-typedef struct target {
-    const gitea_edition *edition;
-    const char *host;
-    uint64_t number;
-    const char *token;
-} target;
-
-static naula_status build_root(const target *at, char *root, naula_refusal *refusal) {
+static naula_status build_root(const gitea_target *at, char *root, naula_refusal *refusal) {
     if (at->host == NULL || at->host[0] == '\0') {
         naula_refuse(refusal, "host_needed", "write the home with the host it runs on, such as gitea@git.example.com",
                      "%s needs the host it runs on", at->edition->flavor.label);
@@ -104,8 +87,8 @@ static naula_status build_root(const target *at, char *root, naula_refusal *refu
     return NAULA_OK;
 }
 
-static naula_status get(const target *at, const char *route, size_t capacity, forge_reply *reply,
-                        naula_refusal *refusal) {
+naula_status naula_gitea_request(const gitea_target *at, const char *method, const char *route, const cJSON *body,
+                                 size_t capacity, forge_reply *reply, naula_refusal *refusal) {
     char root[FORGE_ROOT_SIZE];
     char url[URL_SIZE];
     memset(reply, 0, sizeof *reply);
@@ -116,17 +99,22 @@ static naula_status get(const target *at, const char *route, size_t capacity, fo
     if (snprintf(url, sizeof url, "%s/%s", root, route) >= (int)sizeof url) {
         return naula_forge_refuse_input(&at->edition->flavor, refusal, "the request address (too long)");
     }
-    return naula_forge_fetch(&at->edition->flavor, url, at->token, capacity, reply, refusal);
+    return naula_forge_send(&at->edition->flavor, method, url, at->token, body, capacity, reply, refusal);
 }
 
-static naula_repository fresh_repository(void) {
+static naula_status get(const gitea_target *at, const char *route, size_t capacity, forge_reply *reply,
+                        naula_refusal *refusal) {
+    return naula_gitea_request(at, NULL, route, NULL, capacity, reply, refusal);
+}
+
+naula_repository naula_gitea_fresh_repository(void) {
     naula_repository repository;
     memset(&repository, 0, sizeof repository);
     repository.size = sizeof repository;
     return repository;
 }
 
-static naula_status lookup_target(const target *at, naula_repository *out, naula_refusal *refusal) {
+naula_status naula_gitea_lookup(const gitea_target *at, naula_repository *out, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
     const forge_flavor *flavor = &at->edition->flavor;
@@ -160,8 +148,8 @@ static naula_status lookup_target(const target *at, naula_repository *out, naula
 
 static naula_status gitea_lookup(void *context, const char *host, uint64_t number, const char *token,
                                  naula_repository *out, naula_refusal *refusal) {
-    target at = {context, host, number, token};
-    return lookup_target(&at, out, refusal);
+    gitea_target at = {context, host, number, token};
+    return naula_gitea_lookup(&at, out, refusal);
 }
 
 static naula_status gitea_find(void *context, const char *host, const char *account, const char *name,
@@ -169,7 +157,7 @@ static naula_status gitea_find(void *context, const char *host, const char *acco
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
     naula_refusal absent;
-    target at = {context, host, 0, token};
+    gitea_target at = {context, host, 0, token};
     const forge_flavor *flavor = &at.edition->flavor;
     if (!naula_forge_is_name_segment(account) || !naula_forge_is_name_segment(name)) {
         return naula_forge_refuse_input(flavor, refusal, "the account or the name");
@@ -199,7 +187,7 @@ static naula_status gitea_find(void *context, const char *host, const char *acco
     return status;
 }
 
-static int build_repository_prefix(const naula_repository *repository, char *prefix, size_t capacity) {
+int naula_gitea_repository_prefix(const naula_repository *repository, char *prefix, size_t capacity) {
     char account[NAME_SIZE];
     char name[NAME_SIZE];
     if (naula_forge_encode_text(repository->account, 0, account, sizeof account) == 0 ||
@@ -213,9 +201,10 @@ static int build_repository_prefix(const naula_repository *repository, char *pre
  * A name-based route reads whatever repository holds the name when it is asked, so the repository is looked up by
  * number again afterwards and the answer is used only when it still has the names the route was built from.
  */
-static naula_status confirm_names(const target *at, const naula_repository *before, naula_refusal *refusal) {
-    naula_repository now = fresh_repository();
-    naula_status status = lookup_target(at, &now, refusal);
+naula_status naula_gitea_confirm_names(const gitea_target *at, const naula_repository *before,
+                                       naula_refusal *refusal) {
+    naula_repository now = naula_gitea_fresh_repository();
+    naula_status status = naula_gitea_lookup(at, &now, refusal);
     if (status == NAULA_OK && (strcmp(now.account, before->account) != 0 || strcmp(now.name, before->name) != 0)) {
         naula_refuse(refusal, "repository_changed", "try again, the repository was renamed or moved during the read",
                      "%s renamed the repository while it was read", at->edition->flavor.label);
@@ -226,12 +215,12 @@ static naula_status confirm_names(const target *at, const naula_repository *befo
 }
 
 /** A 404 on a file or a commit reads the same as a repository that is gone, so the repository decides which. */
-static naula_status settle_read(const target *at, const naula_repository *before, naula_status status,
-                                const missing_answer *missing, naula_refusal *refusal) {
+naula_status naula_gitea_settle_read(const gitea_target *at, const naula_repository *before, naula_status status,
+                                     const missing_answer *missing, naula_refusal *refusal) {
     if (status != NAULA_NOT_FOUND) {
-        return status == NAULA_OK ? confirm_names(at, before, refusal) : status;
+        return status == NAULA_OK ? naula_gitea_confirm_names(at, before, refusal) : status;
     }
-    status = confirm_names(at, before, refusal);
+    status = naula_gitea_confirm_names(at, before, refusal);
     if (status != NAULA_OK) {
         return status;
     }
@@ -270,7 +259,7 @@ static naula_status refuse_old_host(const forge_flavor *flavor, const char *answ
     return NAULA_REFUSED;
 }
 
-static naula_status require_version(const target *at, naula_refusal *refusal) {
+naula_status naula_gitea_require_version(const gitea_target *at, naula_refusal *refusal) {
     forge_reply reply;
     unsigned long major = 0;
     unsigned long minor = 0;
@@ -300,7 +289,7 @@ static naula_status build_raw_route(const naula_repository *repository, const ch
     char encoded_path[FORGE_ROUTE_SIZE / 2];
     char encoded_ref[FORGE_ROUTE_SIZE / 4];
     if (path == NULL || path[0] == '\0' || naula_forge_encode_text(path, 1, encoded_path, sizeof encoded_path) == 0 ||
-        !build_repository_prefix(repository, prefix, sizeof prefix)) {
+        !naula_gitea_repository_prefix(repository, prefix, sizeof prefix)) {
         return naula_forge_refuse_input(flavor, refusal, "the path");
     }
     if (ref == NULL) {
@@ -327,7 +316,7 @@ static naula_status keep_body(forge_reply *reply, uint8_t **bytes, size_t *lengt
     return NAULA_OK;
 }
 
-static naula_status read_raw(const target *at, const naula_repository *repository, const char *ref, const char *path,
+static naula_status read_raw(const gitea_target *at, const naula_repository *repository, const char *ref, const char *path,
                              uint8_t **bytes, size_t *length, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
@@ -346,17 +335,17 @@ static naula_status read_raw(const target *at, const naula_repository *repositor
 static naula_status gitea_read_file(void *context, const char *host, uint64_t number, const char *ref,
                                     const char *path, const char *token, uint8_t **bytes, size_t *length,
                                     naula_refusal *refusal) {
-    target at = {context, host, number, token};
-    naula_repository repository = fresh_repository();
+    gitea_target at = {context, host, number, token};
+    naula_repository repository = naula_gitea_fresh_repository();
     *bytes = NULL;
     *length = 0;
-    naula_status status = lookup_target(&at, &repository, refusal);
+    naula_status status = naula_gitea_lookup(&at, &repository, refusal);
     if (status == NAULA_OK) {
-        status = require_version(&at, refusal);
+        status = naula_gitea_require_version(&at, refusal);
     }
     if (status == NAULA_OK) {
         status = read_raw(&at, &repository, ref, path, bytes, length, refusal);
-        status = settle_read(&at, &repository, status, &missing_file, refusal);
+        status = naula_gitea_settle_read(&at, &repository, status, &missing_file, refusal);
     }
     if (status != NAULA_OK) {
         naula_memory_release(*bytes);
@@ -367,7 +356,7 @@ static naula_status gitea_read_file(void *context, const char *host, uint64_t nu
     return status;
 }
 
-static naula_status read_contained(const target *at, const char *prefix, const char *ref, const char *commit,
+static naula_status read_contained(const gitea_target *at, const char *prefix, const char *ref, const char *commit,
                                    int *contained, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     char encoded_ref[FORGE_ROUTE_SIZE / 4];
@@ -399,22 +388,22 @@ static int is_usable_ref(const char *ref) {
 static naula_status gitea_contains(void *context, const char *host, uint64_t number, const char *ref,
                                    const char *commit, const char *token, int *contained, naula_refusal *refusal) {
     char prefix[FORGE_ROUTE_SIZE / 4];
-    target at = {context, host, number, token};
-    naula_repository repository = fresh_repository();
+    gitea_target at = {context, host, number, token};
+    naula_repository repository = naula_gitea_fresh_repository();
     *contained = 0;
     if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit) || !is_usable_ref(ref)) {
         return naula_forge_refuse_input(&at.edition->flavor, refusal, "the number, the commit or the ref");
     }
-    naula_status status = lookup_target(&at, &repository, refusal);
-    if (status == NAULA_OK && !build_repository_prefix(&repository, prefix, sizeof prefix)) {
+    naula_status status = naula_gitea_lookup(&at, &repository, refusal);
+    if (status == NAULA_OK && !naula_gitea_repository_prefix(&repository, prefix, sizeof prefix)) {
         status = naula_forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
     }
     if (status == NAULA_OK) {
-        status = require_version(&at, refusal);
+        status = naula_gitea_require_version(&at, refusal);
     }
     if (status == NAULA_OK) {
         status = read_contained(&at, prefix, ref, commit, contained, refusal);
-        status = settle_read(&at, &repository, status, &missing_commit_or_ref, refusal);
+        status = naula_gitea_settle_read(&at, &repository, status, &missing_commit_or_ref, refusal);
     }
     if (status != NAULA_OK) {
         *contained = 0;
@@ -423,7 +412,7 @@ static naula_status gitea_contains(void *context, const char *host, uint64_t num
     return status;
 }
 
-static naula_status read_parent_count(const target *at, const char *prefix, const char *commit, size_t *count,
+static naula_status read_parent_count(const gitea_target *at, const char *prefix, const char *commit, size_t *count,
                                       naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
@@ -450,22 +439,22 @@ static naula_status read_parent_count(const target *at, const char *prefix, cons
 static naula_status gitea_parent_count(void *context, const char *host, uint64_t number, const char *commit,
                                        const char *token, size_t *count, naula_refusal *refusal) {
     char prefix[FORGE_ROUTE_SIZE / 4];
-    target at = {context, host, number, token};
-    naula_repository repository = fresh_repository();
+    gitea_target at = {context, host, number, token};
+    naula_repository repository = naula_gitea_fresh_repository();
     *count = 0;
     if (number == 0 || commit == NULL || !naula_forge_is_commit_text(commit)) {
         return naula_forge_refuse_input(&at.edition->flavor, refusal, "the number or the commit");
     }
-    naula_status status = lookup_target(&at, &repository, refusal);
-    if (status == NAULA_OK && !build_repository_prefix(&repository, prefix, sizeof prefix)) {
+    naula_status status = naula_gitea_lookup(&at, &repository, refusal);
+    if (status == NAULA_OK && !naula_gitea_repository_prefix(&repository, prefix, sizeof prefix)) {
         status = naula_forge_refuse_input(&at.edition->flavor, refusal, "the repository names");
     }
     if (status == NAULA_OK) {
-        status = require_version(&at, refusal);
+        status = naula_gitea_require_version(&at, refusal);
     }
     if (status == NAULA_OK) {
         status = read_parent_count(&at, prefix, commit, count, refusal);
-        status = settle_read(&at, &repository, status, &missing_commit, refusal);
+        status = naula_gitea_settle_read(&at, &repository, status, &missing_commit, refusal);
     }
     if (status != NAULA_OK) {
         *count = 0;
@@ -474,7 +463,7 @@ static naula_status gitea_parent_count(void *context, const char *host, uint64_t
     return status;
 }
 
-static naula_status read_pages(const target *at, const char *format, const char *account,
+static naula_status read_pages(const gitea_target *at, const char *format, const char *account,
                                forge_repository_list *list, naula_refusal *refusal) {
     for (unsigned page = 1; page <= PAGE_LIMIT; page++) {
         char route[FORGE_ROUTE_SIZE];
@@ -499,7 +488,7 @@ static naula_status gitea_list_repos(void *context, const char *host, const char
                                      naula_repository **out, size_t *count, naula_refusal *refusal) {
     forge_repository_list list = {NULL, 0, 0};
     naula_refusal absent;
-    target at = {context, host, 0, token};
+    gitea_target at = {context, host, 0, token};
     *out = NULL;
     *count = 0;
     if (!naula_forge_is_name_segment(account)) {
@@ -540,15 +529,18 @@ static naula_status gitea_release_index(void *context, const char *host, uint64_
 static naula_status gitea_describe(void *context, uint32_t *supported, int *anonymous_lookup) {
     (void)context;
     *supported = NAULA_OP_LOOKUP | NAULA_OP_FIND | NAULA_OP_READ_FILE | NAULA_OP_CONTAINS | NAULA_OP_PARENT_COUNT |
-                 NAULA_OP_LIST_REPOS;
+                 NAULA_OP_LIST_REPOS | NAULA_OP_CREATE | NAULA_OP_RENAME | NAULA_OP_TRANSFER | NAULA_OP_ARCHIVE |
+                 NAULA_OP_READ_METADATA | NAULA_OP_WRITE_METADATA;
     *anonymous_lookup = 0;
     return NAULA_OK;
 }
 
 #define GITEA_PROVIDER(word, edition)                                                                               \
-    {sizeof(naula_provider), word,           (void *)&(edition), gitea_describe,     gitea_lookup,                  \
-     gitea_find,             gitea_read_file, gitea_contains,    gitea_parent_count, gitea_list_repos,              \
-     gitea_release_index}
+    {sizeof(naula_provider), word,                 (void *)&(edition),   gitea_describe,                            \
+     gitea_lookup,           gitea_find,           gitea_read_file,      gitea_contains,                            \
+     gitea_parent_count,     gitea_list_repos,     gitea_release_index,  naula_gitea_create,                        \
+     naula_gitea_rename,     naula_gitea_transfer, naula_gitea_archive,  naula_gitea_read_metadata,                 \
+     naula_gitea_write_metadata}
 
 static const naula_provider gitea_provider = GITEA_PROVIDER("gitea", gitea_edition_gitea);
 static const naula_provider forgejo_provider = GITEA_PROVIDER("forgejo", gitea_edition_forgejo);

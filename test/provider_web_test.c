@@ -170,6 +170,30 @@ static void the_web_provider_supports_no_operation_and_refuses_each(void) {
     CHECK(web->release_index(web->context, "naula.dev", 1, "v1", NULL, &bytes, &length, &refusal) == NAULA_REFUSED);
 }
 
+static void the_web_provider_refuses_every_write(void) {
+    const naula_provider *web = naula_provider_web();
+    naula_refusal refusal = fresh_refusal();
+    naula_metadata metadata;
+    memset(&metadata, 0, sizeof metadata);
+    metadata.size = sizeof metadata;
+    uint64_t number = 5;
+    uint32_t applied = 5;
+    CHECK(naula_provider_offers_writes(web));
+    CHECK(web->create(web->context, "naula.dev", "a", "b", NULL, "t", &number, &refusal) == NAULA_REFUSED);
+    CHECK(number == 0);
+    check_text(refusal.code, "unsupported_operation", "create");
+    CHECK(web->rename(web->context, "naula.dev", 1, "b", "t", &refusal) == NAULA_REFUSED);
+    CHECK(web->transfer(web->context, "naula.dev", 1, "a", "t", &refusal) == NAULA_REFUSED);
+    CHECK(web->archive(web->context, "naula.dev", 1, "t", &refusal) == NAULA_REFUSED);
+    CHECK(web->read_metadata(web->context, "naula.dev", 1, "t", &metadata, &refusal) == NAULA_REFUSED);
+    CHECK(web->write_metadata(web->context, "naula.dev", 1, &metadata, "t", &applied, &refusal) == NAULA_REFUSED);
+    CHECK(applied == 0);
+    check_text(refusal.code, "unsupported_operation", "write_metadata");
+    naula_providers *providers = NULL;
+    CHECK(naula_providers_open(&providers) == NAULA_OK);
+    naula_providers_close(providers);
+}
+
 int main(void) {
     naula_json_use_allocator();
     naula_fetch_allow_plain_http(1);
@@ -181,5 +205,6 @@ int main(void) {
     web_a_domain_that_does_not_resolve_is_unreachable_never_not_found();
     web_refuses_a_domain_or_an_identity_it_cannot_address();
     the_web_provider_supports_no_operation_and_refuses_each();
+    the_web_provider_refuses_every_write();
     return check_summary("provider_web_test");
 }

@@ -20,6 +20,8 @@
 #define MAXIMUM_REDIRECTS 5
 #define HEADER_TEXT_LIMIT 2048
 #define URL_LIMIT 4096
+#define METHOD_CAPACITY 17
+#define BODY_LIMIT 0x7FFFFFFFu
 
 /**
  * @implNote The automatic access type (Windows 8.1 and later) takes the proxy the user's system settings
@@ -156,7 +158,19 @@ static int disable_redirects(HINTERNET request) {
     return WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof policy) != 0;
 }
 
+/** The method as UTF-16 in method, which holds the 16 capital letters a request may name and a terminator. */
+static void wide_method(const naula_fetch_request *request, wchar_t *method, size_t capacity) {
+    const char *narrow = naula_fetch_request_method(request);
+    size_t index = 0;
+    for (; narrow[index] != 0 && index + 1 < capacity; index++) {
+        method[index] = (wchar_t)narrow[index];
+    }
+    method[index] = 0;
+}
+
 static int open_handles(const naula_fetch_request *request, const url_parts *parts, winhttp_handles *handles) {
+    wchar_t method[METHOD_CAPACITY];
+    wide_method(request, method, METHOD_CAPACITY);
     memset(handles, 0, sizeof *handles);
     handles->session = WinHttpOpen(L"naula", session_access_type, WINHTTP_NO_PROXY_NAME,
                                    WINHTTP_NO_PROXY_BYPASS, 0);
@@ -167,7 +181,7 @@ static int open_handles(const naula_fetch_request *request, const url_parts *par
     if (handles->connection == NULL) {
         return 0;
     }
-    handles->request = WinHttpOpenRequest(handles->connection, L"GET", parts->path, NULL, WINHTTP_NO_REFERER,
+    handles->request = WinHttpOpenRequest(handles->connection, method, parts->path, NULL, WINHTTP_NO_REFERER,
                                           WINHTTP_DEFAULT_ACCEPT_TYPES, parts->secure ? WINHTTP_FLAG_SECURE : 0);
     return handles->request != NULL && disable_redirects(handles->request);
 }
@@ -175,9 +189,11 @@ static int open_handles(const naula_fetch_request *request, const url_parts *par
 static wchar_t *request_headers(const naula_fetch_request *request, int is_authorized) {
     const char *authorization = is_authorized ? request->authorization : NULL;
     const char *const *extra = naula_fetch_request_extra_headers(request);
-    size_t size = 96 + (request->etag == NULL ? 0 : strlen(request->etag)) +
+    const char *content_type = naula_fetch_request_body(request).content_type;
+    size_t size = 128 + (request->etag == NULL ? 0 : strlen(request->etag)) +
                   (request->last_modified == NULL ? 0 : strlen(request->last_modified)) +
-                  (authorization == NULL ? 0 : strlen(authorization));
+                  (authorization == NULL ? 0 : strlen(authorization)) +
+                  (content_type == NULL ? 0 : strlen(content_type));
     for (size_t index = 0; extra != NULL && extra[index] != NULL; index++) {
         size += strlen(extra[index]) + 2;
     }
@@ -196,6 +212,9 @@ static wchar_t *request_headers(const naula_fetch_request *request, int is_autho
     if (authorization != NULL) {
         length += snprintf(headers + length, size - (size_t)length, "Authorization: %s\r\n", authorization);
     }
+    if (content_type != NULL) {
+        length += snprintf(headers + length, size - (size_t)length, "Content-Type: %s\r\n", content_type);
+    }
     for (size_t index = 0; extra != NULL && extra[index] != NULL; index++) {
         length += snprintf(headers + length, size - (size_t)length, "%s\r\n", extra[index]);
     }
@@ -208,12 +227,19 @@ static wchar_t *request_headers(const naula_fetch_request *request, int is_autho
 
 /** Sends the request and reads its answer's head: 1 when sent, 0 when it failed, -1 when memory ran out first. */
 static int send_request(const naula_fetch_request *request, HINTERNET handle, int is_authorized) {
+    naula_fetch_body body = naula_fetch_request_body(request);
+    if (body.length > BODY_LIMIT) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
     wchar_t *headers = request_headers(request, is_authorized);
     if (headers == NULL) {
         return -1;
     }
+    LPVOID data = body.length == 0 ? WINHTTP_NO_REQUEST_DATA : (LPVOID)body.bytes;
     int sent = WinHttpSendRequest(handle, headers[0] == 0 ? WINHTTP_NO_ADDITIONAL_HEADERS : headers,
-                                  headers[0] == 0 ? 0 : (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                                  headers[0] == 0 ? 0 : (DWORD)-1L, data, (DWORD)body.length, (DWORD)body.length,
+                                  0) &&
                WinHttpReceiveResponse(handle, NULL);
     naula_overwrite(headers, wcslen(headers) * sizeof *headers);
     naula_memory_release(headers);
@@ -355,7 +381,7 @@ static hop_outcome take_hop(const naula_fetch_request *request, const url_parts 
         naula_fetch_out_of_memory(answer);
     } else if (sent == 0) {
         refuse_error(request, GetLastError(), answer);
-    } else if (is_redirect(status_of(handles.request))) {
+    } else if (is_redirect(status_of(handles.request)) && naula_fetch_request_follows_redirects(request)) {
         *next = redirect_target(handles.request, parts->wide_url);
         outcome = HOP_REDIRECTED;
     } else {
