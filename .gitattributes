@@ -1,2 +1,4 @@
 test/fixtures/repo-file/** text eol=lf
 test/fixtures/repo-file-format-one/** text eol=lf
+test/fixtures/repo-file-schema/** text eol=lf
+schema/** text eol=lf

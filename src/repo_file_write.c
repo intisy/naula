@@ -5,6 +5,7 @@
 
 #include "naula/memory.h"
 #include "repo_file_internal.h"
+#include "repo_file_rules.h"
 
 #define INITIAL_CAPACITY 1024u
 
@@ -170,11 +171,11 @@ static void write_text_list(container *into, const char *key, char *const *texts
 
 static void write_home(text_builder *builder, int level, const naula_home *home) {
     container object = open_container(builder, level, '{');
-    write_text_member(&object, "provider", home->provider);
-    write_text_member(&object, "host", home->host);
-    write_text_member(&object, "account", home->account);
-    write_text_member(&object, "domain", home->domain);
-    write_text_member(&object, "url", home->url);
+    write_text_member(&object, REPO_FILE_HOME_PROVIDER, home->provider);
+    write_text_member(&object, REPO_FILE_HOME_HOST, home->host);
+    write_text_member(&object, REPO_FILE_HOME_ACCOUNT, home->account);
+    write_text_member(&object, REPO_FILE_HOME_DOMAIN, home->domain);
+    write_text_member(&object, REPO_FILE_HOME_URL, home->url);
     close_container(&object);
 }
 
@@ -193,7 +194,7 @@ static void write_homes(container *into, const char *key, const naula_home *home
 
 static void place_text(const naula_place *place, char *text, size_t capacity) {
     if (place->kind == NAULA_HOME_WEB) {
-        snprintf(text, capacity, "web:%s", place->domain == NULL ? "" : place->domain);
+        snprintf(text, capacity, "%s:%s", REPO_FILE_WEB_PROVIDER, place->domain == NULL ? "" : place->domain);
     } else if (place->kind == NAULA_HOME_URL) {
         snprintf(text, capacity, "%s", place->url == NULL ? "" : place->url);
     } else if (place->host != NULL) {

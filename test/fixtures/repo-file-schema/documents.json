@@ -1,0 +1,1975 @@
+[
+  {
+    "name": "the smallest file",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "format 1",
+    "accepted": false,
+    "document": {
+      "format": 1,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "format as text",
+    "accepted": false,
+    "document": {
+      "format": "2",
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "format 3",
+    "accepted": false,
+    "document": {
+      "format": 3,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "no format",
+    "accepted": false,
+    "document": {
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "no name",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "no importName",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a $schema member",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "$schema": "https://example.org/repo.schema.json"
+    }
+  },
+  {
+    "name": "a claims member",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "claims": [
+        "github:forebay"
+      ]
+    }
+  },
+  {
+    "name": "a hosts member",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "hosts": [
+        "github"
+      ]
+    }
+  },
+  {
+    "name": "not an object",
+    "accepted": false,
+    "document": [
+      "format",
+      2
+    ]
+  },
+  {
+    "name": "no home",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": []
+    }
+  },
+  {
+    "name": "homes as an object",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": {
+        "provider": "github",
+        "account": "x"
+      }
+    }
+  },
+  {
+    "name": "a local id with no homes",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "id": "local:a"
+    }
+  },
+  {
+    "name": "a local id with homes",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "id": "local:a"
+    }
+  },
+  {
+    "name": "a git id with homes",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+    }
+  },
+  {
+    "name": "a git id with no homes",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+    }
+  },
+  {
+    "name": "an own id with a path",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd/x"
+    }
+  },
+  {
+    "name": "a local own id with a path",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "id": "local:a/x"
+    }
+  },
+  {
+    "name": "a web home",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "web",
+          "domain": "naula.dev"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a web home with an account",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "web",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a web home with a domain and a host",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "web",
+          "domain": "a.b",
+          "host": "c"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a provider home with a domain",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x",
+          "domain": "a.b"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a url home with a provider",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "url": "https://x/y",
+          "provider": "github"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a home with no account",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a home with no provider",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a home with a host and a port",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "forgejo",
+          "host": "h:2222",
+          "account": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a home with an unknown member",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x",
+          "number": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "a plain http url home",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "url": "http://x/y"
+        }
+      ]
+    }
+  },
+  {
+    "name": "an ssh url home",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "url": "ssh://git@x/y.git"
+        }
+      ]
+    }
+  },
+  {
+    "name": "twenty topics",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "topics": [
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "t8",
+        "t9",
+        "t10",
+        "t11",
+        "t12",
+        "t13",
+        "t14",
+        "t15",
+        "t16",
+        "t17",
+        "t18",
+        "t19"
+      ]
+    }
+  },
+  {
+    "name": "twenty-one topics",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "topics": [
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "t8",
+        "t9",
+        "t10",
+        "t11",
+        "t12",
+        "t13",
+        "t14",
+        "t15",
+        "t16",
+        "t17",
+        "t18",
+        "t19",
+        "t20"
+      ]
+    }
+  },
+  {
+    "name": "a repeated topic",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "topics": [
+        "a",
+        "a"
+      ]
+    }
+  },
+  {
+    "name": "topics as text",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "topics": "a"
+    }
+  },
+  {
+    "name": "a secret visibility",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "visibility": "secret"
+      }
+    }
+  },
+  {
+    "name": "an internal visibility",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "visibility": "internal"
+      }
+    }
+  },
+  {
+    "name": "a private visibility",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "visibility": "private"
+      }
+    }
+  },
+  {
+    "name": "an empty default branch",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "defaultBranch": ""
+      }
+    }
+  },
+  {
+    "name": "issues as text",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "issues": "yes"
+      }
+    }
+  },
+  {
+    "name": "an unknown setting",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {
+        "pages": true
+      }
+    }
+  },
+  {
+    "name": "no settings at all",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "settings": {}
+    }
+  },
+  {
+    "name": "a registry with a space",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "registries": {
+        "npm": "a b"
+      }
+    }
+  },
+  {
+    "name": "an unknown registry",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "registries": {
+        "pypi": "x"
+      }
+    }
+  },
+  {
+    "name": "a description that is a number",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "description": 1
+    }
+  },
+  {
+    "name": "a homepage that is a list",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "homepage": [
+        "x"
+      ]
+    }
+  },
+  {
+    "name": "a dependency",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "no dependencies",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": []
+    }
+  },
+  {
+    "name": "a dependency with an id and a url",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "url": "https://x/y"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency with neither id nor url",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a git dependency with no at",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a url dependency with at",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "url": "https://x/y"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a url dependency",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "url": "https://x/y"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a local dependency with at",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "local:x",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a local dependency",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "local:x",
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "an empty at",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a place of zero",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:0"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "every kind of place",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1",
+            "gitea@h:22:3",
+            "web:naula.dev",
+            "https://x/y"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency with no commit",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency with no importName",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a short commit",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a path that climbs",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "path": "../x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a path into .git",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "path": "a/.GIT/x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a path to a device",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "path": "a/nul.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dotted path",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "path": ".daukle"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency with an unknown member",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "sha256": "x"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a dependency on a path in a repo",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "git:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/plugins/x",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "a forge number as an id",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "dependencies": [
+        {
+          "id": "github:1",
+          "at": [
+            "github:1"
+          ],
+          "importName": "libs",
+          "commit": "dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      ]
+    }
+  },
+  {
+    "name": "an org",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ]
+        },
+        "accounts": [
+          {
+            "provider": "github",
+            "account": "x"
+          }
+        ],
+        "rules": "RULES.md"
+      }
+    }
+  },
+  {
+    "name": "an org with no name",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "accounts": [
+          {
+            "provider": "github",
+            "account": "x"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "an org with a device name",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "aux"
+      }
+    }
+  },
+  {
+    "name": "an org with a local parent",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "id": "local:x"
+        }
+      }
+    }
+  },
+  {
+    "name": "an org with a parent part",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd/x",
+          "at": [
+            "github:1"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "an org with a url parent",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "url": "https://github.com/intisy/docs"
+        }
+      }
+    }
+  },
+  {
+    "name": "an org with a parent and hold",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ]
+        },
+        "hold": [
+          {
+            "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+            "at": [
+              "github:1"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "an org with a parent and an empty hold",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ]
+        },
+        "hold": []
+      }
+    }
+  },
+  {
+    "name": "a top org holding a url",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "hold": [
+          {
+            "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+            "at": [
+              "github:1"
+            ]
+          },
+          {
+            "url": "https://github.com/weivel/records"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a top org holding a local repo",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "hold": [
+          {
+            "id": "local:x"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a hold that is not a list",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "hold": {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+          "at": [
+            "github:1"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "a parent with no at",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "parent": {
+          "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd"
+        }
+      }
+    }
+  },
+  {
+    "name": "a suborg with hold",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "suborgs": {
+          "forebay": {
+            "hold": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "a suborg with a name",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "suborgs": {
+          "forebay": {
+            "name": "forebay"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "a suborg with a parent",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "suborgs": {
+          "forebay": {
+            "parent": {
+              "id": "git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
+              "at": [
+                "github:1"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "a suborg keyed in capitals",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "suborgs": {
+          "Forebay": {}
+        }
+      }
+    }
+  },
+  {
+    "name": "nested suborgs",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "suborgs": {
+          "forebay": {
+            "rules": "forebay/CLAUDE.md",
+            "suborgs": {
+              "apps": {
+                "projects": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "a project named for a device",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "projects": {
+          "con": "x"
+        }
+      }
+    }
+  },
+  {
+    "name": "a project with no description",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "projects": {
+          "shared": ""
+        }
+      }
+    }
+  },
+  {
+    "name": "a project described on two lines",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "projects": {
+          "shared": "a\nb"
+        }
+      }
+    }
+  },
+  {
+    "name": "a project described as a number",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "projects": {
+          "shared": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "an account on the web",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "accounts": [
+          {
+            "provider": "web",
+            "domain": "a.b"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "an account by url",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "accounts": [
+          {
+            "url": "https://x/y"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "no accounts",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "accounts": []
+      }
+    }
+  },
+  {
+    "name": "rules inside .git",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "rules": ".git/RULES.md"
+      }
+    }
+  },
+  {
+    "name": "rules ending in a dot",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "rules": "RULES."
+      }
+    }
+  },
+  {
+    "name": "an org with an unknown member",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "name": "spisor",
+        "claims": [
+          "x"
+        ]
+      }
+    }
+  },
+  {
+    "name": "access of any shape",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "access": [
+        1,
+        {
+          "a": null
+        },
+        "b"
+      ]
+    }
+  },
+  {
+    "name": "access as text",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "access": "open"
+    }
+  },
+  {
+    "name": "a description in any script",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "description": "caf\u00e9 \u2603"
+    }
+  },
+  {
+    "name": "a NUL in the description",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"description\": \"a\\u0000b\"}"
+  },
+  {
+    "name": "a NUL in the homepage",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"homepage\": \"https://a\\u0000b\"}"
+  },
+  {
+    "name": "a NUL in the default branch",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"settings\": {\"defaultBranch\": \"ma\\u0000in\"}}"
+  },
+  {
+    "name": "a NUL in a project description",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"org\": {\"name\": \"spisor\", \"projects\": {\"shared\": \"a\\u0000b\"}}}"
+  },
+  {
+    "name": "a NUL in a registry",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"registries\": {\"npm\": \"@a\\u0000b\"}}"
+  },
+  {
+    "name": "a NUL in a local id",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"id\": \"local:a\\u0000b\"}"
+  }
+]

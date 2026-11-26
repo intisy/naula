@@ -1,0 +1,266 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "repo.json, format 2",
+  "description": "What a repo states about itself to naula: its name, where it lives, what it needs and, in an org's rules repo, the org. naula's parser reads exactly this; its suite holds the two to each other.",
+  "$comment": "A validator sees only the parsed value, so four of the parser's rules are left unstated here: a member written twice is refused, the text is well-formed UTF-8, no member name and nothing inside access holds a NUL, and every number in access is finite.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "name", "importName"],
+  "properties": {
+    "format": { "const": 2 },
+    "name": { "$ref": "#/definitions/repoName" },
+    "importName": { "$ref": "#/definitions/importName" },
+    "homes": {
+      "description": "Where the repo lives, the primary first. Required unless id is local:, and forbidden when it is.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/home" }
+    },
+    "id": { "$ref": "#/definitions/ownId" },
+    "description": { "$ref": "#/definitions/freeText" },
+    "topics": {
+      "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/topic" }
+    },
+    "homepage": { "$ref": "#/definitions/freeText" },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visibility": { "enum": ["public", "private"] },
+        "defaultBranch": { "$ref": "#/definitions/branch" },
+        "issues": { "type": "boolean" },
+        "wiki": { "type": "boolean" }
+      }
+    },
+    "registries": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "npm": { "$ref": "#/definitions/registry" },
+        "maven": { "$ref": "#/definitions/registry" }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["importName", "commit"],
+        "properties": {
+          "id": { "$ref": "#/definitions/referenceId" },
+          "url": { "$ref": "#/definitions/gitUrl" },
+          "at": { "$ref": "#/definitions/at" },
+          "importName": { "$ref": "#/definitions/importName" },
+          "commit": { "$ref": "#/definitions/commit" },
+          "path": { "$ref": "#/definitions/relativePath" }
+        },
+        "allOf": [{ "$ref": "#/definitions/idOrUrl" }]
+      }
+    },
+    "org": {
+      "description": "Only in the repo that holds an org's rules.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/definitions/importName" },
+        "parent": { "$ref": "#/definitions/orgReference" },
+        "accounts": { "$ref": "#/definitions/accounts" },
+        "rules": { "$ref": "#/definitions/relativePath" },
+        "projects": { "$ref": "#/definitions/projects" },
+        "suborgs": { "$ref": "#/definitions/suborgs" },
+        "hold": {
+          "description": "Only in the top org, which has no parent.",
+          "type": "array",
+          "items": { "$ref": "#/definitions/orgReference" }
+        }
+      },
+      "if": { "type": "object", "required": ["parent"], "properties": { "parent": {} } },
+      "then": { "type": "object", "properties": { "hold": { "not": {} } } }
+    },
+    "access": {
+      "description": "Kept as written; its own spec defines it."
+    }
+  },
+  "if": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "pattern": "^local:" } } },
+  "then": { "type": "object", "properties": { "homes": { "not": {} } } },
+  "else": { "type": "object", "required": ["homes"] },
+  "definitions": {
+    "freeText": {
+      "description": "Any text without a NUL.",
+      "type": "string",
+      "pattern": "^[^\\x00]*$"
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^[^\\x00]+$"
+    },
+    "repoName": {
+      "description": "A folder name: not .git in any case, no trailing dot, no Windows device name with any extension.",
+      "type": "string",
+      "pattern": "^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.|$))(?!\\.[Gg][Ii][Tt]$)(?![A-Za-z0-9._-]*\\.$)[A-Za-z0-9._-]{1,100}$"
+    },
+    "importName": {
+      "type": "string",
+      "pattern": "^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.|$))[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+    },
+    "relativePath": {
+      "description": "A relative path whose every segment is a folder name.",
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:[./]|$))(?!\\.[Gg][Ii][Tt](?:/|$))(?![A-Za-z0-9._-]*\\.(?:/|$))[A-Za-z0-9._-]+(?:/(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:[./]|$))(?!\\.[Gg][Ii][Tt](?:/|$))(?![A-Za-z0-9._-]*\\.(?:/|$))[A-Za-z0-9._-]+)*$"
+    },
+    "topic": {
+      "type": "string",
+      "maxLength": 50,
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "registry": {
+      "type": "string",
+      "pattern": "^[^\\x00-\\x20\\x7f]+$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "ownId": {
+      "description": "git:<root commit> for a fork taking its own identity, or local:<name> for a repo with no home; no path.",
+      "type": "string",
+      "pattern": "^(?:git:(?:[0-9a-f]{40}|[0-9a-f]{64})|local:[^/ \\t\\n\\r\\v\\f\\x00]+)$"
+    },
+    "referenceId": {
+      "type": "string",
+      "pattern": "^(?:git:(?:[0-9a-f]{40}|[0-9a-f]{64})|local:[^/ \\t\\n\\r\\v\\f\\x00]+)(?:/(?!\\.{1,2}(?:/|$))[a-z0-9._-]+)*$"
+    },
+    "orgReferenceId": {
+      "description": "An org's rules are a whole repo with a home: never local:, never a path.",
+      "type": "string",
+      "pattern": "^git:(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "gitUrl": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(?:https|ssh)://[!-~]+$"
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^(?![.-])[A-Za-z0-9.-]{1,255}$"
+    },
+    "host": {
+      "type": "string",
+      "pattern": "^(?![.-])[A-Za-z0-9.-]{1,255}(?::[0-9]{1,5})?$"
+    },
+    "account": {
+      "type": "string",
+      "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9._-]{1,100}$"
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "^(?!web$)(?=[a-z])[a-z0-9-]{1,32}$"
+    },
+    "home": {
+      "oneOf": [
+        { "$ref": "#/definitions/providerHome" },
+        { "$ref": "#/definitions/webHome" },
+        { "$ref": "#/definitions/urlHome" }
+      ]
+    },
+    "providerHome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "account"],
+      "properties": {
+        "provider": { "$ref": "#/definitions/provider" },
+        "host": { "$ref": "#/definitions/host" },
+        "account": { "$ref": "#/definitions/account" }
+      }
+    },
+    "webHome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "domain"],
+      "properties": {
+        "provider": { "const": "web" },
+        "domain": { "$ref": "#/definitions/domain" }
+      }
+    },
+    "urlHome": {
+      "description": "The warned name-and-host form: it works, and a rename cannot follow it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "$ref": "#/definitions/gitUrl" }
+      }
+    },
+    "numberedPlace": {
+      "type": "string",
+      "pattern": "^(?!web[:@])(?=[a-z])[a-z0-9-]{1,32}(?:@(?![.-])[A-Za-z0-9.-]{1,255}(?::[0-9]{1,5})?)?:(?!0+$)[0-9]{1,19}$"
+    },
+    "webPlace": {
+      "type": "string",
+      "pattern": "^web:(?![.-])[A-Za-z0-9.-]{1,255}$"
+    },
+    "place": {
+      "oneOf": [
+        { "$ref": "#/definitions/numberedPlace" },
+        { "$ref": "#/definitions/webPlace" },
+        { "$ref": "#/definitions/gitUrl" }
+      ]
+    },
+    "at": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/place" }
+    },
+    "idOrUrl": {
+      "description": "Exactly one of id and url; at is required with a git: id and forbidden otherwise.",
+      "oneOf": [{ "type": "object", "required": ["id"], "properties": { "id": {} } },
+        { "type": "object", "required": ["url"], "properties": { "url": {} } }],
+      "if": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "pattern": "^git:" } } },
+      "then": { "type": "object", "required": ["at"], "properties": { "at": {} } },
+      "else": { "type": "object", "properties": { "at": { "not": {} } } }
+    },
+    "orgReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/definitions/orgReferenceId" },
+        "url": { "$ref": "#/definitions/gitUrl" },
+        "at": { "$ref": "#/definitions/at" }
+      },
+      "allOf": [{ "$ref": "#/definitions/idOrUrl" }]
+    },
+    "accounts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/providerHome" }
+    },
+    "projectDescription": {
+      "type": "string",
+      "pattern": "^[^\\x00\\r\\n]+$"
+    },
+    "projects": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/definitions/importName" },
+      "additionalProperties": { "$ref": "#/definitions/projectDescription" }
+    },
+    "suborgs": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/definitions/importName" },
+      "additionalProperties": { "$ref": "#/definitions/suborg" }
+    },
+    "suborg": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accounts": { "$ref": "#/definitions/accounts" },
+        "rules": { "$ref": "#/definitions/relativePath" },
+        "projects": { "$ref": "#/definitions/projects" },
+        "suborgs": { "$ref": "#/definitions/suborgs" }
+      }
+    }
+  }
+}

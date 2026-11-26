@@ -1,8 +1,10 @@
 #include <string.h>
 
+#include "home_internal.h"
 #include "naula/id.h"
 #include "naula/memory.h"
 #include "repo_file_internal.h"
+#include "repo_file_rules.h"
 
 static const char *const REFERENCE_FIX =
     "write { \"id\": \"git:<hex>\", \"at\": [ \"<provider>:<number>\" ] }, or { \"url\": \"https://...\" } alone";
@@ -17,23 +19,29 @@ static naula_status refuse_with_inner(naula_status status, const naula_refusal *
     return repo_file_refuse(refusal, path, inner->fix != NULL ? inner->fix : fallback_fix, "%s", inner->detail);
 }
 
-static naula_status read_id(const cJSON *id, const member_path *path, uint32_t *kind, naula_reference *reference,
-                            naula_refusal *refusal) {
-    if (!cJSON_IsString(id) || id->valuestring == NULL) {
-        return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not a string");
-    }
+static naula_status refuse_id(const char *id, const member_path *path, naula_refusal *refusal) {
     naula_id parsed;
     memset(&parsed, 0, sizeof parsed);
     parsed.size = sizeof parsed;
     naula_refusal inner;
     memset(&inner, 0, sizeof inner);
     inner.size = sizeof inner;
-    naula_status status = naula_id_parse(id->valuestring, strlen(id->valuestring), &parsed, &inner);
-    if (status != NAULA_OK) {
-        return refuse_with_inner(status, &inner, path, REFERENCE_FIX, refusal);
+    naula_status status = naula_id_parse(id, strlen(id), &parsed, &inner);
+    if (status == NAULA_OK) {
+        naula_id_release(&parsed);
+        return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not an id");
     }
-    *kind = parsed.kind;
-    naula_id_release(&parsed);
+    return refuse_with_inner(status, &inner, path, REFERENCE_FIX, refusal);
+}
+
+static naula_status read_id(const cJSON *id, const member_path *path, naula_reference *reference,
+                            naula_refusal *refusal) {
+    if (!cJSON_IsString(id) || id->valuestring == NULL) {
+        return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not a string");
+    }
+    if (!repo_file_is_reference_id(id->valuestring)) {
+        return refuse_id(id->valuestring, path, refusal);
+    }
     reference->id = naula_memory_duplicate_text(id->valuestring);
     return reference->id == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
 }
@@ -54,7 +62,7 @@ static naula_status read_place(const cJSON *text, const member_path *path, naula
 static naula_status read_at(const cJSON *at, const member_path *path, naula_reference *reference,
                             naula_refusal *refusal) {
     int count = cJSON_GetArraySize(at);
-    if (!cJSON_IsArray(at) || count == 0) {
+    if (!cJSON_IsArray(at) || count < REPO_FILE_LEAST_PLACES) {
         return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not a list of at least one place");
     }
     reference->at = repo_file_allocate_array((size_t)count, sizeof *reference->at);
@@ -75,29 +83,26 @@ static naula_status read_at(const cJSON *at, const member_path *path, naula_refe
 
 static naula_status read_url(const cJSON *url, const member_path *path, naula_reference *reference,
                              naula_refusal *refusal) {
-    naula_place place;
-    memset(&place, 0, sizeof place);
-    naula_status status = read_place(url, path, &place, refusal);
-    if (status != NAULA_OK) {
-        return status;
+    if (!cJSON_IsString(url) || url->valuestring == NULL) {
+        return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not a string");
     }
-    uint32_t kind = place.kind;
-    naula_place_release(&place);
-    if (kind != NAULA_HOME_URL) {
-        return repo_file_refuse(refusal, path, REFERENCE_FIX, "is not an https or ssh git url");
+    if (!naula_home_is_git_url(url->valuestring)) {
+        return repo_file_refuse(refusal, path, NAULA_HOME_PLACE_FIX, "\"%.200s\" is not an https or ssh git url",
+                                url->valuestring);
     }
     reference->url = naula_memory_duplicate_text(url->valuestring);
     return reference->url == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
 }
 
-static naula_status check_at_presence(const cJSON *at, uint32_t kind, const member_path *path,
+static naula_status check_at_presence(const cJSON *at, const naula_reference *reference, const member_path *path,
                                       naula_refusal *refusal) {
     member_path at_path = member_path_child(path, "at");
-    if (kind == NAULA_ID_GIT && at == NULL) {
+    int names_git = reference->id != NULL && repo_file_names_git(reference->id);
+    if (names_git && at == NULL) {
         return repo_file_refuse(refusal, &at_path, REFERENCE_FIX,
                                 "is missing: a git id needs the places to start from");
     }
-    if (kind != NAULA_ID_GIT && at != NULL) {
+    if (!names_git && at != NULL) {
         return repo_file_refuse(refusal, &at_path, REFERENCE_FIX, "is given for a repo with no home to look in");
     }
     return NAULA_OK;
@@ -113,12 +118,11 @@ naula_status repo_file_read_reference(const cJSON *object, const member_path *pa
         return repo_file_refuse(refusal, path, REFERENCE_FIX, "names %s", id == NULL ? "neither an id nor a url"
                                                                                      : "both an id and a url");
     }
-    uint32_t kind = 0;
     member_path child = member_path_child(path, id != NULL ? "id" : "url");
-    naula_status status = id != NULL ? read_id(id, &child, &kind, reference, refusal)
-                                     : read_url(url, &child, reference, refusal);
+    naula_status status =
+        id != NULL ? read_id(id, &child, reference, refusal) : read_url(url, &child, reference, refusal);
     if (status == NAULA_OK) {
-        status = check_at_presence(at, kind, path, refusal);
+        status = check_at_presence(at, reference, path, refusal);
     }
     if (status == NAULA_OK && at != NULL) {
         member_path at_path = member_path_child(path, "at");
@@ -129,24 +133,22 @@ naula_status repo_file_read_reference(const cJSON *object, const member_path *pa
 
 static naula_status read_reference_object(const cJSON *json, const member_path *path, naula_reference *reference,
                                           naula_refusal *refusal) {
-    static const char *const allowed[] = {"id", "url", "at", NULL};
-    naula_status status = repo_file_check_members(json, path, allowed, refusal);
+    naula_status status = repo_file_check_schema_members(json, path, REPO_FILE_ORG_REFERENCE, refusal);
     if (status == NAULA_OK) {
         status = repo_file_read_reference(json, path, reference, refusal);
     }
-    if (status == NAULA_OK && reference->id != NULL && strncmp(reference->id, "local:", 6) == 0) {
-        member_path id_path = member_path_child(path, "id");
+    if (status != NAULA_OK || reference->id == NULL || repo_file_is_org_reference_id(reference->id)) {
+        return status;
+    }
+    member_path id_path = member_path_child(path, "id");
+    if (repo_file_names_local(reference->id)) {
         return repo_file_refuse(refusal, &id_path, REFERENCE_FIX, "is local:, which can never hold an org's rules");
     }
-    if (status == NAULA_OK && reference->id != NULL && strchr(reference->id, '/') != NULL) {
-        member_path id_path = member_path_child(path, "id");
-        return repo_file_refuse(refusal, &id_path, REFERENCE_FIX,
-                                "names a part of a repo, where an org's rules are a whole repo");
-    }
-    return status;
+    return repo_file_refuse(refusal, &id_path, REFERENCE_FIX,
+                            "names a part of a repo, where an org's rules are a whole repo");
 }
 
-static int is_one_line(const char *text) {
+int repo_file_is_one_line(const char *text) {
     return text[0] != '\0' && strpbrk(text, "\r\n") == NULL;
 }
 
@@ -167,7 +169,7 @@ naula_status repo_file_read_projects(const cJSON *projects, const member_path *p
     for (const cJSON *project = projects->child; project != NULL; project = project->next, index++) {
         member_path project_path = member_path_child(path, project->string);
         if (!repo_file_is_import_name(project->string) || !cJSON_IsString(project) ||
-            !is_one_line(project->valuestring)) {
+            !repo_file_is_one_line(project->valuestring)) {
             return repo_file_refuse(refusal, &project_path, PROJECT_FIX, "is out of shape");
         }
         org->project_names[index] = naula_memory_duplicate_text(project->string);
@@ -307,11 +309,8 @@ static naula_status read_org_name(const cJSON *json, const member_path *path, co
 
 naula_status repo_file_read_org(const cJSON *json, const member_path *path, const char *suborg_name,
                                 naula_org_declaration *org, naula_refusal *refusal) {
-    static const char *const top_members[] = {"name", "parent", "accounts", "rules", "projects", "suborgs", "hold",
-                                              NULL};
-    static const char *const suborg_members[] = {"accounts", "rules", "projects", "suborgs", NULL};
     naula_status status =
-        repo_file_check_members(json, path, suborg_name == NULL ? top_members : suborg_members, refusal);
+        repo_file_check_schema_members(json, path, suborg_name == NULL ? REPO_FILE_ORG : REPO_FILE_SUBORG, refusal);
     if (status == NAULA_OK) {
         status = read_org_name(json, path, suborg_name, org, refusal);
     }
@@ -336,4 +335,12 @@ naula_status repo_file_read_org(const cJSON *json, const member_path *path, cons
         status = read_optional(json, path, "hold", read_hold, org, refusal);
     }
     return status;
+}
+
+int repo_file_is_reference_id(const char *text) {
+    return naula_id_is_valid(text, strlen(text));
+}
+
+int repo_file_is_org_reference_id(const char *text) {
+    return repo_file_names_git(text) && repo_file_is_own_id(text);
 }

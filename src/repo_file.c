@@ -4,8 +4,7 @@
 #include "naula/id.h"
 #include "naula/memory.h"
 #include "repo_file_internal.h"
-
-#define REPO_NAME_LIMIT 100u
+#include "repo_file_rules.h"
 
 static const char *const NAME_FIX = "write the repo's name: letters, digits, dots, hyphens and underscores";
 static const char *const IMPORT_NAME_FIX =
@@ -19,11 +18,11 @@ static const char *const DEPENDENCY_FIX = "give each dependency an id with at, o
 static const char *const REGISTRY_FIX =
     "name the npm scope and the maven group, for example \"@spisor\" and \"com.spisor\"";
 
-static int is_repo_name(const char *text) {
-    return strlen(text) <= REPO_NAME_LIMIT && repo_file_is_folder_name(text);
+int repo_file_is_repo_name(const char *text) {
+    return strlen(text) <= REPO_FILE_NAME_LENGTH_LIMIT && repo_file_is_folder_name(text);
 }
 
-static int is_registry(const char *text) {
+int repo_file_is_registry(const char *text) {
     if (text[0] == '\0') {
         return 0;
     }
@@ -57,7 +56,7 @@ static naula_status read_homes(const cJSON *homes, naula_repo_file *file, naula_
     member_path root = member_path_root();
     member_path path = member_path_child(&root, "homes");
     int count = cJSON_GetArraySize(homes);
-    if (!cJSON_IsArray(homes) || count == 0) {
+    if (!cJSON_IsArray(homes) || count < REPO_FILE_LEAST_HOMES) {
         return repo_file_refuse(refusal, &path, HOMES_FIX, "is not a list of at least one home");
     }
     file->homes = repo_file_allocate_array((size_t)count, sizeof *file->homes);
@@ -76,12 +75,8 @@ static naula_status read_homes(const cJSON *homes, naula_repo_file *file, naula_
     return NAULA_OK;
 }
 
-static naula_status read_own_id(const cJSON *object, naula_repo_file *file, uint32_t *kind, naula_refusal *refusal) {
+static naula_status refuse_own_id(const char *id, naula_refusal *refusal) {
     member_path root = member_path_root();
-    naula_status status = repo_file_read_text(object, &root, "id", repo_file_is_any_text, ID_FIX, &file->id, refusal);
-    if (status != NAULA_OK || file->id == NULL) {
-        return status;
-    }
     member_path path = member_path_child(&root, "id");
     naula_id parsed;
     memset(&parsed, 0, sizeof parsed);
@@ -89,32 +84,39 @@ static naula_status read_own_id(const cJSON *object, naula_repo_file *file, uint
     naula_refusal inner;
     memset(&inner, 0, sizeof inner);
     inner.size = sizeof inner;
-    status = naula_id_parse(file->id, strlen(file->id), &parsed, &inner);
+    naula_status status = naula_id_parse(id, strlen(id), &parsed, &inner);
+    if (status == NAULA_OUT_OF_MEMORY) {
+        return status;
+    }
     if (status != NAULA_OK) {
-        return status == NAULA_OUT_OF_MEMORY ? status : repo_file_refuse(refusal, &path, ID_FIX, "%s", inner.detail);
+        return repo_file_refuse(refusal, &path, ID_FIX, "%s", inner.detail);
     }
-    size_t segment_count = parsed.segment_count;
-    *kind = parsed.kind;
     naula_id_release(&parsed);
-    if (segment_count != 0) {
-        return repo_file_refuse(refusal, &path, ID_FIX, "names a path inside a repo, not a repo");
+    return repo_file_refuse(refusal, &path, ID_FIX, "names a path inside a repo, not a repo");
+}
+
+static naula_status read_own_id(const cJSON *object, naula_repo_file *file, naula_refusal *refusal) {
+    member_path root = member_path_root();
+    naula_status status = repo_file_read_text(object, &root, "id", repo_file_is_any_text, ID_FIX, &file->id, refusal);
+    if (status != NAULA_OK || file->id == NULL || repo_file_is_own_id(file->id)) {
+        return status;
     }
-    return NAULA_OK;
+    return refuse_own_id(file->id, refusal);
 }
 
 static naula_status read_where(const cJSON *object, naula_repo_file *file, naula_refusal *refusal) {
-    uint32_t kind = 0;
-    naula_status status = read_own_id(object, file, &kind, refusal);
+    naula_status status = read_own_id(object, file, refusal);
     if (status != NAULA_OK) {
         return status;
     }
+    int is_local = file->id != NULL && repo_file_names_local(file->id);
     const cJSON *homes = cJSON_GetObjectItemCaseSensitive(object, "homes");
     member_path root = member_path_root();
     member_path path = member_path_child(&root, "homes");
-    if (kind == NAULA_ID_LOCAL && homes != NULL) {
+    if (is_local && homes != NULL) {
         return repo_file_refuse(refusal, &path, HOMES_FIX, "is given for a local: repo, which has none");
     }
-    if (kind == NAULA_ID_LOCAL) {
+    if (is_local) {
         return NAULA_OK;
     }
     if (homes == NULL) {
@@ -124,29 +126,28 @@ static naula_status read_where(const cJSON *object, naula_repo_file *file, naula
 }
 
 static naula_status read_registries(const cJSON *object, naula_repo_file *file, naula_refusal *refusal) {
-    static const char *const allowed[] = {"npm", "maven", NULL};
     const cJSON *registries = cJSON_GetObjectItemCaseSensitive(object, "registries");
     if (registries == NULL) {
         return NAULA_OK;
     }
     member_path root = member_path_root();
     member_path path = member_path_child(&root, "registries");
-    naula_status status = repo_file_check_members(registries, &path, allowed, refusal);
+    naula_status status = repo_file_check_schema_members(registries, &path, REPO_FILE_REGISTRIES, refusal);
     if (status == NAULA_OK) {
-        status = repo_file_read_text(registries, &path, "npm", is_registry, REGISTRY_FIX, &file->registry_npm, refusal);
+        status = repo_file_read_text(registries, &path, "npm", repo_file_is_registry, REGISTRY_FIX,
+                                     &file->registry_npm, refusal);
     }
     if (status == NAULA_OK) {
-        status = repo_file_read_text(registries, &path, "maven", is_registry, REGISTRY_FIX, &file->registry_maven,
-                                     refusal);
+        status = repo_file_read_text(registries, &path, "maven", repo_file_is_registry, REGISTRY_FIX,
+                                     &file->registry_maven, refusal);
     }
     return status;
 }
 
 static naula_status read_dependency(const cJSON *json, const member_path *path, naula_dependency *dependency,
                                     naula_refusal *refusal) {
-    static const char *const allowed[] = {"id", "url", "at", "importName", "commit", "path", NULL};
     dependency->size = sizeof *dependency;
-    naula_status status = repo_file_check_members(json, path, allowed, refusal);
+    naula_status status = repo_file_check_schema_members(json, path, REPO_FILE_DEPENDENCY, refusal);
     if (status == NAULA_OK) {
         status = repo_file_read_reference(json, path, &dependency->reference, refusal);
     }
@@ -246,7 +247,7 @@ static naula_status read_names(const cJSON *object, naula_repo_file *file, naula
     member_path root = member_path_root();
     naula_status status = repo_file_require(object, &root, "name", NAME_FIX, refusal);
     if (status == NAULA_OK) {
-        status = repo_file_read_text(object, &root, "name", is_repo_name, NAME_FIX, &file->name, refusal);
+        status = repo_file_read_text(object, &root, "name", repo_file_is_repo_name, NAME_FIX, &file->name, refusal);
     }
     if (status == NAULA_OK) {
         status = repo_file_require(object, &root, "importName", IMPORT_NAME_FIX, refusal);
@@ -269,7 +270,7 @@ static naula_status check_format(const cJSON *object, naula_refusal *refusal) {
                      "repo.json is format 1, which naula no longer reads");
         return NAULA_REFUSED;
     }
-    if (!cJSON_IsNumber(format) || format->valuedouble != 2) {
+    if (!cJSON_IsNumber(format) || format->valuedouble != REPO_FILE_FORMAT) {
         naula_refuse(refusal, "repo-file-format", "set \"format\" to 2", "repo.json does not say \"format\": 2");
         return NAULA_REFUSED;
     }
@@ -277,15 +278,12 @@ static naula_status check_format(const cJSON *object, naula_refusal *refusal) {
 }
 
 static naula_status read_file(const cJSON *object, naula_repo_file *file, naula_refusal *refusal) {
-    static const char *const allowed[] = {"format",   "name",       "importName",   "homes", "id",
-                                          "description", "topics",  "homepage",     "settings", "registries",
-                                          "dependencies", "org",    "access",       NULL};
     member_path root = member_path_root();
     naula_status status = check_format(object, refusal);
     if (status == NAULA_OK) {
-        status = repo_file_check_members(object, &root, allowed, refusal);
+        status = repo_file_check_schema_members(object, &root, REPO_FILE_TOP, refusal);
     }
-    file->format = 2;
+    file->format = REPO_FILE_FORMAT;
     if (status == NAULA_OK) {
         status = read_names(object, file, refusal);
     }
@@ -326,4 +324,16 @@ naula_status naula_repo_file_parse(const uint8_t *bytes, size_t length, naula_re
         naula_repo_file_release(file);
     }
     return status;
+}
+
+int repo_file_is_own_id(const char *text) {
+    return naula_id_is_valid(text, strlen(text)) && strchr(text, '/') == NULL;
+}
+
+int repo_file_names_local(const char *text) {
+    return strncmp(text, "local:", 6) == 0;
+}
+
+int repo_file_names_git(const char *text) {
+    return strncmp(text, "git:", 4) == 0;
 }

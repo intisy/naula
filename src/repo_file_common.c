@@ -6,16 +6,19 @@
 #include "naula/json.h"
 #include "naula/memory.h"
 #include "repo_file_internal.h"
-
-#define TOPIC_LIMIT 20
-#define TOPIC_LENGTH_LIMIT 50u
-#define PATH_LENGTH_LIMIT 1024u
+#include "repo_file_rules.h"
 
 static const char *const UNKNOWN_MEMBER_FIX = "remove the member, or spell it as repo.json format 2 does";
-static const char *const TOPIC_FIX =
-    "list at most 20 different topics of lowercase letters, digits and hyphens, 50 characters each";
-static const char *const SETTINGS_FIX =
-    "keep settings to visibility (\"public\" or \"private\"), defaultBranch (a name), issues and wiki (true or false)";
+static const char *const TOPIC_FIX = "list at most " REPO_FILE_TEXT_OF(REPO_FILE_TOPIC_COUNT_LIMIT)
+                                     " different topics of lowercase letters, digits and hyphens, "
+                                     REPO_FILE_TEXT_OF(REPO_FILE_TOPIC_LENGTH_LIMIT) " characters each";
+#define FIX_FIRST(name) "\"" name "\""
+#define FIX_NEXT(name) " or \"" name "\""
+#define LISTED(name) name,
+
+static const char *const SETTINGS_FIX = "keep settings to visibility (" REPO_FILE_VISIBILITIES(FIX_FIRST, FIX_NEXT)
+                                        "), defaultBranch (a name), issues and wiki (true or false)";
+static const char *const VISIBILITIES[] = {REPO_FILE_VISIBILITIES(LISTED, LISTED) NULL};
 
 static void path_append(member_path *path, const char *text) {
     size_t used = strlen(path->text);
@@ -74,8 +77,18 @@ static int is_allowed(const char *name, const char *const *allowed) {
     return 0;
 }
 
-naula_status repo_file_check_members(const cJSON *object, const member_path *path, const char *const *allowed,
-                                     naula_refusal *refusal) {
+typedef int (*member_test)(const char *name, const void *context);
+
+static int is_listed(const char *name, const void *context) {
+    return context == NULL || is_allowed(name, context);
+}
+
+static int is_schema_member(const char *name, const void *context) {
+    return repo_file_rules_allow_member(context, name);
+}
+
+static naula_status check_members_with(const cJSON *object, const member_path *path, member_test is_member,
+                                       const void *context, naula_refusal *refusal) {
     if (!cJSON_IsObject(object)) {
         return repo_file_refuse(refusal, path, "write it as a JSON object", "is not an object");
     }
@@ -84,11 +97,21 @@ naula_status repo_file_check_members(const cJSON *object, const member_path *pat
             return repo_file_refuse(refusal, path, "write each member once", "\"%s\" is written twice",
                                     member->string);
         }
-        if (allowed != NULL && !is_allowed(member->string, allowed)) {
+        if (!is_member(member->string, context)) {
             return repo_file_refuse(refusal, path, UNKNOWN_MEMBER_FIX, "\"%s\" is not a member here", member->string);
         }
     }
     return NAULA_OK;
+}
+
+naula_status repo_file_check_members(const cJSON *object, const member_path *path, const char *const *allowed,
+                                     naula_refusal *refusal) {
+    return check_members_with(object, path, is_listed, allowed, refusal);
+}
+
+naula_status repo_file_check_schema_members(const cJSON *object, const member_path *path, const char *location,
+                                            naula_refusal *refusal) {
+    return check_members_with(object, path, is_schema_member, location, refusal);
 }
 
 naula_status repo_file_read_text(const cJSON *object, const member_path *path, const char *name,
@@ -141,7 +164,7 @@ int repo_file_is_import_name(const char *text) {
 
 int repo_file_is_commit(const char *text) {
     size_t length = strlen(text);
-    if (length != 40 && length != 64) {
+    if (length != REPO_FILE_SHORT_HASH_DIGITS && length != REPO_FILE_LONG_HASH_DIGITS) {
         return 0;
     }
     for (size_t index = 0; index < length; index++) {
@@ -202,7 +225,7 @@ int repo_file_is_folder_name(const char *text) {
 
 int repo_file_is_relative_path(const char *text) {
     size_t length = strlen(text);
-    if (length == 0 || length > PATH_LENGTH_LIMIT) {
+    if (length == 0 || length > REPO_FILE_PATH_LENGTH_LIMIT) {
         return 0;
     }
     const char *segment = text;
@@ -220,6 +243,10 @@ int repo_file_is_any_text(const char *text) {
     return 1;
 }
 
+int repo_file_is_branch(const char *text) {
+    return text[0] != '\0';
+}
+
 void *repo_file_allocate_array(size_t count, size_t element_size) {
     if (count == 0 || count > SIZE_MAX / element_size) {
         return NULL;
@@ -231,9 +258,9 @@ void *repo_file_allocate_array(size_t count, size_t element_size) {
     return block;
 }
 
-static int is_topic(const char *text) {
+int repo_file_is_topic(const char *text) {
     size_t length = strlen(text);
-    if (length == 0 || length > TOPIC_LENGTH_LIMIT || !is_lowercase_or_digit(text[0])) {
+    if (length == 0 || length > REPO_FILE_TOPIC_LENGTH_LIMIT || !is_lowercase_or_digit(text[0])) {
         return 0;
     }
     for (size_t index = 1; index < length; index++) {
@@ -260,8 +287,9 @@ static int is_listed_before(const cJSON *topics, const cJSON *topic) {
 static naula_status read_topics(const cJSON *topics, const member_path *path, naula_metadata *metadata,
                                 naula_refusal *refusal) {
     int count = cJSON_GetArraySize(topics);
-    if (!cJSON_IsArray(topics) || count > TOPIC_LIMIT) {
-        return repo_file_refuse(refusal, path, TOPIC_FIX, "is not a list of at most %d topics", TOPIC_LIMIT);
+    if (!cJSON_IsArray(topics) || count > REPO_FILE_TOPIC_COUNT_LIMIT) {
+        return repo_file_refuse(refusal, path, TOPIC_FIX, "is not a list of at most %d topics",
+                                REPO_FILE_TOPIC_COUNT_LIMIT);
     }
     metadata->present |= NAULA_METADATA_TOPICS;
     metadata->topics = repo_file_allocate_array((size_t)count, sizeof *metadata->topics);
@@ -272,7 +300,7 @@ static naula_status read_topics(const cJSON *topics, const member_path *path, na
     size_t index = 0;
     for (const cJSON *topic = topics->child; topic != NULL; topic = topic->next, index++) {
         member_path topic_path = member_path_index(path, index);
-        if (!cJSON_IsString(topic) || topic->valuestring == NULL || !is_topic(topic->valuestring)) {
+        if (!cJSON_IsString(topic) || topic->valuestring == NULL || !repo_file_is_topic(topic->valuestring)) {
             return repo_file_refuse(refusal, &topic_path, TOPIC_FIX, "is not a topic");
         }
         if (is_listed_before(topics, topic)) {
@@ -288,19 +316,17 @@ static naula_status read_topics(const cJSON *topics, const member_path *path, na
 
 static int is_setting_valid(const cJSON *setting) {
     if (strcmp(setting->string, "visibility") == 0) {
-        return cJSON_IsString(setting) && (strcmp(setting->valuestring, "public") == 0 ||
-                                           strcmp(setting->valuestring, "private") == 0);
+        return cJSON_IsString(setting) && is_allowed(setting->valuestring, VISIBILITIES);
     }
     if (strcmp(setting->string, "defaultBranch") == 0) {
-        return cJSON_IsString(setting) && setting->valuestring[0] != '\0';
+        return cJSON_IsString(setting) && repo_file_is_branch(setting->valuestring);
     }
     return cJSON_IsBool(setting);
 }
 
 static naula_status read_settings(const cJSON *settings, const member_path *path, naula_metadata *metadata,
                                   naula_refusal *refusal) {
-    static const char *const allowed[] = {"visibility", "defaultBranch", "issues", "wiki", NULL};
-    naula_status status = repo_file_check_members(settings, path, allowed, refusal);
+    naula_status status = repo_file_check_schema_members(settings, path, REPO_FILE_SETTINGS, refusal);
     if (status != NAULA_OK) {
         return status;
     }
