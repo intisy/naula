@@ -64,16 +64,19 @@ typedef struct naula_resolution {
 } naula_resolution;
 
 /**
- * Resolves `reference`. The anchor is the first place of `at` that confirms; the answer is every home linked both
- * ways to it, so another place of `at` that confirms only itself is refused (`not-linked`). The cache never confirms
- * a home: it guards the number each account was confirmed at, keeps a number that answered gone as gone for good, and
- * answers STALE when a home could not be heard, serving only homes confirmed when it was written and not refused in
- * this run. A `local:` id is refused (`unresolvable`), since it names a repo with no home and is never a dependency's
- * target, and so is a reference by `url` (`unverifiable`), which only a reader of git can follow. With nothing
- * confirmed the refusal carries the verdict of the first home `at` names: NAULA_TIMED_OUT or NAULA_UNREACHABLE when
- * that home could not be heard, and NAULA_NOT_FOUND only when every place `at` names is gone. A primary other than the
- * cached one needs the session's `accept_primary` (`primary-changed`) when the cache speaks for the same confirmed
- * homes, and primary pointers that loop are refused (`cycle`).
+ * Resolves `reference`. The anchor is the place of `at` that confirms and comes first in the confirmed homes' own
+ * order, `at` order deciding only between places that do not list each other; the answer is every home linked both
+ * ways to it, so another place of `at` that confirms only itself is refused (`not-linked`). The cache keeps one
+ * record per `at`, so one consumer's first contact never shapes another's answer. A record never confirms a home on
+ * its own: it guards the number each account was confirmed at, a number that answered gone included, which is asked
+ * again every run; it is the starting point only when every place of `at` answered gone; and it answers STALE when a
+ * home could not be heard, serving only homes confirmed when it was written and not refused in this run. A `local:`
+ * id is refused (`unresolvable`), since it names a repo with no home and is never a dependency's target, and so is a
+ * reference by `url` (`unverifiable`), which only a reader of git can follow. With nothing confirmed the refusal
+ * carries the verdict of the first home `at` names: NAULA_TIMED_OUT or NAULA_UNREACHABLE when that home could not be
+ * heard, and NAULA_NOT_FOUND only when every place `at` names is gone, after which no home of the record is served. A
+ * primary other than the one the record confirmed needs the session's `accept_primary` (`primary-changed`), and
+ * primary pointers that loop are refused (`cycle`).
  */
 naula_status naula_resolve(naula_session *session, const naula_reference *reference, naula_resolution *resolution,
                            naula_refusal *refusal);

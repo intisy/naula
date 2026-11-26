@@ -301,25 +301,14 @@ static naula_status follow_primary(const resolver *subject, size_t anchor, size_
     return status;
 }
 
-/**
- * A primary other than the cached one needs the user's accept, but only when the cache speaks for the same confirmed
- * set: a record whose confirmed homes share none with this one was written for another consumer's first contact.
- */
+/** A primary other than the one this anchor's record confirmed needs the user's accept. */
 static naula_status check_primary_change(const resolver *subject, size_t primary, naula_refusal *refusal) {
-    if (!subject->cache.present) {
+    if (!subject->cache.present || !subject->cache.has_primary) {
         return NAULA_OK;
-    }
-    int shared = 0;
-    for (size_t entry = 0; entry < subject->cache.count && !shared; entry++) {
-        const cache_home *cached = &subject->cache.homes[entry];
-        for (size_t index = 0; cached->state == CACHE_CONFIRMED && index < subject->count; index++) {
-            shared |= is_confirmed(subject->candidates[index]) &&
-                      naula_resolver_same_place(&subject->candidates[index]->place, NULL, &cached->place, NULL);
-        }
     }
     const naula_place *was = &subject->cache.homes[subject->cache.primary].place;
     const naula_place *becomes = &subject->candidates[primary]->place;
-    if (!shared || naula_resolver_same_place(was, NULL, becomes, NULL)) {
+    if (naula_resolver_same_place(was, NULL, becomes, NULL)) {
         return NAULA_OK;
     }
     const naula_session *session = subject->session;
@@ -372,27 +361,17 @@ static naula_status copy_cache_entry(const cache_home *from, cache_state state, 
 }
 
 /**
- * What a cached home outside the confirmed set becomes: DEAD stays DEAD, a number its provider answered gone this run
- * turns DEAD, and anything else is kept as a GUARD, so its number still guards its account but is never served.
- * CACHE_CONFIRMED is answered for a home in the confirmed set, which is written from the run.
+ * Whether a cached home is in this run's confirmed set, which is written from the run; any other is kept as a GUARD,
+ * so its number still guards its account but is never served, and is asked again on the next run.
  */
-static cache_state cached_state_after(const resolver *subject, const cache_home *cached) {
-    if (cached->state == CACHE_DEAD) {
-        return CACHE_DEAD;
-    }
+static int is_reconfirmed(const resolver *subject, const cache_home *cached) {
     for (size_t index = 0; index < subject->count; index++) {
         const candidate *home = subject->candidates[index];
-        if (!naula_resolver_same_place(&home->place, home->account, &cached->place, cached->account)) {
-            continue;
+        if (naula_resolver_same_place(&home->place, home->account, &cached->place, cached->account)) {
+            return is_confirmed(home);
         }
-        if (is_confirmed(home)) {
-            return CACHE_CONFIRMED;
-        }
-        int asked = home->place.kind == NAULA_HOME_PROVIDER &&
-                    naula_providers_find(subject->session->providers, home->place.provider, NULL) != NULL;
-        return home->outcome == CANDIDATE_DEAD && asked ? CACHE_DEAD : CACHE_GUARD;
     }
-    return CACHE_GUARD;
+    return 0;
 }
 
 static naula_status build_cache(const resolver *subject, size_t primary, identity_cache *next) {
@@ -409,6 +388,7 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
         }
         if (index == primary) {
             next->primary = next->count;
+            next->has_primary = 1;
         }
         naula_status status = cache_entry(subject->candidates[index], now, &next->homes[next->count++]);
         if (status != NAULA_OK) {
@@ -416,11 +396,10 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
         }
     }
     for (size_t entry = 0; entry < subject->cache.count; entry++) {
-        cache_state state = cached_state_after(subject, &subject->cache.homes[entry]);
-        if (state == CACHE_CONFIRMED) {
+        if (primary != NAULA_NO_CANDIDATE && is_reconfirmed(subject, &subject->cache.homes[entry])) {
             continue;
         }
-        naula_status status = copy_cache_entry(&subject->cache.homes[entry], state, &next->homes[next->count++]);
+        naula_status status = copy_cache_entry(&subject->cache.homes[entry], CACHE_GUARD, &next->homes[next->count++]);
         if (status != NAULA_OK) {
             return status;
         }
@@ -435,7 +414,8 @@ static naula_status write_cache(const resolver *subject, size_t primary, naula_r
     identity_cache next;
     naula_status status = build_cache(subject, primary, &next);
     if (status == NAULA_OK) {
-        status = naula_cache_write(subject->session->cache_directory, subject->hex, &next, resolution->cache_problem);
+        status = naula_cache_write(subject->session->cache_directory, subject->hex, subject->anchor, &next,
+                                   resolution->cache_problem);
     }
     naula_cache_release(&next);
     return status;
@@ -535,18 +515,96 @@ static naula_status answer_unconfirmed(const resolver *subject, naula_resolution
     status = status_for(subject, decisive);
     naula_refuse(refusal, decisive->code, is_unheard(decisive) ? NETWORK_FIX : HOME_FIX, "%s: %s", text,
                  decisive->detail);
+    if (status == NAULA_NOT_FOUND && subject->cache.present) {
+        naula_status written = write_cache(subject, NAULA_NO_CANDIDATE, resolution);
+        if (written != NAULA_OK) {
+            return written;
+        }
+    }
+    return status;
+}
+
+/**
+ * The confirmed `at` place that comes first in the first confirmed one's own `homes`, the primary first; `at` order
+ * decides only between places that do not list each other.
+ */
+static size_t choose_anchor(const resolver *subject) {
+    size_t first = NAULA_NO_CANDIDATE;
+    for (size_t index = 0; index < subject->at_count && first == NAULA_NO_CANDIDATE; index++) {
+        first = subject->candidates[index]->outcome == CANDIDATE_CONFIRMED ? index : NAULA_NO_CANDIDATE;
+    }
+    if (first == NAULA_NO_CANDIDATE) {
+        return first;
+    }
+    size_t count = 0;
+    const naula_home *homes = naula_candidate_homes(subject->candidates[first], &count);
+    for (size_t entry = 0; entry < count; entry++) {
+        for (size_t index = 0; index < subject->at_count; index++) {
+            const candidate *home = subject->candidates[index];
+            if (home->outcome == CANDIDATE_CONFIRMED && naula_home_names(&homes[entry], home)) {
+                return index;
+            }
+        }
+    }
+    return first;
+}
+
+static naula_status try_record_home(resolver *subject, size_t entry, size_t *anchor) {
+    const cache_home *cached = &subject->cache.homes[entry];
+    size_t index = 0;
+    if (cached->state != CACHE_CONFIRMED || *anchor != NAULA_NO_CANDIDATE) {
+        return NAULA_OK;
+    }
+    naula_status status = naula_resolver_add(subject, &cached->place, NULL, &index);
+    if (status == NAULA_REFUSED) {
+        return NAULA_OK;
+    }
+    if (status == NAULA_OK) {
+        status = want(subject, index);
+    }
+    if (status == NAULA_OK && subject->candidates[index]->outcome == CANDIDATE_CONFIRMED) {
+        *anchor = index;
+    }
+    return status;
+}
+
+/**
+ * When every place of `at` answered gone, this anchor's record's confirmed homes, its primary first, are where to
+ * start: a consumer that saw a planned move keeps the new home after the old one is deleted.
+ */
+static naula_status start_from_record(resolver *subject, size_t *anchor) {
+    *anchor = NAULA_NO_CANDIDATE;
+    if (!subject->cache.present || subject->at_count == 0) {
+        return NAULA_OK;
+    }
+    for (size_t index = 0; index < subject->at_count; index++) {
+        if (subject->candidates[index]->outcome != CANDIDATE_DEAD) {
+            return NAULA_OK;
+        }
+    }
+    naula_status status = NAULA_OK;
+    if (subject->cache.has_primary) {
+        status = try_record_home(subject, subject->cache.primary, anchor);
+    }
+    for (size_t entry = 0; entry < subject->cache.count && status == NAULA_OK; entry++) {
+        status = try_record_home(subject, entry, anchor);
+    }
     return status;
 }
 
 static naula_status answer(resolver *subject, naula_resolution *resolution, naula_refusal *refusal) {
-    size_t anchor = NAULA_NO_CANDIDATE;
-    for (size_t index = 0; index < subject->at_count && anchor == NAULA_NO_CANDIDATE; index++) {
-        anchor = subject->candidates[index]->outcome == CANDIDATE_CONFIRMED ? index : NAULA_NO_CANDIDATE;
+    size_t anchor = choose_anchor(subject);
+    naula_status status = NAULA_OK;
+    if (anchor == NAULA_NO_CANDIDATE) {
+        status = start_from_record(subject, &anchor);
+    }
+    if (status != NAULA_OK) {
+        return status;
     }
     if (anchor == NAULA_NO_CANDIDATE) {
         return answer_unconfirmed(subject, resolution, refusal);
     }
-    naula_status status = close_from(subject, anchor);
+    status = close_from(subject, anchor);
     if (status != NAULA_OK) {
         return status;
     }
@@ -568,11 +626,6 @@ static naula_status answer(resolver *subject, naula_resolution *resolution, naul
 
 static naula_status resolve_online(resolver *subject, const naula_reference *reference, naula_resolution *resolution,
                                    naula_refusal *refusal) {
-    if (reference->at_count == 0) {
-        naula_refuse(refusal, "invalid_reference", REFERENCE_FIX, "%s names no place to start from",
-                     subject->id_text);
-        return NAULA_REFUSED;
-    }
     naula_status status = start_from_at(subject, reference);
     if (status == NAULA_REFUSED) {
         naula_refuse(refusal, "unverifiable", REFERENCE_FIX, "%s names more places than are weighed", subject->id_text);
@@ -587,8 +640,16 @@ static naula_status resolve_with(resolver *subject, const naula_reference *refer
     if (status != NAULA_OK) {
         return status;
     }
-    status = naula_cache_read(subject->session->cache_directory, subject->hex, &subject->cache,
-                              resolution->cache_problem);
+    if (reference->at_count == 0) {
+        naula_refuse(refusal, "invalid_reference", REFERENCE_FIX, "%s names no place to start from",
+                     subject->id_text);
+        return NAULA_REFUSED;
+    }
+    status = naula_cache_anchor(reference->at, reference->at_count, subject->anchor);
+    if (status == NAULA_OK) {
+        status = naula_cache_read(subject->session->cache_directory, subject->hex, subject->anchor, &subject->cache,
+                                  resolution->cache_problem);
+    }
     if (status != NAULA_OK) {
         return status;
     }

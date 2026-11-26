@@ -309,26 +309,12 @@ static naula_status read_repo_file(resolver *subject, const naula_provider *prov
     return NAULA_OK;
 }
 
-const cache_home *naula_resolver_cached_place(const resolver *subject, const naula_place *place) {
-    for (size_t index = 0; index < subject->cache.count; index++) {
-        if (naula_resolver_same_place(&subject->cache.homes[index].place, NULL, place, NULL)) {
-            return &subject->cache.homes[index];
-        }
-    }
-    return NULL;
-}
-
 static naula_status read_provider_home(resolver *subject, candidate *home) {
     naula_refusal refusal = fresh_refusal();
     const naula_provider *provider = naula_providers_find(subject->session->providers, home->place.provider, &refusal);
     if (provider == NULL) {
         settle(home, CANDIDATE_DEAD, "dead-skipped", "no provider is installed for %s: %s", home->place.provider,
                NAULA_UNKNOWN_PROVIDER_FIX);
-        return NAULA_OK;
-    }
-    const cache_home *cached = naula_resolver_cached_place(subject, &home->place);
-    if (cached != NULL && cached->state == CACHE_DEAD) {
-        settle(home, CANDIDATE_DEAD, "dead-skipped", "it answered that it is gone before, and is not asked again");
         return NAULA_OK;
     }
     const char *token = naula_session_token(subject->session, home->place.provider, home->place.host);
@@ -548,8 +534,8 @@ static naula_status check_fork_parent(resolver *subject, candidate *home, unsign
 }
 
 /**
- * The cached home for a listed account: one confirmed last time before one kept as a guard, and either before one
- * that answered it is gone, which still guards the account.
+ * The cached home for a listed account: one confirmed last time before one kept as a guard, which still guards the
+ * account when its number answered gone.
  */
 static const cache_home *cache_for_account(const resolver *subject, const naula_home *home) {
     const cache_home *best = NULL;
@@ -619,8 +605,8 @@ static naula_status note_home(resolver *subject, const naula_home *home, uint64_
 }
 
 /**
- * The number of a home `lister` lists by account: the one the cache holds for that account (confirmed, kept as a
- * guard, or gone for good), else one already reached by number, else the one its provider finds under the account
+ * The number of a home `lister` lists by account: the one this anchor's record holds for that account, confirmed or
+ * kept as a guard, else one already reached by number, else the one its provider finds under the account
  * and `lister`'s name. A number found that differs from the cached one is refused as `number-changed`, so a
  * re-registered account never stands in for the home it replaced. When neither is known, or the provider could not
  * be heard, `lister` is settled and 0 answered.

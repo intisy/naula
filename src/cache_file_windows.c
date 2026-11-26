@@ -2,12 +2,14 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "cache_internal.h"
 #include "naula/memory.h"
 
 #define CACHE_FILE_LIMIT (1024 * 1024)
 #define WRITE_CHUNK 65536u
+#define PATH_TEXT_SIZE 4096
 
 static naula_status widen(const char *text, wchar_t **wide) {
     *wide = NULL;
@@ -25,6 +27,46 @@ static naula_status widen(const char *text, wchar_t **wide) {
         return NAULA_REFUSED;
     }
     return NAULA_OK;
+}
+
+static naula_status prefixed(const wchar_t *full, wchar_t **wide) {
+    int already = full[0] == L'\\' && full[1] == L'\\' && (full[2] == L'?' || full[2] == L'.');
+    int unc = !already && full[0] == L'\\' && full[1] == L'\\';
+    const wchar_t *prefix = already ? L"" : (unc ? L"\\\\?\\UNC\\" : L"\\\\?\\");
+    const wchar_t *rest = unc ? full + 2 : full;
+    size_t prefix_length = wcslen(prefix);
+    size_t rest_length = wcslen(rest);
+    *wide = naula_memory_allocate((prefix_length + rest_length + 1) * sizeof **wide);
+    if (*wide == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    wmemcpy(*wide, prefix, prefix_length);
+    wmemcpy(*wide + prefix_length, rest, rest_length + 1);
+    return NAULA_OK;
+}
+
+/**
+ * A path as Windows opens it past MAX_PATH: made absolute, then given the `\\?\` prefix, since a record under a deep
+ * cache folder named for a 64 hex id passes 260 characters, where a path without the prefix is refused.
+ */
+static naula_status widen_path(const char *path, wchar_t **wide) {
+    wchar_t *plain = NULL;
+    *wide = NULL;
+    naula_status status = widen(path, &plain);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    DWORD needed = GetFullPathNameW(plain, 0, NULL, NULL);
+    wchar_t *full = needed == 0 ? NULL : naula_memory_allocate((size_t)needed * sizeof *full);
+    if (needed == 0 || full == NULL) {
+        naula_memory_release(plain);
+        return needed == 0 ? NAULA_REFUSED : NAULA_OUT_OF_MEMORY;
+    }
+    DWORD written = GetFullPathNameW(plain, needed, full, NULL);
+    naula_memory_release(plain);
+    status = written == 0 || written >= needed ? NAULA_REFUSED : prefixed(full, wide);
+    naula_memory_release(full);
+    return status;
 }
 
 static naula_status read_handle(HANDLE file, uint8_t **bytes, size_t *length) {
@@ -58,7 +100,7 @@ naula_status naula_cache_file_read(const char *path, uint8_t **bytes, size_t *le
     wchar_t *wide = NULL;
     *bytes = NULL;
     *length = 0;
-    naula_status status = widen(path, &wide);
+    naula_status status = widen_path(path, &wide);
     if (status != NAULA_OK) {
         return status;
     }
@@ -107,23 +149,23 @@ static void release_paths(replace_paths *paths) {
 
 static naula_status widen_paths(const char *directory, const char *path, replace_paths *paths) {
     static volatile LONG counter;
-    char identities[MAX_PATH * 4];
-    char temporary[MAX_PATH * 4];
+    char identities[PATH_TEXT_SIZE];
+    char temporary[PATH_TEXT_SIZE];
     memset(paths, 0, sizeof *paths);
     if (snprintf(identities, sizeof identities, "%s/identities", directory) >= (int)sizeof identities ||
         snprintf(temporary, sizeof temporary, "%s.%lu.%ld.tmp", path, (unsigned long)GetCurrentProcessId(),
                  (long)InterlockedIncrement(&counter)) >= (int)sizeof temporary) {
         return NAULA_REFUSED;
     }
-    naula_status status = widen(directory, &paths->directory);
+    naula_status status = widen_path(directory, &paths->directory);
     if (status == NAULA_OK) {
-        status = widen(identities, &paths->identities);
+        status = widen_path(identities, &paths->identities);
     }
     if (status == NAULA_OK) {
-        status = widen(temporary, &paths->temporary);
+        status = widen_path(temporary, &paths->temporary);
     }
     if (status == NAULA_OK) {
-        status = widen(path, &paths->target);
+        status = widen_path(path, &paths->target);
     }
     return status;
 }
@@ -150,8 +192,8 @@ static int narrow_ascii(const wchar_t *wide, char *out, size_t size) {
 }
 
 static void remove_stale_temporaries(const wchar_t *identities) {
-    wchar_t pattern[MAX_PATH * 4];
-    wchar_t path[MAX_PATH * 4];
+    wchar_t pattern[PATH_TEXT_SIZE];
+    wchar_t path[PATH_TEXT_SIZE];
     char name[MAX_PATH];
     WIN32_FIND_DATAW found;
     if (swprintf(pattern, sizeof pattern / sizeof pattern[0], L"%ls\\*.tmp", identities) < 0) {

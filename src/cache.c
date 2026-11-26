@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -8,6 +9,7 @@
 #include "forge_common.h"
 #include "json_document.h"
 #include "naula/memory.h"
+#include "naula/sha256.h"
 
 #define CACHE_TEXT_LIMIT 255u
 #define LARGEST_EXACT_INTEGER 9007199254740991.0
@@ -19,23 +21,84 @@ static void say(char *problem, const char *format, ...) {
     va_end(arguments);
 }
 
-static char *record_path(const char *directory, const char *hex) {
-    size_t length = strlen(directory) + strlen("/identities/") + strlen(hex) + strlen(".json") + 1;
+static char *record_path(const char *directory, const char *hex, const char *anchor) {
+    size_t length = strlen(directory) + strlen("/identities/") + strlen(hex) + 1 + strlen(anchor) + strlen(".json") + 1;
     char *path = naula_memory_allocate(length);
     if (path != NULL) {
-        snprintf(path, length, "%s/identities/%s.json", directory, hex);
+        snprintf(path, length, "%s/identities/%s-%s.json", directory, hex, anchor);
     }
     return path;
 }
 
-int naula_cache_is_temporary_name(const char *name) {
-    size_t hex = 0;
-    while ((name[hex] >= '0' && name[hex] <= '9') || (name[hex] >= 'a' && name[hex] <= 'f')) {
-        hex++;
+static size_t hex_run(const char *text) {
+    size_t length = 0;
+    while ((text[length] >= '0' && text[length] <= '9') || (text[length] >= 'a' && text[length] <= 'f')) {
+        length++;
     }
-    size_t length = strlen(name);
-    return (hex == 40 || hex == 64) && strncmp(name + hex, ".json.", 6) == 0 && length >= hex + 6 + 4 &&
-           strcmp(name + length - 4, ".tmp") == 0;
+    return length;
+}
+
+int naula_cache_is_temporary_name(const char *name) {
+    size_t hex = hex_run(name);
+    if ((hex != 40 && hex != 64) || name[hex] != '-' || hex_run(name + hex + 1) != NAULA_CACHE_ANCHOR_SIZE - 1) {
+        return 0;
+    }
+    const char *rest = name + hex + NAULA_CACHE_ANCHOR_SIZE;
+    size_t length = strlen(rest);
+    return strncmp(rest, ".json.", 6) == 0 && length >= 6 + 4 && strcmp(rest + length - 4, ".tmp") == 0;
+}
+
+static char *place_text(const naula_place *place) {
+    char text[1024];
+    if (place->kind == NAULA_HOME_WEB) {
+        snprintf(text, sizeof text, "web:%s", place->domain);
+    } else if (place->kind == NAULA_HOME_URL) {
+        snprintf(text, sizeof text, "%s", place->url);
+    } else {
+        snprintf(text, sizeof text, "%s%s%s:%llu", place->provider, place->host == NULL ? "" : "@",
+                 place->host == NULL ? "" : place->host, (unsigned long long)place->number);
+    }
+    return naula_memory_duplicate_text(text);
+}
+
+static int compare_texts(const void *left, const void *right) {
+    return strcmp(*(const char *const *)left, *(const char *const *)right);
+}
+
+static void release_texts(char **texts, size_t count) {
+    for (size_t index = 0; texts != NULL && index < count; index++) {
+        naula_memory_release(texts[index]);
+    }
+    naula_memory_release(texts);
+}
+
+naula_status naula_cache_anchor(const naula_place *places, size_t count, char anchor[NAULA_CACHE_ANCHOR_SIZE]) {
+    char **texts = naula_memory_allocate((count == 0 ? 1 : count) * sizeof *texts);
+    if (texts == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    for (size_t index = 0; index < count; index++) {
+        texts[index] = place_text(&places[index]);
+        if (texts[index] == NULL) {
+            release_texts(texts, index);
+            return NAULA_OUT_OF_MEMORY;
+        }
+    }
+    qsort(texts, count, sizeof *texts, compare_texts);
+    naula_sha256 hash;
+    char hex[NAULA_SHA256_HEX_SIZE];
+    naula_sha256_start(&hash);
+    for (size_t index = 0; index < count; index++) {
+        if (index > 0) {
+            naula_sha256_add(&hash, (const uint8_t *)"\n", 1);
+        }
+        naula_sha256_add(&hash, (const uint8_t *)texts[index], strlen(texts[index]));
+    }
+    naula_sha256_hex(&hash, hex);
+    release_texts(texts, count);
+    memcpy(anchor, hex, NAULA_CACHE_ANCHOR_SIZE - 1);
+    anchor[NAULA_CACHE_ANCHOR_SIZE - 1] = '\0';
+    return NAULA_OK;
 }
 
 void naula_cache_release(identity_cache *cache) {
@@ -130,11 +193,11 @@ static naula_status fill_web_home(const cJSON *item, cache_home *home, int *vali
     return NAULA_OK;
 }
 
-static const char *const state_words[] = {"", "confirmed", "guard", "dead"};
+static const char *const state_words[] = {"", "confirmed", "guard"};
 
 static int read_state(const cJSON *item, cache_state *state) {
     const char *word = naula_forge_text_member(item, "state");
-    for (int known = CACHE_CONFIRMED; word != NULL && known <= CACHE_DEAD; known++) {
+    for (int known = CACHE_CONFIRMED; word != NULL && known <= CACHE_GUARD; known++) {
         if (strcmp(word, state_words[known]) == 0) {
             *state = (cache_state)known;
             return 1;
@@ -150,8 +213,7 @@ static naula_status read_home(const cJSON *item, cache_home *home, int *valid) {
     home->place.size = sizeof home->place;
     const char *provider = cJSON_IsObject(item) ? naula_forge_text_member(item, "provider") : NULL;
     if (!is_word_text(provider) || !read_whole_number(item, "confirmed", &confirmed) ||
-        !optional_text(item, "etag", &etag) || !read_state(item, &home->state) ||
-        (home->state == CACHE_DEAD && strcmp(provider, "web") == 0)) {
+        !optional_text(item, "etag", &etag) || !read_state(item, &home->state)) {
         return NAULA_OK;
     }
     home->confirmed = (int64_t)confirmed;
@@ -173,8 +235,9 @@ static naula_status read_record(const cJSON *json, const char *hex, identity_cac
         return NAULA_OK;
     }
     int count = cJSON_IsArray(homes) ? cJSON_GetArraySize(homes) : 0;
-    if (count <= 0 || count > NAULA_CACHE_HOME_LIMIT || !read_whole_number(json, "primary", &primary) ||
-        primary >= (double)count) {
+    int has_primary = cJSON_GetObjectItemCaseSensitive(json, "primary") != NULL;
+    if (count <= 0 || count > NAULA_CACHE_HOME_LIMIT ||
+        (has_primary && (!read_whole_number(json, "primary", &primary) || primary >= (double)count))) {
         say(problem, "the cache record for git:%s holds no readable homes or primary and was ignored", hex);
         return NAULA_OK;
     }
@@ -185,6 +248,7 @@ static naula_status read_record(const cJSON *json, const char *hex, identity_cac
     memset(cache->homes, 0, (size_t)count * sizeof *cache->homes);
     cache->count = (size_t)count;
     cache->primary = (size_t)primary;
+    cache->has_primary = has_primary;
     size_t index = 0;
     for (const cJSON *item = homes->child; item != NULL; item = item->next, index++) {
         int valid = 0;
@@ -199,7 +263,11 @@ static naula_status read_record(const cJSON *json, const char *hex, identity_cac
             return NAULA_OK;
         }
     }
-    if (cache->homes[cache->primary].state != CACHE_CONFIRMED) {
+    int any_confirmed = 0;
+    for (size_t entry = 0; entry < cache->count; entry++) {
+        any_confirmed |= cache->homes[entry].state == CACHE_CONFIRMED;
+    }
+    if (any_confirmed != has_primary || (has_primary && cache->homes[cache->primary].state != CACHE_CONFIRMED)) {
         naula_cache_release(cache);
         say(problem, "the cache record for git:%s names a primary it does not hold confirmed and was ignored", hex);
         return NAULA_OK;
@@ -226,13 +294,14 @@ static naula_status read_bytes(const uint8_t *bytes, size_t length, const char *
     return status;
 }
 
-naula_status naula_cache_read(const char *directory, const char *hex, identity_cache *cache, char *problem) {
+naula_status naula_cache_read(const char *directory, const char *hex, const char *anchor, identity_cache *cache,
+                              char *problem) {
     memset(cache, 0, sizeof *cache);
     problem[0] = '\0';
     if (directory == NULL) {
         return NAULA_OK;
     }
-    char *path = record_path(directory, hex);
+    char *path = record_path(directory, hex, anchor);
     if (path == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
@@ -286,7 +355,7 @@ static char *print_record(const char *hex, const identity_cache *cache, const un
     cJSON *root = cJSON_CreateObject();
     cJSON *homes = root == NULL ? NULL : cJSON_AddArrayToObject(root, "homes");
     int built = homes != NULL && cJSON_AddStringToObject(root, "id", id) != NULL &&
-                cJSON_AddNumberToObject(root, "primary", (double)primary) != NULL;
+                (!cache->has_primary || cJSON_AddNumberToObject(root, "primary", (double)primary) != NULL);
     for (size_t index = 0; built && index < cache->count; index++) {
         built = !kept[index] || add_home(homes, &cache->homes[index]);
     }
@@ -295,13 +364,13 @@ static char *print_record(const char *hex, const identity_cache *cache, const un
     return text;
 }
 
-/** Leaves out the oldest GUARD homes past the limit; 0 when CONFIRMED and DEAD homes alone pass it. */
+/** Leaves out the oldest GUARD homes past the limit; 0 when CONFIRMED homes alone pass it. */
 static int choose_kept(const identity_cache *cache, unsigned char *kept) {
     size_t kept_count = cache->count;
     size_t fixed = 0;
     for (size_t index = 0; index < cache->count; index++) {
         kept[index] = 1;
-        fixed += cache->homes[index].state != CACHE_GUARD ? 1u : 0u;
+        fixed += cache->homes[index].state == CACHE_CONFIRMED ? 1u : 0u;
     }
     if (fixed > NAULA_CACHE_HOME_LIMIT) {
         return 0;
@@ -320,15 +389,19 @@ static int choose_kept(const identity_cache *cache, unsigned char *kept) {
     return 1;
 }
 
-naula_status naula_cache_write(const char *directory, const char *hex, const identity_cache *cache, char *problem) {
+naula_status naula_cache_write(const char *directory, const char *hex, const char *anchor, const identity_cache *cache,
+                               char *problem) {
+    if (cache->count == 0) {
+        return NAULA_OK;
+    }
     unsigned char *kept = naula_memory_allocate(cache->count);
     if (kept == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
     if (!choose_kept(cache, kept)) {
         naula_memory_release(kept);
-        say(problem, "the cache record for git:%s would hold more confirmed and gone homes than %d and was not written",
-            hex, NAULA_CACHE_HOME_LIMIT);
+        say(problem, "the cache record for git:%s would hold more confirmed homes than %d and was not written", hex,
+            NAULA_CACHE_HOME_LIMIT);
         return NAULA_OK;
     }
     char *text = print_record(hex, cache, kept);
@@ -336,7 +409,7 @@ naula_status naula_cache_write(const char *directory, const char *hex, const ide
     if (text == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
-    char *path = record_path(directory, hex);
+    char *path = record_path(directory, hex, anchor);
     naula_status status = path == NULL ? NAULA_OUT_OF_MEMORY
                                        : naula_cache_file_replace(directory, path, (const uint8_t *)text, strlen(text));
     if (status == NAULA_REFUSED) {

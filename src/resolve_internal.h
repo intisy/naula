@@ -76,6 +76,7 @@ typedef struct resolver {
     size_t count;
     size_t capacity;
     size_t at_count;
+    char anchor[NAULA_CACHE_ANCHOR_SIZE];
     identity_cache cache;
 } resolver;
 
@@ -95,9 +96,6 @@ naula_status naula_resolver_add(resolver *subject, const naula_place *place, con
 naula_status naula_resolver_confirm(resolver *subject, size_t index, unsigned depth);
 
 void naula_resolver_release_candidates(resolver *subject);
-
-/** The cached home at `place`, whatever its state, or NULL. */
-const cache_home *naula_resolver_cached_place(const resolver *subject, const naula_place *place);
 
 naula_status naula_resolver_copy_place(const naula_place *from, naula_place *to);
 
