@@ -194,6 +194,16 @@ static void answer_not_found(fixture_socket connection) {
     send_all(connection, answer, strlen(answer));
 }
 
+/** Sends bytes one at a time, pausing between them, and stops once the client has gone. */
+static void drip(fixture_socket connection, const char *bytes, size_t length, unsigned pause) {
+    for (size_t index = 0; index < length; index++) {
+        if ((int)send(connection, bytes + index, 1, SEND_FLAGS) != 1) {
+            return;
+        }
+        pause_milliseconds(pause);
+    }
+}
+
 static void answer_route(fixture_socket connection, const http_route *route, const char *head) {
     char status_line[4096];
     if (header_equals(head, "If-None-Match", route->etag) ||
@@ -202,7 +212,8 @@ static void answer_route(fixture_socket connection, const http_route *route, con
         send_all(connection, status_line, strlen(status_line));
         return;
     }
-    if (route->stall_milliseconds > 0) {
+    int drips = route->declared_length == HTTP_ROUTE_DRIP;
+    if (route->stall_milliseconds > 0 && !drips) {
         pause_milliseconds(route->stall_milliseconds);
     }
     int length = snprintf(status_line, sizeof status_line, "HTTP/1.1 %d Fixture\r\nConnection: close\r\n%s",
@@ -215,12 +226,18 @@ static void answer_route(fixture_socket connection, const http_route *route, con
                            route->last_modified);
     }
     if (route->declared_length != HTTP_ROUTE_UNTIL_CLOSE) {
-        long long declared = route->declared_length == HTTP_ROUTE_BODY_LENGTH ? (long long)route->body_length
-                                                                               : route->declared_length;
+        long long declared = route->declared_length == HTTP_ROUTE_BODY_LENGTH || drips
+                                 ? (long long)route->body_length
+                                 : route->declared_length;
         length += snprintf(status_line + length, sizeof status_line - (size_t)length, "Content-Length: %lld\r\n",
                            declared);
     }
     snprintf(status_line + length, sizeof status_line - (size_t)length, "\r\n");
+    if (drips) {
+        drip(connection, status_line, strlen(status_line), route->stall_milliseconds);
+        drip(connection, route->body == NULL ? "" : route->body, route->body_length, route->stall_milliseconds);
+        return;
+    }
     send_all(connection, status_line, strlen(status_line));
     send_all(connection, route->body == NULL ? "" : route->body, route->body_length);
 }

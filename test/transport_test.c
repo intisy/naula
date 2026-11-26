@@ -20,6 +20,7 @@
 #include <winhttp.h>
 #else
 #include <stdlib.h>
+#include <time.h>
 #endif
 
 #define BODY_LENGTH 4096
@@ -212,6 +213,51 @@ static void authorization_is_not_sent_after_a_cross_host_redirect(void) {
 
 static void authorization_follows_a_redirect_to_the_same_host(void) {
     send_a_redirect_and_log("127.0.0.1", 1);
+}
+
+#define DEADLINE_MARGIN_MILLISECONDS 1500u
+
+static unsigned long long now_milliseconds(void) {
+#if defined(_WIN32)
+    return GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (unsigned long long)now.tv_sec * 1000u + (unsigned long long)now.tv_nsec / 1000000u;
+#endif
+}
+
+/** One fetch of path under a 600 ms deadline, which must end as the deadline answer within the margin. */
+static void fetch_ends_by_its_deadline(unsigned short port, const char *path) {
+    char url[128];
+    naula_fetch_sink sink;
+    url_of(url, sizeof url, "127.0.0.1", port, path);
+    unsigned long long started = now_milliseconds();
+    naula_fetch_answer answer = fetch_into_buffer(url, NULL, 600, BODY_LENGTH, &sink);
+    unsigned long long elapsed = now_milliseconds() - started;
+    if (elapsed > 600u + DEADLINE_MARGIN_MILLISECONDS) {
+        fprintf(stderr, "%s took %llu ms under a 600 ms deadline\n", path, elapsed);
+    }
+    CHECK(elapsed <= 600u + DEADLINE_MARGIN_MILLISECONDS);
+    CHECK(answer.outcome == NAULA_FETCH_CUT_OFF && answer.declared == 0);
+    release(&answer);
+}
+
+static void a_fetch_never_outlives_its_deadline(void) {
+    const http_route silent[] = {{"/silent", 200, NULL, body, 64, HTTP_ROUTE_BODY_LENGTH, NULL, NULL, 2500, 0}};
+    const http_route dripping[] = {{"/drip", 200, NULL, body, 64, HTTP_ROUTE_DRIP, NULL, NULL, 100, 0}};
+    http_fixture *server = http_fixture_start(silent, 1);
+    CHECK(server != NULL);
+    if (server != NULL) {
+        fetch_ends_by_its_deadline(http_fixture_port(server), "/silent");
+        naula_memory_release(http_fixture_stop(server));
+    }
+    server = http_fixture_start(dripping, 1);
+    CHECK(server != NULL);
+    if (server != NULL) {
+        fetch_ends_by_its_deadline(http_fixture_port(server), "/drip");
+        naula_memory_release(http_fixture_stop(server));
+    }
 }
 
 #define WRITE_BODY "{\"name\":\"renamed\"}"
@@ -427,6 +473,7 @@ int main(void) {
     run_against_the_server();
     authorization_is_not_sent_after_a_cross_host_redirect();
     authorization_follows_a_redirect_to_the_same_host();
+    a_fetch_never_outlives_its_deadline();
     post_sends_its_body_and_type();
     a_write_is_never_redirected_to_the_same_host_or_another();
     an_unusable_method_or_body_is_refused_before_anything_is_sent();

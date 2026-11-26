@@ -371,21 +371,84 @@ typedef enum hop_outcome {
     HOP_REDIRECTED
 } hop_outcome;
 
-static hop_outcome take_hop(const naula_fetch_request *request, const url_parts *parts, int is_authorized,
-                            ULONGLONG deadline, naula_fetch_sink *sink, naula_fetch_answer *answer,
-                            wchar_t **next) {
-    winhttp_handles handles;
-    hop_outcome outcome = HOP_ANSWERED;
-    int sent = open_handles(request, parts, &handles) ? send_request(request, handles.request, is_authorized) : 0;
+/**
+ * Closes a request handle once the deadline passes, which is how WinHTTP cancels a synchronous call: its own timeouts
+ * bound each send and receive alone, so an answer that trickles in could otherwise run far past the deadline.
+ */
+typedef struct deadline_watch {
+    PTP_TIMER timer;
+    HINTERNET request;
+    volatile LONG fired;
+} deadline_watch;
+
+static VOID CALLBACK close_at_deadline(PTP_CALLBACK_INSTANCE instance, PVOID context, PTP_TIMER timer) {
+    deadline_watch *watch = context;
+    (void)instance;
+    (void)timer;
+    InterlockedExchange(&watch->fired, 1);
+    WinHttpCloseHandle(watch->request);
+}
+
+static int start_watch(deadline_watch *watch, HINTERNET request, ULONGLONG deadline) {
+    watch->request = request;
+    watch->fired = 0;
+    watch->timer = CreateThreadpoolTimer(close_at_deadline, watch, NULL);
+    if (watch->timer == NULL) {
+        return 0;
+    }
+    ULONGLONG now = GetTickCount64();
+    ULARGE_INTEGER relative;
+    relative.QuadPart = (ULONGLONG)(-(LONGLONG)((deadline > now ? deadline - now : 0) * 10000u));
+    FILETIME due;
+    due.dwLowDateTime = relative.LowPart;
+    due.dwHighDateTime = relative.HighPart;
+    SetThreadpoolTimer(watch->timer, &due, 0, 0);
+    return 1;
+}
+
+/** Disarms the timer and waits out a callback in flight, so the handle is never used after it closed; 1 if it fired. */
+static int stop_watch(deadline_watch *watch) {
+    SetThreadpoolTimer(watch->timer, NULL, 0, 0);
+    WaitForThreadpoolTimerCallbacks(watch->timer, TRUE);
+    CloseThreadpoolTimer(watch->timer);
+    return InterlockedCompareExchange(&watch->fired, 0, 0) != 0;
+}
+
+static void exchange(const naula_fetch_request *request, const url_parts *parts, HINTERNET handle, int is_authorized,
+                     ULONGLONG deadline, naula_fetch_sink *sink, naula_fetch_answer *answer, wchar_t **next,
+                     hop_outcome *outcome) {
+    int sent = send_request(request, handle, is_authorized);
     if (sent < 0) {
         naula_fetch_out_of_memory(answer);
     } else if (sent == 0) {
         refuse_error(request, GetLastError(), answer);
-    } else if (is_redirect(status_of(handles.request)) && naula_fetch_request_follows_redirects(request)) {
-        *next = redirect_target(handles.request, parts->wide_url);
-        outcome = HOP_REDIRECTED;
+    } else if (is_redirect(status_of(handle)) && naula_fetch_request_follows_redirects(request)) {
+        *next = redirect_target(handle, parts->wide_url);
+        *outcome = HOP_REDIRECTED;
     } else {
-        take_response(request, handles.request, deadline, sink, answer);
+        take_response(request, handle, deadline, sink, answer);
+    }
+}
+
+static hop_outcome take_hop(const naula_fetch_request *request, const url_parts *parts, int is_authorized,
+                            ULONGLONG deadline, naula_fetch_sink *sink, naula_fetch_answer *answer,
+                            wchar_t **next) {
+    winhttp_handles handles;
+    deadline_watch watch;
+    hop_outcome outcome = HOP_ANSWERED;
+    if (!open_handles(request, parts, &handles)) {
+        refuse_error(request, GetLastError(), answer);
+    } else if (!start_watch(&watch, handles.request, deadline)) {
+        naula_fetch_out_of_memory(answer);
+    } else {
+        exchange(request, parts, handles.request, is_authorized, deadline, sink, answer, next, &outcome);
+        if (stop_watch(&watch)) {
+            handles.request = NULL;
+            naula_memory_release(*next);
+            *next = NULL;
+            outcome = HOP_ANSWERED;
+            naula_fetch_deadline_passed(answer, request);
+        }
     }
     close_handles(&handles);
     return outcome;
