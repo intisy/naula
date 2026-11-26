@@ -104,14 +104,35 @@ static void rename_patches_the_name_keeping_the_number(void) {
     naula_memory_release(finish(server));
 }
 
-static void a_422_on_rename_is_refused_with_the_name_taken(void) {
-    http_route routes[1] = {route(REPOSITORY_ROUTE, 422, "{\"message\":\"Validation Failed\"}")};
+static void a_409_on_rename_is_the_name_taken_and_a_422_is_refused_by_validation(void) {
+    http_route routes[1] = {route(REPOSITORY_ROUTE, 409, "{\"message\":\"Conflict\"}")};
     http_fixture *server = serve(routes, 1);
     naula_refusal refusal = fresh_refusal();
     CHECK(github()->rename(github()->context, NULL, NUMBER, "taken", TOKEN_TEXT, &refusal) == NAULA_REFUSED);
     check_text(refusal.code, "name_taken", "a taken name");
     CHECK(strstr(refusal.detail, "taken") != NULL);
     naula_memory_release(finish(server));
+    routes[0] = route(REPOSITORY_ROUTE, 422, "{\"message\":\"Validation Failed\"}");
+    server = serve(routes, 1);
+    CHECK(github()->rename(github()->context, NULL, NUMBER, "taken", TOKEN_TEXT, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "refused_by_validation", "a name the host refused");
+    CHECK(refusal.fix != NULL && strstr(refusal.fix, "taken or reserved") != NULL);
+    naula_memory_release(finish(server));
+}
+
+static void a_308_on_a_write_is_redirected_and_never_followed(void) {
+    char location[160];
+    http_route routes[2] = {route(REPOSITORY_ROUTE, 308, ""), route("/elsewhere", 200, ARCHIVED)};
+    routes[0].extra_headers = location;
+    http_fixture *server = serve(routes, 2);
+    snprintf(location, sizeof location, "Location: http://127.0.0.1:%u/elsewhere\r\n",
+             (unsigned)http_fixture_port(server));
+    naula_refusal refusal = fresh_refusal();
+    CHECK(github()->archive(github()->context, NULL, NUMBER, TOKEN_TEXT, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "redirected", "a 308 on a write");
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "/elsewhere") == NULL);
+    naula_memory_release(log);
 }
 
 static void transfer_posts_the_new_owner(void) {
@@ -144,9 +165,9 @@ static void archive_patches_archived_true(void) {
     naula_memory_release(finish(server));
 }
 
-static naula_metadata private_metadata(void) {
+static naula_metadata visibility_metadata(const char *settings) {
     naula_metadata metadata = fresh_metadata();
-    metadata.settings = cJSON_Parse("{\"visibility\":\"private\",\"wiki\":false}");
+    metadata.settings = cJSON_Parse(settings);
     metadata.present = NAULA_METADATA_SETTINGS;
     return metadata;
 }
@@ -154,15 +175,12 @@ static naula_metadata private_metadata(void) {
 static void create_posts_to_the_org_or_the_user(void) {
     const char org_answer[] = "{\"id\":77,\"name\":\"naula\",\"owner\":{\"login\":\"spisor\"}}";
     const char user_answer[] = "{\"id\":78,\"name\":\"naula\",\"owner\":{\"login\":\"finn\"}}";
-    http_route routes[6] = {route("/orgs/spisor", 200, "{\"login\":\"spisor\"}"),
-                            route("/orgs/spisor/repos", 201, org_answer),
-                            route("/orgs/finn", 404, NOT_FOUND_BODY),
-                            route("/user", 200, "{\"login\":\"finn\"}"),
-                            route("/user/repos", 201, user_answer),
-                            route("/orgs/someone", 404, NOT_FOUND_BODY)};
-    http_fixture *server = serve(routes, 6);
+    http_route routes[5] = {route("/orgs/spisor", 200, "{\"login\":\"spisor\"}"),
+                            route("/orgs/spisor/repos", 201, org_answer), route("/orgs/finn", 404, NOT_FOUND_BODY),
+                            route("/user", 200, "{\"login\":\"finn\"}"), route("/user/repos", 201, user_answer)};
+    http_fixture *server = serve(routes, 5);
     naula_refusal refusal = fresh_refusal();
-    naula_metadata metadata = private_metadata();
+    naula_metadata metadata = visibility_metadata("{\"visibility\":\"public\",\"wiki\":false}");
     uint64_t number = 0;
     CHECK(github()->create(github()->context, NULL, "spisor", "naula", &metadata, TOKEN_TEXT, &number, &refusal) ==
           NAULA_OK);
@@ -170,16 +188,43 @@ static void create_posts_to_the_org_or_the_user(void) {
     CHECK(github()->create(github()->context, NULL, "finn", "naula", NULL, TOKEN_TEXT, &number, &refusal) ==
           NAULA_OK);
     CHECK(number == 78);
+    char *log = finish(server);
+    const char *org_post = log == NULL ? NULL : strstr(log, "POST /orgs/spisor/repos HTTP/1.1\r\n");
+    const char *user_post = log == NULL ? NULL : strstr(log, "POST /user/repos HTTP/1.1\r\n");
+    CHECK(org_post != NULL && strstr(org_post, "\r\n\r\n{\"name\":\"naula\",\"private\":false}") != NULL);
+    CHECK(user_post != NULL && strstr(user_post, "\r\n\r\n{\"name\":\"naula\",\"private\":true}") != NULL);
+    CHECK(log != NULL && strstr(log, "wiki") == NULL);
+    naula_memory_release(log);
+    naula_metadata_release(&metadata);
+}
+
+static void create_never_posts_for_an_account_that_is_neither_an_org_nor_the_token_user(void) {
+    const char user_answer[] = "{\"id\":78,\"name\":\"naula\",\"owner\":{\"login\":\"finn\"}}";
+    http_route routes[3] = {route("/orgs/someone", 404, NOT_FOUND_BODY), route("/user", 200, "{\"login\":\"finn\"}"),
+                            route("/user/repos", 201, user_answer)};
+    http_fixture *server = serve(routes, 3);
+    naula_refusal refusal = fresh_refusal();
+    uint64_t number = 5;
     CHECK(github()->create(github()->context, NULL, "someone", "naula", NULL, TOKEN_TEXT, &number, &refusal) ==
           NAULA_REFUSED);
     check_text(refusal.code, "account_not_writable", "an account that is neither an org nor the token's user");
     CHECK(number == 0);
     char *log = finish(server);
-    CHECK(log != NULL && strstr(log, "POST /orgs/spisor/repos HTTP/1.1\r\n") != NULL);
-    CHECK(log != NULL && strstr(log, "\r\n\r\n{\"name\":\"naula\",\"private\":true}") != NULL);
-    CHECK(log != NULL && strstr(log, "POST /user/repos HTTP/1.1\r\n") != NULL);
-    CHECK(log != NULL && strstr(log, "\r\n\r\n{\"name\":\"naula\"}") != NULL);
-    CHECK(log != NULL && strstr(log, "POST /orgs/someone") == NULL && strstr(log, "wiki") == NULL);
+    CHECK(log != NULL && strstr(log, "POST") == NULL);
+    naula_memory_release(log);
+}
+
+static void create_refuses_a_visibility_that_is_neither_public_nor_private_before_any_request(void) {
+    http_route routes[1] = {route("/orgs/spisor", 200, "{}")};
+    http_fixture *server = serve(routes, 1);
+    naula_refusal refusal = fresh_refusal();
+    naula_metadata metadata = visibility_metadata("{\"visibility\":\"internal\"}");
+    uint64_t number = 0;
+    CHECK(github()->create(github()->context, NULL, "spisor", "naula", &metadata, TOKEN_TEXT, &number, &refusal) ==
+          NAULA_REFUSED);
+    check_text(refusal.code, "invalid_request", "an internal visibility");
+    char *log = finish(server);
+    CHECK(log != NULL && log[0] == '\0');
     naula_memory_release(log);
     naula_metadata_release(&metadata);
 }
@@ -191,7 +236,13 @@ static void create_refuses_a_taken_name_and_an_answer_for_another_repository(voi
     uint64_t number = 0;
     CHECK(github()->create(github()->context, NULL, "spisor", "naula", NULL, TOKEN_TEXT, &number, &refusal) ==
           NAULA_REFUSED);
-    check_text(refusal.code, "name_taken", "a taken name on create");
+    check_text(refusal.code, "refused_by_validation", "a 422 on create");
+    naula_memory_release(finish(server));
+    routes[1] = route("/orgs/spisor/repos", 409, "{}");
+    server = serve(routes, 2);
+    CHECK(github()->create(github()->context, NULL, "spisor", "naula", NULL, TOKEN_TEXT, &number, &refusal) ==
+          NAULA_REFUSED);
+    check_text(refusal.code, "name_taken", "a 409 on create");
     naula_memory_release(finish(server));
     routes[1] = route("/orgs/spisor/repos", 201, "{\"id\":77,\"name\":\"naula\",\"owner\":{\"login\":\"finn\"}}");
     server = serve(routes, 2);
@@ -264,22 +315,26 @@ static void a_write_answered_with_a_redirect_is_refused_and_never_repeated(void)
     naula_memory_release(log);
 }
 
+#define WITH_HOMEPAGE "{\"id\":1296269,\"name\":\"Hello-World\",\"homepage\":\"https://naula.dev\"}"
+
 static void write_metadata_leaves_an_absent_member_alone(void) {
-    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, LIVE),
+    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, WITH_HOMEPAGE),
                             route(REPOSITORY_ROUTE "/topics", 200, "{\"names\":[\"git\",\"tools\"]}")};
     http_fixture *server = serve(routes, 2);
     naula_refusal refusal = fresh_refusal();
     naula_metadata wanted = fresh_metadata();
-    char description[] = "New words.";
+    char description[] = "Words that must not be sent.";
+    char homepage[] = "https://naula.dev";
     wanted.description = description;
-    wanted.present = NAULA_METADATA_DESCRIPTION;
+    wanted.homepage = homepage;
+    wanted.present = NAULA_METADATA_HOMEPAGE;
     uint32_t applied = 0;
     CHECK(github()->write_metadata(github()->context, NULL, NUMBER, &wanted, TOKEN_TEXT, &applied, &refusal) ==
           NAULA_OK);
-    CHECK(applied == NAULA_METADATA_DESCRIPTION);
+    CHECK(applied == NAULA_METADATA_HOMEPAGE);
     char *log = finish(server);
-    check_sole_body(log, "PATCH " REPOSITORY_ROUTE " HTTP/1.1\r\n", "{\"description\":\"New words.\"}");
-    CHECK(log != NULL && strstr(log, "/topics") == NULL);
+    check_sole_body(log, "PATCH " REPOSITORY_ROUTE " HTTP/1.1\r\n", "{\"homepage\":\"https://naula.dev\"}");
+    CHECK(log != NULL && strstr(log, "description") == NULL && strstr(log, "/topics") == NULL);
     naula_memory_release(log);
     applied = 9;
     wanted.present = 0;
@@ -292,8 +347,37 @@ static void write_metadata_leaves_an_absent_member_alone(void) {
     naula_memory_release(log);
 }
 
+static void a_member_the_host_silently_ignored_is_not_applied(void) {
+    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, WITH_HOMEPAGE),
+                            route(REPOSITORY_ROUTE "/topics", 200, "{\"names\":[\"other\"]}")};
+    http_fixture *server = serve(routes, 2);
+    naula_refusal refusal = fresh_refusal();
+    naula_metadata wanted = fresh_metadata();
+    char description[] = "Words.";
+    char homepage[] = "https://naula.dev";
+    char git[] = "git";
+    char *topics[] = {git};
+    wanted.description = description;
+    wanted.homepage = homepage;
+    wanted.topics = topics;
+    wanted.topic_count = 1;
+    wanted.settings = cJSON_Parse("{\"wiki\":false}");
+    wanted.present = NAULA_METADATA_DESCRIPTION | NAULA_METADATA_HOMEPAGE | NAULA_METADATA_SETTINGS |
+                     NAULA_METADATA_TOPICS;
+    uint32_t applied = 0;
+    CHECK(github()->write_metadata(github()->context, NULL, NUMBER, &wanted, TOKEN_TEXT, &applied, &refusal) ==
+          NAULA_OK);
+    CHECK(applied == NAULA_METADATA_HOMEPAGE);
+    naula_memory_release(finish(server));
+    cJSON_Delete(wanted.settings);
+}
+
+#define EVERY_MEMBER                                                                                                   \
+    "{\"id\":1296269,\"name\":\"Hello-World\",\"description\":\"Words.\",\"homepage\":\"https://naula.dev\","          \
+    "\"private\":false,\"default_branch\":\"main\",\"has_issues\":true,\"has_wiki\":false}"
+
 static void write_metadata_writes_every_present_member(void) {
-    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, LIVE),
+    http_route routes[2] = {route(REPOSITORY_ROUTE, 200, EVERY_MEMBER),
                             route(REPOSITORY_ROUTE "/topics", 200, "{\"names\":[\"git\",\"tools\"]}")};
     http_fixture *server = serve(routes, 2);
     naula_refusal refusal = fresh_refusal();
@@ -421,15 +505,19 @@ int main(void) {
     naula_json_use_allocator();
     naula_fetch_allow_plain_http(1);
     rename_patches_the_name_keeping_the_number();
-    a_422_on_rename_is_refused_with_the_name_taken();
+    a_409_on_rename_is_the_name_taken_and_a_422_is_refused_by_validation();
+    a_308_on_a_write_is_redirected_and_never_followed();
     transfer_posts_the_new_owner();
     archive_patches_archived_true();
     create_posts_to_the_org_or_the_user();
+    create_never_posts_for_an_account_that_is_neither_an_org_nor_the_token_user();
+    create_refuses_a_visibility_that_is_neither_public_nor_private_before_any_request();
     create_refuses_a_taken_name_and_an_answer_for_another_repository();
     writes_need_a_token_and_a_plain_name_before_any_request();
     a_404_on_a_write_is_not_permitted_while_the_repository_lives_and_not_found_once_it_is_gone();
     a_write_answered_with_a_redirect_is_refused_and_never_repeated();
     write_metadata_leaves_an_absent_member_alone();
+    a_member_the_host_silently_ignored_is_not_applied();
     write_metadata_writes_every_present_member();
     write_metadata_reports_topics_unsupported_on_a_provider_without_them();
     read_metadata_reads_every_member();

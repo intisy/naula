@@ -8,10 +8,13 @@
 #include "provider_gitea_internal.h"
 
 /**
- * @implNote Gitea and Forgejo write only by owner and name, so every write looks the number up first, checks the
- * host's version, and writes to the names that lookup answered; the host never redirects a write (the transport
- * refuses one), so a repository renamed in between answers 404 and is never written by a stale name. Each route's
- * first Gitea release is in docs/providers.md; all are older than the 1.20 the reads need.
+ * @implNote Gitea and Forgejo write only by owner and name, and no route writes by number, so the race below cannot
+ * be closed, only kept short. The number is looked up immediately before every write, and the write goes to the names
+ * that lookup answered. If in between this repository is renamed and another one is created under its old name, the
+ * write lands on that other repository: its answer then carries another number, and the write is refused
+ * `wrote_another_repository`, naming both numbers so the person can repair it. A plain rename in between answers 307
+ * (Gitea redirects an old name), which the transport never follows and which is refused `repository_changed`. Each
+ * route's first Gitea release is in docs/providers.md; all are older than the 1.20 the reads need.
  */
 typedef struct opened {
     naula_repository repository;
@@ -24,9 +27,15 @@ typedef struct write_answer {
     cJSON *json;
 } write_answer;
 
+typedef enum answer_kind { ANSWERS_NOTHING, ANSWERS_REPOSITORY } answer_kind;
+
 static const forge_metadata_names metadata_names = {"website", "topics"};
 static const missing_answer missing_repository = {"repository_changed", "repository",
                                                   "try again, the repository was renamed or moved during the read"};
+
+static naula_status refuse_names(const gitea_target *at, naula_refusal *refusal) {
+    return naula_forge_refuse_input(&at->edition->flavor, refusal, "the repository names");
+}
 
 static naula_status open_repository(const gitea_target *at, opened *repository, naula_refusal *refusal) {
     naula_status status = naula_gitea_lookup(at, &repository->repository, refusal);
@@ -35,7 +44,7 @@ static naula_status open_repository(const gitea_target *at, opened *repository, 
     }
     if (status == NAULA_OK &&
         !naula_gitea_repository_prefix(&repository->repository, repository->prefix, sizeof repository->prefix)) {
-        status = naula_forge_refuse_input(&at->edition->flavor, refusal, "the repository names");
+        status = refuse_names(at, refusal);
     }
     return status;
 }
@@ -50,19 +59,77 @@ static naula_status open_for_write(const gitea_target *at, const char *name, ope
     return status == NAULA_OK ? open_repository(at, repository, refusal) : status;
 }
 
+/** Looks the number up again, so the names a write goes to are as fresh as they can be. */
+static naula_status look_up_again(const gitea_target *at, opened *repository, naula_refusal *refusal) {
+    naula_repository_release(&repository->repository);
+    naula_status status = naula_gitea_lookup(at, &repository->repository, refusal);
+    if (status == NAULA_OK &&
+        !naula_gitea_repository_prefix(&repository->repository, repository->prefix, sizeof repository->prefix)) {
+        status = refuse_names(at, refusal);
+    }
+    return status;
+}
+
 /** A 404 on a write: gone is NOT_FOUND, renamed in between is repository_changed, and still there is not_permitted. */
 static naula_status settle_missing(const gitea_target *at, const opened *repository, naula_refusal *refusal) {
     naula_status status = naula_gitea_confirm_names(at, &repository->repository, refusal);
     return status == NAULA_OK ? naula_forge_refuse_not_permitted(&at->edition->flavor, refusal) : status;
 }
 
-/** Sends body, which it releases, to the repository's route plus suffix; a repository answer is checked by number. */
-static write_answer write_to(const gitea_target *at, const opened *repository, const char *method, const char *suffix,
-                             cJSON *body, int answers_repository, naula_refusal *refusal) {
+/**
+ * A 307 on a write: Gitea redirects a name the repository was renamed from, so a number that now answers other names
+ * is `repository_changed`; a redirect while the names still hold keeps its `redirected` refusal.
+ */
+static naula_status settle_redirect(const gitea_target *at, const opened *repository, naula_refusal *refusal) {
+    naula_refusal checked;
+    memset(&checked, 0, sizeof checked);
+    checked.size = sizeof checked;
+    naula_status status = naula_gitea_confirm_names(at, &repository->repository, &checked);
+    if (status == NAULA_OK) {
+        return NAULA_REFUSED;
+    }
+    if (status == NAULA_REFUSED && strcmp(checked.code, "repository_changed") == 0) {
+        naula_refuse(refusal, "repository_changed", "run it again once the rename has settled",
+                     "%s redirected the write: %s/%s was renamed after it was looked up", at->edition->flavor.label,
+                     repository->repository.account, repository->repository.name);
+        return NAULA_REFUSED;
+    }
+    if (refusal != NULL) {
+        *refusal = checked;
+    }
+    return status;
+}
+
+static cJSON *read_written(const gitea_target *at, const opened *repository, const forge_reply *reply,
+                           naula_status *status, naula_refusal *refusal) {
+    uint64_t answered = 0;
+    cJSON *json = naula_forge_parse_written(&at->edition->flavor, reply, &answered, status, refusal);
+    if (json != NULL && answered != at->number) {
+        naula_refuse(refusal, "wrote_another_repository",
+                     "check the repository the detail names and repair what this write changed there, then run it again",
+                     "%s wrote to %s/%s, which answered as repository %llu instead of %llu: another repository took "
+                     "the name between the lookup and the write",
+                     at->edition->flavor.label, repository->repository.account, repository->repository.name,
+                     (unsigned long long)answered, (unsigned long long)at->number);
+        *status = NAULA_REFUSED;
+        cJSON_Delete(json);
+        return NULL;
+    }
+    return json;
+}
+
+/** Looks the number up, then sends body, which it releases, to those names plus suffix. */
+static write_answer write_to(const gitea_target *at, opened *repository, const char *method, const char *suffix,
+                             cJSON *body, answer_kind kind, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
     write_answer answer = {NAULA_OUT_OF_MEMORY, 0, NULL};
     if (body == NULL) {
+        return answer;
+    }
+    answer.status = look_up_again(at, repository, refusal);
+    if (answer.status != NAULA_OK) {
+        cJSON_Delete(body);
         return answer;
     }
     snprintf(route, sizeof route, "%s%s", repository->prefix, suffix);
@@ -71,9 +138,10 @@ static write_answer write_to(const gitea_target *at, const opened *repository, c
     answer.refused_status = reply.status;
     if (answer.status == NAULA_NOT_FOUND) {
         answer.status = settle_missing(at, repository, refusal);
-    } else if (answer.status == NAULA_OK && answers_repository) {
-        uint64_t number = at->number;
-        answer.json = naula_forge_parse_written(&at->edition->flavor, &reply, &number, &answer.status, refusal);
+    } else if (answer.status == NAULA_REFUSED && answer.refused_status == 307) {
+        answer.status = settle_redirect(at, repository, refusal);
+    } else if (answer.status == NAULA_OK && kind == ANSWERS_REPOSITORY) {
+        answer.json = read_written(at, repository, &reply, &answer.status, refusal);
     }
     naula_forge_reply_release(&reply);
     return answer;
@@ -86,10 +154,11 @@ naula_status naula_gitea_rename(void *context, const char *host, uint64_t number
     naula_status status = open_for_write(&at, name, &repository, refusal);
     if (status == NAULA_OK) {
         write_answer answer =
-            write_to(&at, &repository, "PATCH", "", naula_forge_text_body("name", name), 1, refusal);
+            write_to(&at, &repository, "PATCH", "", naula_forge_text_body("name", name), ANSWERS_REPOSITORY, refusal);
         status = answer.status;
-        if (status == NAULA_REFUSED && naula_forge_is_name_conflict(answer.refused_status)) {
-            status = naula_forge_refuse_name_taken(&at.edition->flavor, repository.repository.account, name, refusal);
+        if (status == NAULA_REFUSED && naula_forge_is_name_refusal(answer.refused_status)) {
+            status = naula_forge_refuse_name(&at.edition->flavor, answer.refused_status, repository.repository.account,
+                                             name, refusal);
         } else if (answer.json != NULL) {
             status = naula_forge_check_renamed(&at.edition->flavor, answer.json, name, refusal);
         }
@@ -105,8 +174,8 @@ naula_status naula_gitea_transfer(void *context, const char *host, uint64_t numb
     opened repository = {naula_gitea_fresh_repository(), ""};
     naula_status status = open_for_write(&at, account, &repository, refusal);
     if (status == NAULA_OK) {
-        write_answer answer =
-            write_to(&at, &repository, "POST", "/transfer", naula_forge_text_body("new_owner", account), 1, refusal);
+        write_answer answer = write_to(&at, &repository, "POST", "/transfer",
+                                       naula_forge_text_body("new_owner", account), ANSWERS_REPOSITORY, refusal);
         status = answer.status;
         if (status == NAULA_REFUSED && answer.refused_status == 422) {
             naula_refuse(refusal, "transfer_refused",
@@ -125,7 +194,8 @@ naula_status naula_gitea_archive(void *context, const char *host, uint64_t numbe
     opened repository = {naula_gitea_fresh_repository(), ""};
     naula_status status = open_for_write(&at, NULL, &repository, refusal);
     if (status == NAULA_OK) {
-        write_answer answer = write_to(&at, &repository, "PATCH", "", naula_forge_archive_body(), 1, refusal);
+        write_answer answer =
+            write_to(&at, &repository, "PATCH", "", naula_forge_archive_body(), ANSWERS_REPOSITORY, refusal);
         status = answer.json != NULL ? naula_forge_check_archived(&at.edition->flavor, answer.json, refusal)
                                      : answer.status;
         cJSON_Delete(answer.json);
@@ -143,8 +213,10 @@ naula_status naula_gitea_create(void *context, const char *host, const char *acc
                                 const naula_metadata *metadata, const char *token, uint64_t *number,
                                 naula_refusal *refusal) {
     gitea_target at = {context, host, 0, token};
+    int is_private = 1;
     *number = 0;
-    naula_status status = naula_forge_require_token(&at.edition->flavor, token, refusal);
+    naula_status status =
+        naula_forge_check_creation(&at.edition->flavor, account, name, metadata, token, &is_private, refusal);
     if (status == NAULA_OK) {
         status = naula_gitea_require_version(&at, refusal);
     }
@@ -205,18 +277,24 @@ naula_status naula_gitea_read_metadata(void *context, const char *host, uint64_t
     return status;
 }
 
-static naula_status send_bodies(const gitea_target *at, const opened *repository, forge_metadata_bodies *bodies,
-                                uint32_t *applied, naula_refusal *refusal) {
+/**
+ * @implNote The topics are reported applied on the host's 204, which carries no list to compare; the PATCH answer is
+ * compared member by member.
+ */
+static naula_status send_bodies(const gitea_target *at, opened *repository, const naula_metadata *wanted,
+                                forge_metadata_bodies *bodies, uint32_t *applied, naula_refusal *refusal) {
     naula_status status = NAULA_OK;
     if (bodies->edit != NULL) {
-        write_answer answer = write_to(at, repository, "PATCH", "", bodies->edit, 1, refusal);
+        write_answer answer = write_to(at, repository, "PATCH", "", bodies->edit, ANSWERS_REPOSITORY, refusal);
         bodies->edit = NULL;
-        cJSON_Delete(answer.json);
         status = answer.status;
-        *applied |= status == NAULA_OK ? bodies->edit_members : 0u;
+        if (answer.json != NULL) {
+            *applied |= naula_forge_reflected_members(&metadata_names, wanted, bodies->edit_members, answer.json);
+        }
+        cJSON_Delete(answer.json);
     }
     if (status == NAULA_OK && bodies->topics != NULL) {
-        write_answer answer = write_to(at, repository, "PUT", "/topics", bodies->topics, 0, refusal);
+        write_answer answer = write_to(at, repository, "PUT", "/topics", bodies->topics, ANSWERS_NOTHING, refusal);
         bodies->topics = NULL;
         status = answer.status;
         *applied |= status == NAULA_OK ? (uint32_t)NAULA_METADATA_TOPICS : 0u;
@@ -236,7 +314,7 @@ naula_status naula_gitea_write_metadata(void *context, const char *host, uint64_
         status = open_for_write(&at, NULL, &repository, refusal);
     }
     if (status == NAULA_OK) {
-        status = send_bodies(&at, &repository, &bodies, applied, refusal);
+        status = send_bodies(&at, &repository, wanted, &bodies, applied, refusal);
     }
     naula_forge_metadata_bodies_release(&bodies);
     naula_repository_release(&repository.repository);

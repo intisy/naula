@@ -25,6 +25,9 @@ typedef struct write_answer {
     cJSON *json;
 } write_answer;
 
+/** What a write's answer is read as: the repository it changed, or the JSON it answers. */
+typedef enum answer_kind { ANSWERS_REPOSITORY, ANSWERS_DOCUMENT } answer_kind;
+
 static const forge_metadata_names metadata_names = {"homepage", "names"};
 
 static naula_status check_input(const number_write *at, const char *name, naula_refusal *refusal) {
@@ -42,7 +45,7 @@ static naula_status settle_missing(const number_write *at, naula_refusal *refusa
 
 /** Sends body, which it releases, to the repository's route plus suffix; a repository answer is checked by number. */
 static write_answer write_to_number(const number_write *at, const char *method, const char *suffix, cJSON *body,
-                                    int answers_repository, naula_refusal *refusal) {
+                                    answer_kind kind, naula_refusal *refusal) {
     char route[FORGE_ROUTE_SIZE];
     forge_reply reply;
     write_answer answer = {NAULA_OUT_OF_MEMORY, 0, NULL};
@@ -56,9 +59,11 @@ static write_answer write_to_number(const number_write *at, const char *method, 
     answer.refused_status = reply.status;
     if (answer.status == NAULA_NOT_FOUND) {
         answer.status = settle_missing(at, refusal);
-    } else if (answer.status == NAULA_OK && answers_repository) {
+    } else if (answer.status == NAULA_OK && kind == ANSWERS_REPOSITORY) {
         uint64_t number = at->number;
         answer.json = naula_forge_parse_written(naula_github_flavor(), &reply, &number, &answer.status, refusal);
+    } else if (answer.status == NAULA_OK && kind == ANSWERS_DOCUMENT) {
+        answer.json = naula_forge_parse_reply(naula_github_flavor(), &reply, &answer.status, refusal);
     }
     naula_forge_reply_release(&reply);
     return answer;
@@ -72,9 +77,10 @@ naula_status naula_github_rename(void *context, const char *host, uint64_t numbe
     if (status != NAULA_OK) {
         return status;
     }
-    write_answer answer = write_to_number(&at, "PATCH", "", naula_forge_text_body("name", name), 1, refusal);
-    if (answer.status == NAULA_REFUSED && naula_forge_is_name_conflict(answer.refused_status)) {
-        return naula_forge_refuse_name_taken(naula_github_flavor(), NULL, name, refusal);
+    write_answer answer =
+        write_to_number(&at, "PATCH", "", naula_forge_text_body("name", name), ANSWERS_REPOSITORY, refusal);
+    if (answer.status == NAULA_REFUSED && naula_forge_is_name_refusal(answer.refused_status)) {
+        return naula_forge_refuse_name(naula_github_flavor(), answer.refused_status, NULL, name, refusal);
     }
     if (answer.json != NULL) {
         answer.status = naula_forge_check_renamed(naula_github_flavor(), answer.json, name, refusal);
@@ -91,8 +97,8 @@ naula_status naula_github_transfer(void *context, const char *host, uint64_t num
     if (status != NAULA_OK) {
         return status;
     }
-    write_answer answer = write_to_number(&at, "POST", "/transfer", naula_forge_text_body("new_owner", account), 1,
-                                          refusal);
+    write_answer answer = write_to_number(&at, "POST", "/transfer", naula_forge_text_body("new_owner", account),
+                                          ANSWERS_REPOSITORY, refusal);
     if (answer.status == NAULA_REFUSED && answer.refused_status == 422) {
         naula_refuse(refusal, "transfer_refused",
                      "check that the new owner exists, takes the repository, and holds none of that name",
@@ -110,7 +116,7 @@ naula_status naula_github_archive(void *context, const char *host, uint64_t numb
     if (status != NAULA_OK) {
         return status;
     }
-    write_answer answer = write_to_number(&at, "PATCH", "", naula_forge_archive_body(), 1, refusal);
+    write_answer answer = write_to_number(&at, "PATCH", "", naula_forge_archive_body(), ANSWERS_REPOSITORY, refusal);
     if (answer.json != NULL) {
         answer.status = naula_forge_check_archived(naula_github_flavor(), answer.json, refusal);
     }
@@ -163,21 +169,25 @@ naula_status naula_github_read_metadata(void *context, const char *host, uint64_
     return status;
 }
 
-static naula_status send_bodies(const number_write *at, forge_metadata_bodies *bodies, uint32_t *applied,
-                                naula_refusal *refusal) {
+static naula_status send_bodies(const number_write *at, const naula_metadata *wanted, forge_metadata_bodies *bodies,
+                                uint32_t *applied, naula_refusal *refusal) {
     naula_status status = NAULA_OK;
     if (bodies->edit != NULL) {
-        write_answer answer = write_to_number(at, "PATCH", "", bodies->edit, 1, refusal);
+        write_answer answer = write_to_number(at, "PATCH", "", bodies->edit, ANSWERS_REPOSITORY, refusal);
         bodies->edit = NULL;
-        cJSON_Delete(answer.json);
         status = answer.status;
-        *applied |= status == NAULA_OK ? bodies->edit_members : 0u;
+        if (answer.json != NULL) {
+            *applied |= naula_forge_reflected_members(&metadata_names, wanted, bodies->edit_members, answer.json);
+        }
+        cJSON_Delete(answer.json);
     }
     if (status == NAULA_OK && bodies->topics != NULL) {
-        write_answer answer = write_to_number(at, "PUT", "/topics", bodies->topics, 0, refusal);
+        write_answer answer = write_to_number(at, "PUT", "/topics", bodies->topics, ANSWERS_DOCUMENT, refusal);
         bodies->topics = NULL;
         status = answer.status;
-        *applied |= status == NAULA_OK ? (uint32_t)NAULA_METADATA_TOPICS : 0u;
+        const cJSON *names = answer.json == NULL ? NULL : cJSON_GetObjectItemCaseSensitive(answer.json, "names");
+        *applied |= names != NULL && naula_forge_topics_reflected(names, wanted) ? (uint32_t)NAULA_METADATA_TOPICS : 0u;
+        cJSON_Delete(answer.json);
     }
     return status;
 }
@@ -196,7 +206,7 @@ naula_status naula_github_write_metadata(void *context, const char *host, uint64
     if (status != NAULA_OK) {
         return status;
     }
-    status = send_bodies(&at, &bodies, applied, refusal);
+    status = send_bodies(&at, wanted, &bodies, applied, refusal);
     naula_forge_metadata_bodies_release(&bodies);
     return status;
 }

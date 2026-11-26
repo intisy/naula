@@ -7,10 +7,10 @@
 #include "naula/memory.h"
 #include "naula/metadata.h"
 
-#define NAME_LENGTH_LIMIT 100u
 
 int naula_forge_is_writable_name(const char *text) {
-    return text != NULL && text[0] != '-' && strlen(text) <= NAME_LENGTH_LIMIT && naula_forge_is_name_segment(text);
+    return text != NULL && text[0] != '-' && strlen(text) <= FORGE_NAME_LENGTH_LIMIT &&
+           naula_forge_is_name_segment(text);
 }
 
 naula_status naula_forge_require_token(const forge_flavor *flavor, const char *token, naula_refusal *refusal) {
@@ -22,15 +22,22 @@ naula_status naula_forge_require_token(const forge_flavor *flavor, const char *t
     return NAULA_REFUSED;
 }
 
-int naula_forge_is_name_conflict(long status) {
+int naula_forge_is_name_refusal(long status) {
     return status == 409 || status == 422;
 }
 
-naula_status naula_forge_refuse_name_taken(const forge_flavor *flavor, const char *account, const char *name,
-                                           naula_refusal *refusal) {
-    naula_refuse(refusal, "name_taken", "pick a name the account does not hold yet, or rename the repository holding it",
-                 "%s refused the name %s%s%s as taken (or as a name it reserves)", flavor->label,
-                 account == NULL ? "" : account, account == NULL ? "" : "/", name);
+naula_status naula_forge_refuse_name(const forge_flavor *flavor, long status, const char *account, const char *name,
+                                     naula_refusal *refusal) {
+    const char *separator = account == NULL ? "" : "/";
+    if (status == 409) {
+        naula_refuse(refusal, "name_taken", "pick a name the account does not hold yet, or rename the repository holding it",
+                     "%s answered that %s%s%s is taken", flavor->label, account == NULL ? "" : account, separator, name);
+    } else {
+        naula_refuse(refusal, "refused_by_validation",
+                     "the host refused the request as invalid; the name may be taken or reserved there, so pick another",
+                     "%s refused %s%s%s as invalid (%ld)", flavor->label, account == NULL ? "" : account, separator, name,
+                     status);
+    }
     return NAULA_REFUSED;
 }
 
@@ -68,17 +75,6 @@ cJSON *naula_forge_text_body(const char *name, const char *text) {
         return NULL;
     }
     return body;
-}
-
-int naula_forge_wanted_privacy(const naula_metadata *metadata) {
-    if (metadata == NULL || (metadata->present & NAULA_METADATA_SETTINGS) == 0) {
-        return -1;
-    }
-    const char *visibility = naula_forge_text_member(metadata->settings, "visibility");
-    if (visibility == NULL) {
-        return -1;
-    }
-    return strcmp(visibility, "private") == 0 ? 1 : (strcmp(visibility, "public") == 0 ? 0 : -1);
 }
 
 int naula_forge_metadata_covers_first_shape(const naula_metadata *metadata) {
@@ -356,119 +352,65 @@ naula_status naula_forge_check_archived(const forge_flavor *flavor, const cJSON 
     return NAULA_REFUSED;
 }
 
-static naula_status refuse_account(const forge_flavor *flavor, const char *account, naula_refusal *refusal) {
-    naula_refuse(refusal, "account_not_writable",
-                 "give a token of that account, or name an org the token may create repositories in",
-                 "%s holds no org %s, and the token belongs to another user", flavor->label, account);
-    return NAULA_REFUSED;
+static int text_reflected(const cJSON *answer, const char *member, const char *wanted) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(answer, member);
+    const char *answered = cJSON_IsString(item) ? item->valuestring : (cJSON_IsNull(item) ? "" : NULL);
+    return answered != NULL && strcmp(answered, wanted == NULL ? "" : wanted) == 0;
 }
 
-static naula_status user_route(const forge_flavor *flavor, forge_send_function send, const void *where,
-                               const char *account, char *route, size_t capacity, naula_refusal *refusal) {
-    forge_reply reply;
-    naula_status status = send(where, NULL, "user", NULL, &reply, refusal);
-    if (status == NAULA_NOT_FOUND) {
-        return refuse_account(flavor, account, refusal);
-    }
-    if (status != NAULA_OK) {
-        return status;
-    }
-    cJSON *json = naula_forge_parse_reply(flavor, &reply, &status, refusal);
-    const char *login = json == NULL ? NULL : naula_forge_text_member(json, "login");
-    if (json != NULL && login == NULL) {
-        status = naula_forge_refuse_malformed(flavor, refusal, "a user with no login");
-    } else if (login != NULL && !naula_forge_equals_ignoring_case(login, account)) {
-        status = refuse_account(flavor, account, refusal);
-    } else if (login != NULL) {
-        snprintf(route, capacity, "user/repos");
-    }
-    cJSON_Delete(json);
-    naula_forge_reply_release(&reply);
-    return status;
+static int boolean_reflected(const cJSON *answer, const char *member, int wanted) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(answer, member);
+    return cJSON_IsBool(item) && (cJSON_IsTrue(item) ? 1 : 0) == wanted;
 }
 
-naula_status naula_forge_create_route(const forge_flavor *flavor, forge_send_function send, const void *where,
-                                      const char *account, char *route, size_t capacity, naula_refusal *refusal) {
-    char probe[NAME_LENGTH_LIMIT + 8];
-    forge_reply reply;
-    naula_refusal absent;
-    memset(&absent, 0, sizeof absent);
-    absent.size = sizeof absent;
-    snprintf(probe, sizeof probe, "orgs/%s", account);
-    naula_status status = send(where, NULL, probe, NULL, &reply, &absent);
-    naula_forge_reply_release(&reply);
-    if (status == NAULA_OK) {
-        snprintf(route, capacity, "orgs/%s/repos", account);
-        return NAULA_OK;
+/** Whether the answer shows the one setting as sent; a setting the host lacks was never sent and counts as shown. */
+static int setting_reflected(const cJSON *answer, const cJSON *setting) {
+    if (strcmp(setting->string, "visibility") == 0) {
+        return boolean_reflected(answer, "private", cJSON_IsString(setting) &&
+                                                        strcmp(setting->valuestring, "private") == 0);
     }
-    if (status == NAULA_NOT_FOUND) {
-        return user_route(flavor, send, where, account, route, capacity, refusal);
+    if (strcmp(setting->string, "defaultBranch") == 0) {
+        return cJSON_IsString(setting) && text_reflected(answer, "default_branch", setting->valuestring);
     }
-    if (refusal != NULL) {
-        *refusal = absent;
-    }
-    return status;
+    const char *host_name = strcmp(setting->string, "issues") == 0 ? "has_issues"
+                            : strcmp(setting->string, "wiki") == 0 ? "has_wiki"
+                                                                   : NULL;
+    return host_name == NULL || boolean_reflected(answer, host_name, cJSON_IsTrue(setting) ? 1 : 0);
 }
 
-static int is_usable_creation(const naula_metadata *metadata) {
-    return metadata == NULL || naula_forge_metadata_covers_first_shape(metadata);
+static int settings_reflected(const cJSON *answer, const cJSON *settings) {
+    for (const cJSON *setting = settings == NULL ? NULL : settings->child; setting != NULL; setting = setting->next) {
+        if (!setting_reflected(answer, setting)) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
-static cJSON *create_body(const char *name, const naula_metadata *metadata) {
-    cJSON *body = naula_forge_text_body("name", name);
-    int is_private = naula_forge_wanted_privacy(metadata);
-    if (body != NULL && is_private >= 0 && cJSON_AddBoolToObject(body, "private", is_private) == NULL) {
-        cJSON_Delete(body);
-        return NULL;
+uint32_t naula_forge_reflected_members(const forge_metadata_names *names, const naula_metadata *wanted,
+                                       uint32_t members, const cJSON *answer) {
+    uint32_t reflected = 0;
+    if ((members & NAULA_METADATA_DESCRIPTION) && text_reflected(answer, "description", wanted->description)) {
+        reflected |= NAULA_METADATA_DESCRIPTION;
     }
-    return body;
+    if ((members & NAULA_METADATA_HOMEPAGE) && text_reflected(answer, names->homepage, wanted->homepage)) {
+        reflected |= NAULA_METADATA_HOMEPAGE;
+    }
+    if ((members & NAULA_METADATA_SETTINGS) && settings_reflected(answer, wanted->settings)) {
+        reflected |= NAULA_METADATA_SETTINGS;
+    }
+    return reflected;
 }
 
-static naula_status read_created(const forge_flavor *flavor, const forge_reply *reply, const char *account,
-                                      const char *name, uint64_t *number, naula_refusal *refusal) {
-    naula_status status = NAULA_OK;
-    uint64_t answered = 0;
-    cJSON *json = naula_forge_parse_written(flavor, reply, &answered, &status, refusal);
-    if (json != NULL && !naula_forge_answers_to_the_name(json, account, name)) {
-        naula_refuse(refusal, "created_elsewhere", "check the account and the name, then look the repository up",
-                     "%s created the repository under another name than %s/%s", flavor->label, account, name);
-        status = NAULA_REFUSED;
-    } else if (json != NULL) {
-        *number = answered;
+int naula_forge_topics_reflected(const cJSON *list, const naula_metadata *wanted) {
+    if (!cJSON_IsArray(list) || (size_t)cJSON_GetArraySize(list) != wanted->topic_count) {
+        return 0;
     }
-    cJSON_Delete(json);
-    return status;
-}
-
-naula_status naula_forge_create(const forge_flavor *flavor, forge_send_function send, const void *where,
-                                const char *account, const char *name, const naula_metadata *metadata,
-                                const char *token, uint64_t *number, naula_refusal *refusal) {
-    char route[NAME_LENGTH_LIMIT + 16];
-    forge_reply reply;
-    *number = 0;
-    if (!naula_forge_is_writable_name(account) || !naula_forge_is_writable_name(name) ||
-        !is_usable_creation(metadata)) {
-        return naula_forge_refuse_input(flavor, refusal, "the account, the name or the metadata");
+    size_t index = 0;
+    for (const cJSON *topic = list->child; topic != NULL; topic = topic->next, index++) {
+        if (!cJSON_IsString(topic) || strcmp(topic->valuestring, wanted->topics[index]) != 0) {
+            return 0;
+        }
     }
-    naula_status status = naula_forge_require_token(flavor, token, refusal);
-    if (status == NAULA_OK) {
-        status = naula_forge_create_route(flavor, send, where, account, route, sizeof route, refusal);
-    }
-    cJSON *body = status == NAULA_OK ? create_body(name, metadata) : NULL;
-    if (status != NAULA_OK || body == NULL) {
-        return status != NAULA_OK ? status : NAULA_OUT_OF_MEMORY;
-    }
-    status = send(where, "POST", route, body, &reply, refusal);
-    cJSON_Delete(body);
-    if (status == NAULA_REFUSED && naula_forge_is_name_conflict(reply.status)) {
-        return naula_forge_refuse_name_taken(flavor, account, name, refusal);
-    }
-    if (status == NAULA_NOT_FOUND) {
-        return naula_forge_refuse_not_permitted(flavor, refusal);
-    }
-    if (status == NAULA_OK) {
-        status = read_created(flavor, &reply, account, name, number, refusal);
-    }
-    naula_forge_reply_release(&reply);
-    return status;
+    return 1;
 }

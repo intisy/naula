@@ -77,6 +77,10 @@ static int is_header_value(const char *text) {
 
 static int is_usable_body(const naula_fetch_request *request) {
     naula_fetch_body body = naula_fetch_request_body(request);
+    int carries_a_body = body.bytes != NULL || body.length != 0 || body.content_type != NULL;
+    if (naula_fetch_request_follows_redirects(request) && carries_a_body) {
+        return 0;
+    }
     return is_method_text(naula_fetch_request_method(request)) && (body.bytes != NULL || body.length == 0) &&
            is_header_value(body.content_type);
 }

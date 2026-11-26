@@ -13,6 +13,7 @@
 #define FORGE_SMALL_BODY_CAPACITY (256u * 1024u)
 #define FORGE_FILE_BODY_CAPACITY (2u * 1024u * 1024u)
 #define FORGE_HISTORY_BODY_CAPACITY (8u * 1024u * 1024u)
+#define FORGE_NAME_LENGTH_LIMIT 100u
 
 typedef struct forge_flavor {
     const char *label;
@@ -70,9 +71,12 @@ naula_status naula_forge_send(const forge_flavor *flavor, const char *method, co
 
 int naula_forge_is_writable_name(const char *text);
 naula_status naula_forge_require_token(const forge_flavor *flavor, const char *token, naula_refusal *refusal);
-int naula_forge_is_name_conflict(long status);
-naula_status naula_forge_refuse_name_taken(const forge_flavor *flavor, const char *account, const char *name,
-                                           naula_refusal *refusal);
+/** Whether a write's refused status speaks about the name: 409 (taken) or 422 (failed the host's validation). */
+int naula_forge_is_name_refusal(long status);
+
+/** Refuses 409 as `name_taken` and 422 as `refused_by_validation`; account may be NULL. */
+naula_status naula_forge_refuse_name(const forge_flavor *flavor, long status, const char *account, const char *name,
+                                     naula_refusal *refusal);
 naula_status naula_forge_refuse_not_permitted(const forge_flavor *flavor, naula_refusal *refusal);
 
 /**
@@ -104,27 +108,14 @@ typedef naula_status (*forge_send_function)(const void *where, const char *metho
  * org, `user/repos` when it is the token's own user, and refused `account_not_writable` otherwise, so a repository is
  * never created under the token's user in place of the account named.
  */
-/** One request of a route on the host a provider's `where` names; method NULL is GET and body NULL sends none. */
-typedef naula_status (*forge_send_function)(const void *where, const char *method, const char *route,
-                                            const cJSON *body, forge_reply *reply, naula_refusal *refusal);
-
 /**
- * The route that creates a repository under account: `orgs/<account>/repos` when the host answers the account as an
- * org, `user/repos` when it is the token's own user, and refused `account_not_writable` otherwise, so a repository is
- * never created under the token's user in place of the account named.
+ * Refuses, before any request, an account or name that is not writable, metadata whose size does not cover its first
+ * shape or whose visibility is neither public nor private, and a missing token. *is_private is the visibility to
+ * create with: private unless the metadata says public, so a repository is never public before its file says so.
  */
-/** Whether metadata may be given to create: NULL, or a struct whose size covers its first shape. */
-int naula_forge_is_usable_creation(const naula_metadata *metadata);
-
-/** The JSON object {"name", "private"?} that creates a repository, NULL when memory runs out. */
-cJSON *naula_forge_create_body(const char *name, const naula_metadata *metadata);
-
-/**
- * Reads a creation's answer into *number, refusing `created_elsewhere` when the answer is not account/name, which a
- * host that creates under the token's user in place of the account would answer.
- */
-naula_status naula_forge_read_created(const forge_flavor *flavor, const forge_reply *reply, const char *account,
-                                      const char *name, uint64_t *number, naula_refusal *refusal);
+naula_status naula_forge_check_creation(const forge_flavor *flavor, const char *account, const char *name,
+                                        const naula_metadata *metadata, const char *token, int *is_private,
+                                        naula_refusal *refusal);
 
 naula_status naula_forge_create_route(const forge_flavor *flavor, forge_send_function send, const void *where,
                                       const char *account, char *route, size_t capacity, naula_refusal *refusal);
@@ -137,8 +128,6 @@ naula_status naula_forge_create(const forge_flavor *flavor, forge_send_function 
                                 const char *account, const char *name, const naula_metadata *metadata,
                                 const char *token, uint64_t *number, naula_refusal *refusal);
 
-/** The visibility metadata names in its settings, as `private`: -1 when it names none. */
-int naula_forge_wanted_privacy(const naula_metadata *metadata);
 
 int naula_forge_metadata_covers_first_shape(const naula_metadata *metadata);
 
@@ -150,6 +139,16 @@ naula_status naula_forge_metadata_bodies(const forge_flavor *flavor, const forge
                                          const naula_metadata *wanted, forge_metadata_bodies *bodies,
                                          naula_refusal *refusal);
 void naula_forge_metadata_bodies_release(forge_metadata_bodies *bodies);
+
+/**
+ * The members of `members` the repository a PATCH answered shows as wanted, so a member the host took without error
+ * and silently ignored is not reported applied.
+ */
+uint32_t naula_forge_reflected_members(const forge_metadata_names *names, const naula_metadata *wanted,
+                                       uint32_t members, const cJSON *answer);
+
+/** Whether a topics list a host answered is the wanted one, in order. */
+int naula_forge_topics_reflected(const cJSON *list, const naula_metadata *wanted);
 
 /**
  * Fills out from a repository answer and its topics list (NULL when the host answered none). A null description or

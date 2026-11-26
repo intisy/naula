@@ -366,6 +366,19 @@ static void an_unusable_method_or_body_is_refused_before_anything_is_sent(void) 
     naula_fetch_answer answer = send_request(&missing_body, &sink);
     CHECK(answer.outcome == NAULA_FETCH_REFUSED);
     release(&answer);
+    const char *const reads[] = {"GET", NULL};
+    for (size_t index = 0; index < 2; index++) {
+        naula_fetch_request read_with_body = write_request(url, reads[index]);
+        answer = send_request(&read_with_body, &sink);
+        CHECK(answer.outcome == NAULA_FETCH_REFUSED);
+        release(&answer);
+        naula_fetch_request read_with_type = write_request(url, reads[index]);
+        read_with_type.body = NULL;
+        read_with_type.body_length = 0;
+        answer = send_request(&read_with_type, &sink);
+        CHECK(answer.outcome == NAULA_FETCH_REFUSED);
+        release(&answer);
+    }
     naula_fetch_request split_type = write_request(url, "POST");
     split_type.content_type = "application/json\r\nX-Injected: 1";
     answer = send_request(&split_type, &sink);

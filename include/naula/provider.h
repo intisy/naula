@@ -63,11 +63,12 @@ void naula_repository_list_release(naula_repository *repositories, size_t count)
  * Every write needs a token and refuses NULL, and a name or account that is not a plain name or starts with `-`,
  * before any request. `rename`, `transfer` and `archive` keep the number. A write the host refuses with a 404 is
  * NAULA_NOT_FOUND only once a lookup by number says the repository is gone; on a live one it is refused
- * `not_permitted`. A name the account already holds is refused `name_taken`. `create` sends the name and the
- * visibility, so a private repository is never public for a moment, and the caller writes the rest of `metadata`
- * with `write_metadata`. `write_metadata` writes only the members whose bit is in `wanted->present` and answers in
- * `applied` the members it wrote, also when it fails part way; a member it cannot write, such as a setting the host
- * lacks, is left out of `applied` and is not an error. `read_metadata` fills `out`, its `size` set by the caller,
+ * `not_permitted`. A 409 on a name is `name_taken`, a 422 `refused_by_validation`. `create` always sends the
+ * visibility, private unless `metadata` says public, so a repository is never public before its file says so, and the
+ * caller writes the rest of `metadata` with `write_metadata`. `write_metadata` writes only the members whose bit is
+ * in `wanted->present` and answers in `applied` the members the host shows written, also when it fails part way; a
+ * member it cannot write, such as a setting the host lacks, is left out of `applied` and is not an error. The codes
+ * are listed in docs/providers.md. `read_metadata` fills `out`, its `size` set by the caller,
  * released with naula_metadata_release.
  */
 typedef struct naula_provider {

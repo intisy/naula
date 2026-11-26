@@ -31,6 +31,10 @@
 #define RENAMED "{\"id\":16490,\"name\":\"renamed\",\"owner\":{\"login\":\"Codeberg\"},\"archived\":false}"
 #define ARCHIVED "{\"id\":16490,\"name\":\"pages-server\",\"owner\":{\"login\":\"Codeberg\"},\"archived\":true}"
 
+#define WEBSITE_ANSWER "{\"id\":16490,\"name\":\"pages-server\",\"website\":\"https://naula.dev\"}"
+#define DESCRIPTION_ANSWER "{\"id\":16490,\"name\":\"pages-server\",\"description\":\"Words.\"}"
+#define CHANGED_NAMES "{\"id\":16490,\"name\":\"moved\",\"owner\":{\"login\":\"Codeberg\"}}"
+
 static char *repository_body;
 
 static char *load(const char *name) {
@@ -126,7 +130,7 @@ static void a_422_on_rename_is_refused_with_the_name_taken(void) {
     http_fixture *server = serve(routes, 3);
     naula_refusal refusal = fresh_refusal();
     CHECK(forgejo()->rename(forgejo()->context, HOST, NUMBER, "taken", TOKEN_TEXT, &refusal) == NAULA_REFUSED);
-    check_text(refusal.code, "name_taken", "a taken name");
+    check_text(refusal.code, "refused_by_validation", "a name the host refused");
     CHECK(strstr(refusal.detail, "Codeberg/taken") != NULL);
     naula_memory_release(finish(server));
 }
@@ -208,7 +212,7 @@ static void a_404_on_a_write_settles_by_the_number(void) {
     CHECK(forgejo()->archive(forgejo()->context, HOST, NUMBER, TOKEN_TEXT, &refusal) == NAULA_REFUSED);
     check_text(refusal.code, "not_permitted", "a 404 on a live repository");
     naula_memory_release(finish(server));
-    routes[0].answer_limit = 1;
+    routes[0].answer_limit = 2;
     server = serve(routes, 4);
     CHECK(forgejo()->archive(forgejo()->context, HOST, NUMBER, TOKEN_TEXT, &refusal) == NAULA_REFUSED);
     check_text(refusal.code, "repository_changed", "renamed between the lookup and the write");
@@ -221,7 +225,7 @@ static void a_404_on_a_write_settles_by_the_number(void) {
 
 static void write_metadata_leaves_an_absent_member_alone(void) {
     http_route routes[4] = {route(REPOSITORY_ROUTE, 200, repository_body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
-                            route(PREFIX, 200, repository_body), route(PREFIX "/topics", 204, "")};
+                            route(PREFIX, 200, WEBSITE_ANSWER), route(PREFIX "/topics", 204, "")};
     http_fixture *server = serve(routes, 4);
     naula_refusal refusal = fresh_refusal();
     naula_metadata wanted = fresh_metadata();
@@ -253,7 +257,7 @@ static void write_metadata_leaves_an_absent_member_alone(void) {
 
 static void a_failure_part_way_names_what_was_written(void) {
     http_route routes[4] = {route(REPOSITORY_ROUTE, 200, repository_body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
-                            route(PREFIX, 200, repository_body), route(PREFIX "/topics", 403, "{}")};
+                            route(PREFIX, 200, DESCRIPTION_ANSWER), route(PREFIX "/topics", 403, "{}")};
     http_fixture *server = serve(routes, 4);
     naula_refusal refusal = fresh_refusal();
     naula_metadata wanted = fresh_metadata();
@@ -308,6 +312,140 @@ static void writes_need_a_token_before_any_request(void) {
     naula_memory_release(log);
 }
 
+static void a_write_answered_by_another_repository_names_both_numbers(void) {
+    const char other[] = "{\"id\":999,\"name\":\"renamed\",\"owner\":{\"login\":\"Codeberg\"}}";
+    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, repository_body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(PREFIX, 200, other)};
+    http_fixture *server = serve(routes, 3);
+    naula_refusal refusal = fresh_refusal();
+    CHECK(forgejo()->rename(forgejo()->context, HOST, NUMBER, "renamed", TOKEN_TEXT, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "wrote_another_repository", "an answer for another number");
+    CHECK(strstr(refusal.detail, "999") != NULL && strstr(refusal.detail, "16490") != NULL);
+    CHECK(strstr(refusal.detail, "Codeberg/pages-server") != NULL);
+    CHECK(refusal.fix != NULL && strstr(refusal.fix, "repair") != NULL);
+    naula_memory_release(finish(server));
+}
+
+static http_fixture *serve_a_redirected_write(http_route *routes, int status, char *location, size_t capacity) {
+    routes[2].status = status;
+    routes[2].extra_headers = location;
+    http_fixture *server = serve(routes, 5);
+    snprintf(location, capacity, "Location: http://127.0.0.1:%u/repos/Codeberg/moved\r\n",
+             (unsigned)http_fixture_port(server));
+    return server;
+}
+
+static void a_307_from_a_rename_in_between_is_repository_changed_and_any_other_redirect_is_redirected(void) {
+    char location[160];
+    http_route routes[5] = {route(REPOSITORY_ROUTE, 200, repository_body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(PREFIX, 307, ""), route(REPOSITORY_ROUTE, 200, CHANGED_NAMES),
+                            route("/repos/Codeberg/moved", 200, RENAMED)};
+    routes[0].answer_limit = 2;
+    http_fixture *server = serve_a_redirected_write(routes, 307, location, sizeof location);
+    naula_refusal refusal = fresh_refusal();
+    CHECK(forgejo()->rename(forgejo()->context, HOST, NUMBER, "renamed", TOKEN_TEXT, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "repository_changed", "a 307 after a rename in between");
+    CHECK(refusal.fix != NULL && strstr(refusal.fix, "rename has settled") != NULL);
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "/repos/Codeberg/moved") == NULL);
+    naula_memory_release(log);
+    routes[0].answer_limit = 0;
+    server = serve_a_redirected_write(routes, 307, location, sizeof location);
+    CHECK(forgejo()->archive(forgejo()->context, HOST, NUMBER, TOKEN_TEXT, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "redirected", "a 307 while the names still hold");
+    naula_memory_release(finish(server));
+    server = serve_a_redirected_write(routes, 308, location, sizeof location);
+    CHECK(forgejo()->archive(forgejo()->context, HOST, NUMBER, TOKEN_TEXT, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "redirected", "a 308 on a write");
+    log = finish(server);
+    CHECK(log != NULL && strstr(log, "/repos/Codeberg/moved") == NULL);
+    naula_memory_release(log);
+}
+
+/** The log's request lines in order, each as "METHOD path;", so a test can compare the whole sequence. */
+static void request_sequence(const char *log, char *out, size_t capacity) {
+    static const char *const methods[] = {"GET /", "PATCH /", "PUT /", "POST /"};
+    size_t used = 0;
+    out[0] = '\0';
+    for (const char *at = log; *at != '\0'; at++) {
+        for (size_t index = 0; index < 4; index++) {
+            const char *end = strncmp(at, methods[index], strlen(methods[index])) == 0 ? strstr(at, " HTTP/1.1") : NULL;
+            if (end != NULL && used + (size_t)(end - at) + 2 < capacity) {
+                memcpy(out + used, at, (size_t)(end - at));
+                used += (size_t)(end - at);
+                out[used++] = ';';
+                out[used] = '\0';
+                at = end;
+                break;
+            }
+        }
+    }
+}
+
+static void write_metadata_looks_the_number_up_right_before_each_write(void) {
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, repository_body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(PREFIX, 200, DESCRIPTION_ANSWER), route(PREFIX "/topics", 204, "")};
+    http_fixture *server = serve(routes, 4);
+    naula_refusal refusal = fresh_refusal();
+    naula_metadata wanted = fresh_metadata();
+    char description[] = "Words.";
+    char pages[] = "pages";
+    char *topics[] = {pages};
+    wanted.description = description;
+    wanted.topics = topics;
+    wanted.topic_count = 1;
+    wanted.present = NAULA_METADATA_DESCRIPTION | NAULA_METADATA_TOPICS;
+    uint32_t applied = 0;
+    CHECK(forgejo()->write_metadata(forgejo()->context, HOST, NUMBER, &wanted, TOKEN_TEXT, &applied, &refusal) ==
+          NAULA_OK);
+    CHECK(applied == (NAULA_METADATA_DESCRIPTION | NAULA_METADATA_TOPICS));
+    char *log = finish(server);
+    char sequence[512];
+    request_sequence(log == NULL ? "" : log, sequence, sizeof sequence);
+    check_text(sequence,
+               "GET " REPOSITORY_ROUTE ";GET " VERSION_ROUTE ";GET " REPOSITORY_ROUTE ";PATCH " PREFIX ";GET "
+               REPOSITORY_ROUTE ";PUT " PREFIX "/topics;",
+               "a lookup right before each write");
+    naula_memory_release(log);
+}
+
+static void create_refuses_a_bad_name_before_any_request_and_creates_private_by_default(void) {
+    const char user_answer[] = "{\"id\":92,\"name\":\"naula\",\"owner\":{\"login\":\"finn\"}}";
+    http_route routes[4] = {route(VERSION_ROUTE, 200, CODEBERG_VERSION), route("/orgs/finn", 404, NOT_FOUND_BODY),
+                            route("/user", 200, "{\"login\":\"finn\"}"), route("/user/repos", 201, user_answer)};
+    http_fixture *server = serve(routes, 4);
+    naula_refusal refusal = fresh_refusal();
+    uint64_t number = 0;
+    CHECK(forgejo()->create(forgejo()->context, HOST, "finn", "-naula", NULL, TOKEN_TEXT, &number, &refusal) ==
+          NAULA_REFUSED);
+    check_text(refusal.code, "invalid_request", "a name read as an option");
+    char *log = finish(server);
+    CHECK(log != NULL && log[0] == '\0');
+    naula_memory_release(log);
+    server = serve(routes, 4);
+    CHECK(forgejo()->create(forgejo()->context, HOST, "finn", "naula", NULL, TOKEN_TEXT, &number, &refusal) ==
+          NAULA_OK);
+    log = finish(server);
+    CHECK(log != NULL && ends_with(log, "\r\n\r\n{\"name\":\"naula\",\"private\":true}"));
+    naula_memory_release(log);
+}
+
+static void create_never_posts_for_an_account_that_is_neither_an_org_nor_the_token_user(void) {
+    const char user_answer[] = "{\"id\":92,\"name\":\"naula\",\"owner\":{\"login\":\"finn\"}}";
+    http_route routes[4] = {route(VERSION_ROUTE, 200, CODEBERG_VERSION), route("/orgs/someone", 404, NOT_FOUND_BODY),
+                            route("/user", 200, "{\"login\":\"finn\"}"), route("/user/repos", 201, user_answer)};
+    http_fixture *server = serve(routes, 4);
+    naula_refusal refusal = fresh_refusal();
+    uint64_t number = 5;
+    CHECK(forgejo()->create(forgejo()->context, HOST, "someone", "naula", NULL, TOKEN_TEXT, &number, &refusal) ==
+          NAULA_REFUSED);
+    check_text(refusal.code, "account_not_writable", "neither an org nor the token's user");
+    CHECK(number == 0);
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "POST") == NULL);
+    naula_memory_release(log);
+}
+
 int main(void) {
     naula_json_use_allocator();
     naula_fetch_allow_plain_http(1);
@@ -323,6 +461,11 @@ int main(void) {
     a_failure_part_way_names_what_was_written();
     read_metadata_reads_by_the_names_the_number_answers();
     writes_need_a_token_before_any_request();
+    a_write_answered_by_another_repository_names_both_numbers();
+    a_307_from_a_rename_in_between_is_repository_changed_and_any_other_redirect_is_redirected();
+    write_metadata_looks_the_number_up_right_before_each_write();
+    create_refuses_a_bad_name_before_any_request_and_creates_private_by_default();
+    create_never_posts_for_an_account_that_is_neither_an_org_nor_the_token_user();
     naula_memory_release(repository_body);
     return check_summary("provider_gitea_write_test");
 }

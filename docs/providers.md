@@ -18,18 +18,40 @@ live proof (plan task 20) is the first real write.
 - **A 404 on a write** is settled by looking the number up: gone is NOT_FOUND, still there is `not_permitted` (the
   token lacks admin rights), and on Gitea and Forgejo a repository renamed between the lookup and the write is
   `repository_changed`.
-- **A taken name** (409 or 422 on `create` or `rename`) is `name_taken`. The transport keeps no body of a refused
-  answer, so a name the host reserves (Gitea answers 422 for those too) reads the same; naula's own name check
-  leaves only reserved names in that gap.
+- **A name the host refuses**: 409 on `create` or `rename` is `name_taken`; 422 is `refused_by_validation`, since
+  the transport keeps no body of a refused answer and a 422 can mean a taken name, a reserved one (Gitea) or another
+  validation failure.
 - **`create`** first asks whether the account is an org (`GET orgs/{account}`); if not, it creates under the token's
   user only when `GET user` answers that same login, and is refused `account_not_writable` otherwise, so a
-  repository is never created under the token's user in place of the account named. It sends the name and the
-  visibility only, so a private repository is never public for a moment; the caller writes the rest of the metadata
-  with `write_metadata`. An answer under another account or name is refused `created_elsewhere`.
+  repository is never created under the token's user in place of the account named. It always sends `private`:
+  true unless the metadata's `settings.visibility` is `public`, so a repository is never public before its file says
+  so, and a visibility that is neither is refused `invalid_request` before any request, as `write_metadata` refuses
+  it. The caller writes the rest of the metadata with `write_metadata`. An answer under another account or name is
+  refused `created_elsewhere`.
 - **`write_metadata`** sends only the members whose bit is in `present`, and answers in `applied` what it wrote,
-  also when it fails part way. `settings` maps `visibility` to `private`, `defaultBranch` to `default_branch`,
-  `issues` to `has_issues` and `wiki` to `has_wiki`; a setting the host lacks is left out, and `settings` counts as
-  written only when one of its settings was sent. A host without topics leaves `topics` out of `applied`.
+  also when it fails part way. A member counts as written only when the repository the PATCH answers shows it as
+  sent, so a member a host takes without error and ignores is not reported applied; GitHub's topics are compared with
+  the list its PUT answers, and Gitea's are taken on its 204, which carries none. `settings` maps `visibility` to
+  `private`, `defaultBranch` to `default_branch`, `issues` to `has_issues` and `wiki` to `has_wiki`; a setting the
+  host lacks is left out, and `settings` counts as written only when one of its settings was sent and every sent one
+  shows. A host without topics leaves `topics` out of `applied`.
+
+| Code | Meaning |
+|---|---|
+| `token_needed` | a write was asked without a token |
+| `invalid_request` | an account, name, metadata or visibility naula will not send |
+| `redirected` | the host answered a write with a redirect, which is never followed |
+| `not_permitted` | a 404 on a write while the repository is live: the token lacks the rights |
+| `repository_changed` | Gitea and Forgejo: the names changed between the lookup and the write (a 404, or the 307 Gitea answers for an old name); run it again once the rename has settled |
+| `wrote_another_repository` | Gitea and Forgejo: the write's answer carries another number, so another repository took the name in between and was written; the detail names both numbers and the name to repair |
+| `name_taken` | 409 on `create` or `rename` |
+| `refused_by_validation` | 422 on `create` or `rename`: the name may be taken or reserved |
+| `rename_not_applied` | the rename's answer does not carry the new name |
+| `archive_not_applied` | the archive's answer does not say archived |
+| `transfer_refused` | 422 on `transfer`: the new owner is missing, refuses, or holds that name |
+| `account_not_writable` | `create` under an account that is neither an org nor the token's user |
+| `created_elsewhere` | `create` answered with another account or name |
+| `number_mismatch` | GitHub answered a write by number with another repository |
 - **An account rename** is refused `unsupported_operation` by `naula_refuse_account_rename` with the fix to rename it
   on the website and then change `account` in `homes` (spec 7.4, whose premise that not every provider's API offers
   it is unmeasured); naula renames no account, and `describe` has no bit for it.
@@ -80,8 +102,16 @@ only `Accept: application/json`.
 | `write_metadata` | `PATCH repos/{owner}/{repo}` with those members, then `PUT repos/{owner}/{repo}/topics` with `topics` | in the API definition; not exercised, `PUT` answers 204 |
 | `release_index` | | unsupported |
 
-Every write looks the repository up by number, reads the version, and writes to the names that lookup answered;
-`read_metadata` reads by those names and looks the number up again afterwards, as every read does.
+Gitea and Forgejo have no write route by number, so a write by name can land on another repository, and naula can
+only keep that window short and say when it happened. A write looks the number up and reads the version, then looks
+the number up again immediately before each request that writes (so `write_metadata`'s PATCH and PUT each have their
+own), and writes to the names that last lookup answered. The window left is the time between that lookup and the
+write. If inside it this repository is renamed and another repository is created under its old name, the write lands
+on that other repository: its answer carries another number, and the write is refused `wrote_another_repository` with
+both numbers and the name, so the person can check and repair it. A plain rename inside the window answers 307
+(Gitea's redirect of an old name), which is never followed: the number is looked up again and the write is refused
+`repository_changed`. `read_metadata` reads by the looked-up names and looks the number up again afterwards, as every
+read does.
 
 Every route except the number lookup is by owner and name, so each read looks the repository up by number first, builds
 the route from the names it answers, and looks it up by number again afterwards. A repository renamed in between is
