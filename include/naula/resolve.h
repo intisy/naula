@@ -48,7 +48,8 @@ typedef struct naula_verdict {
  * A resolved id. `homes` are the confirmed homes, or for a STALE answer the cached ones, and `primary` indexes them:
  * new versions come only from it. `primary_repository` and `file` are the primary's, read from its working branch,
  * and stay empty when the primary is a web home or the answer is STALE. `cache_problem` is empty, or says why the
- * cache was ignored or could not be written; neither stops an answer. A refused answer keeps its verdicts and has no
+ * cache was ignored or could not be written, naming a record by its path below the cache folder
+ * (`identities/<hex>-<anchor>.json`); neither stops an answer. A refused answer keeps its verdicts and has no
  * homes; an answer of NAULA_OUT_OF_MEMORY leaves the resolution empty. The caller sets `size`, and the resolver every
  * nested one. First shape ends at `cache_problem`.
  */

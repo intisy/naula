@@ -2010,6 +2010,31 @@ static void a_lineage_with_several_numbers_asks_about_each(void) {
     naula_resolution_release(&resolution);
 }
 
+static void a_long_cache_folder_keeps_the_cause_of_a_cache_problem(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("long-", cache, sizeof cache);
+    CHECK(strlen(cache) < 200);
+    size_t length = strlen(cache);
+    while (length < 200) {
+        cache[length++] = 'x';
+    }
+    cache[length] = '\0';
+    write_text_file(cache, "a file where the cache folder should be");
+    forge_reset();
+    add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha"), NULL));
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    const char *problem = resolution.cache_problem;
+    if (strstr(problem, "could not be written") == NULL || strstr(problem, "identities/" X "-") == NULL ||
+        strstr(problem, cache) != NULL) {
+        fprintf(stderr, "a long cache folder: the cache problem reads \"%s\"\n", problem);
+        check_failures++;
+    }
+    naula_resolution_release(&resolution);
+    remove(cache);
+}
+
 static void records_that_disagree_on_the_primary_ask(void) {
     char cache[512];
     naula_resolution resolution;
@@ -2561,6 +2586,7 @@ int main(void) {
     a_lineage_that_disagrees_on_a_number_asks();
     a_record_never_forgets_a_number_its_lineage_disputes();
     a_lineage_with_several_numbers_asks_about_each();
+    a_long_cache_folder_keeps_the_cause_of_a_cache_problem();
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();
