@@ -357,11 +357,15 @@ static int number_answer;
 static int number_calls;
 static uint64_t number_was;
 static uint64_t number_becomes;
+static uint64_t numbers_asked[8];
 
 static int fake_accept_number(void *context, const char *id, const naula_home *account, uint64_t was,
                               uint64_t becomes) {
     (void)context;
     CHECK(strncmp(id, "git:", 4) == 0 && account->account != NULL);
+    if (number_calls < 8) {
+        numbers_asked[number_calls] = was;
+    }
     number_calls++;
     number_was = was;
     number_becomes = becomes;
@@ -1885,7 +1889,7 @@ static void a_disagreeing_lineage(const char *name, uint64_t replacement, int ge
 static void expect_number_asked(const char *label, naula_status status, const naula_refusal *refusal,
                                 const naula_resolution *resolution, uint64_t replacement, int calls) {
     if (has_home(resolution, NULL, replacement) || status == NAULA_OK || number_calls != calls ||
-        number_was != 20 || number_becomes != replacement ||
+        number_was != 20 || number_becomes != replacement || strcmp(refusal->code, "number-disputed") != 0 ||
         refusal->fix == NULL || strstr(refusal->fix, "accept_number") == NULL) {
         fprintf(stderr, "%s: answered %d (%s), %d questions (was %llu becomes %llu), %s\n", label, (int)status,
                 refusal->code, number_calls, (unsigned long long)number_was, (unsigned long long)number_becomes,
@@ -1956,6 +1960,79 @@ static void a_record_never_forgets_a_number_its_lineage_disputes(void) {
     naula_status status = resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
     expect_number_asked("a dispute kept until bee is listed again", status, &refusal, &resolution, 21, 1);
     naula_resolution_release(&resolution);
+}
+
+static void reregister_bee(const char *cache, fake_repo **bee, uint64_t number, const char *genuine) {
+    naula_resolution resolution;
+    naula_refusal refusal;
+    char install[32];
+    (*bee)->gone = 1;
+    *bee = add_repo(NULL, number, "bee", "lib", genuine);
+    snprintf(install, sizeof install, "forge:%llu", (unsigned long long)number);
+    accept_answer = 1;
+    number_answer = 1;
+    CHECK(resolve_once(cache, ID, install, "forge:30", &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    accept_answer = 0;
+    number_answer = 0;
+}
+
+static void a_lineage_with_several_numbers_asks_about_each(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("asked-each", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("gamma"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    add_repo(NULL, 30, "gamma", "lib", genuine);
+    accept_answer = 0;
+    number_answer = 0;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    reregister_bee(cache, &bee, 21, genuine);
+    reregister_bee(cache, &bee, 22, genuine);
+
+    number_calls = 0;
+    memset(numbers_asked, 0, sizeof numbers_asked);
+    naula_status status = resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+    int asked_twenty = numbers_asked[0] == 20 || numbers_asked[1] == 20;
+    int asked_twenty_one = numbers_asked[0] == 21 || numbers_asked[1] == 21;
+    if (status == NAULA_OK || strcmp(refusal.code, "number-disputed") != 0 || number_calls != 2 || !asked_twenty ||
+        !asked_twenty_one || number_becomes != 22 || has_home(&resolution, NULL, 22)) {
+        fprintf(stderr, "several lineage numbers: answered %d (%s), %d questions (%llu, %llu)\n", (int)status,
+                refusal.code, number_calls, (unsigned long long)numbers_asked[0],
+                (unsigned long long)numbers_asked[1]);
+        check_failures++;
+    }
+    naula_resolution_release(&resolution);
+}
+
+static void a_long_cache_folder_keeps_the_cause_of_a_cache_problem(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("long-", cache, sizeof cache);
+    CHECK(strlen(cache) < 200);
+    size_t length = strlen(cache);
+    while (length < 200) {
+        cache[length++] = 'x';
+    }
+    cache[length] = '\0';
+    write_text_file(cache, "a file where the cache folder should be");
+    forge_reset();
+    add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha"), NULL));
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    const char *problem = resolution.cache_problem;
+    if (strstr(problem, "could not be written") == NULL || strstr(problem, "identities/" X "-") == NULL ||
+        strstr(problem, cache) != NULL) {
+        fprintf(stderr, "a long cache folder: the cache problem reads \"%s\"\n", problem);
+        check_failures++;
+    }
+    naula_resolution_release(&resolution);
+    remove(cache);
 }
 
 static void records_that_disagree_on_the_primary_ask(void) {
@@ -2508,6 +2585,8 @@ int main(void) {
     a_settled_home_read_later_releases_its_file();
     a_lineage_that_disagrees_on_a_number_asks();
     a_record_never_forgets_a_number_its_lineage_disputes();
+    a_lineage_with_several_numbers_asks_about_each();
+    a_long_cache_folder_keeps_the_cause_of_a_cache_problem();
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();

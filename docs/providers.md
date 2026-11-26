@@ -248,5 +248,5 @@ one:
   behind now cannot tell a future time from a forged one.
 
 So a lineage that disagrees on an account's number is never settled by naula: the session's `accept_number` is asked,
-naming each number the lineage holds and the one found, and without an answer the home that lists the account stays
-unverifiable. A `web` home has no number and is never asked about.
+once in a run for each number the lineage holds that differs from the one found, and without a yes to every one the
+home that lists the account is refused `number-disputed`. A `web` home has no number and is never asked about.

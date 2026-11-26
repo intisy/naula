@@ -22,7 +22,8 @@ extern "C" {
  * answers nonzero to accept a primary other than the one the cache holds, and NULL refuses every such change.
  * `accept_number` answers nonzero to take `becomes` as the number of `account` when records of this id that a new
  * `at` grew from hold another number for it (`was`), since nothing local can tell a re-registration from a genuine
- * change; NULL refuses, which leaves the home that lists the account unverifiable until it is accepted.
+ * change. It is asked once in a run for each such `was`, so one run names every candidate; NULL refuses, which leaves
+ * the home that lists the account refused as `number-disputed` until it is accepted.
  * `offline` answers from the cache alone. Every callback receives `context`. First shape ends at `context`.
  */
 typedef struct naula_session_options {

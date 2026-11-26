@@ -31,6 +31,11 @@ static char *joined_path(const char *directory, const char *hex, const char *tai
     return path;
 }
 
+/** The record's name below the cache folder, which a problem names so a long folder never cuts off its cause. */
+static const char *record_name(const char *directory, const char *path) {
+    return path + strlen(directory) + 1;
+}
+
 static char *record_path(const char *directory, const char *hex, const char *anchor) {
     char tail[NAULA_CACHE_ANCHOR_SIZE + 8];
     snprintf(tail, sizeof tail, "-%s.json", anchor);
@@ -380,7 +385,8 @@ static naula_status read_record(const cJSON *json, const char *hex, char *const 
 }
 
 /** Reads and parses the JSON at `path`; `json` NULL when the file is absent or was reported unreadable. */
-static naula_status read_json_file(const char *path, const char *hex, cJSON **json, char *problem) {
+static naula_status read_json_file(const char *directory, const char *path, const char *hex, cJSON **json,
+                                   char *problem) {
     uint8_t *bytes = NULL;
     size_t length = 0;
     const char *reason = NULL;
@@ -396,7 +402,7 @@ static naula_status read_json_file(const char *path, const char *hex, cJSON **js
     } else if (status == NAULA_NOT_FOUND) {
         status = NAULA_OK;
     } else if (status == NAULA_REFUSED) {
-        say(problem, "the cache record %s cannot be read and was ignored", path);
+        say(problem, "the cache record %s cannot be read and was ignored", record_name(directory, path));
         status = NAULA_OK;
     }
     naula_memory_release(bytes);
@@ -414,7 +420,7 @@ naula_status naula_cache_read(const char *directory, const char *hex, const char
         return NAULA_OUT_OF_MEMORY;
     }
     cJSON *json = NULL;
-    naula_status status = read_json_file(path, hex, &json, problem);
+    naula_status status = read_json_file(directory, path, hex, &json, problem);
     if (status == NAULA_OK && json != NULL) {
         status = read_record(json, hex, at, at_count, cache, problem);
     }
@@ -510,7 +516,7 @@ static naula_status replace_with(const char *directory, char *path, char *text, 
                               ? NAULA_OUT_OF_MEMORY
                               : naula_cache_file_replace(directory, path, (const uint8_t *)text, strlen(text));
     if (status == NAULA_REFUSED) {
-        say(problem, "the cache record %s could not be written", path);
+        say(problem, "the cache record %s could not be written", record_name(directory, path));
         status = NAULA_OK;
     }
     naula_memory_release(path);

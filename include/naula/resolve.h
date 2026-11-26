@@ -30,7 +30,9 @@ typedef enum naula_resolution_state {
 /**
  * What the resolver found for one home. `code` is `confirmed` or `rename-pending` (a warning) when `confirmed` is 1,
  * else one of `copy-of`, `disowned-by`, `not-in-history`, `has-parents`, `not-listed`, `not-linked`,
- * `states-another-id`, `number-changed`, `unverifiable`, `timed-out`, `unreachable` or `dead-skipped`. A home known
+ * `states-another-id`, `number-changed`, `number-disputed`, `unverifiable`, `timed-out`, `unreachable` or
+ * `dead-skipped`. `number-disputed` marks a home that lists an account the records its `at` grew from hold different
+ * numbers for, none of which the session's `accept_number` took; its fix names `accept_number`. A home known
  * only by the account a repo.json lists it under, whose number was never learned, has `number` 0 and names the
  * account in `detail`. First shape ends at `detail`.
  */
@@ -46,7 +48,8 @@ typedef struct naula_verdict {
  * A resolved id. `homes` are the confirmed homes, or for a STALE answer the cached ones, and `primary` indexes them:
  * new versions come only from it. `primary_repository` and `file` are the primary's, read from its working branch,
  * and stay empty when the primary is a web home or the answer is STALE. `cache_problem` is empty, or says why the
- * cache was ignored or could not be written; neither stops an answer. A refused answer keeps its verdicts and has no
+ * cache was ignored or could not be written, naming a record by its path below the cache folder
+ * (`identities/<hex>-<anchor>.json`); neither stops an answer. A refused answer keeps its verdicts and has no
  * homes; an answer of NAULA_OUT_OF_MEMORY leaves the resolution empty. The caller sets `size`, and the resolver every
  * nested one. First shape ends at `cache_problem`.
  */
@@ -74,8 +77,9 @@ typedef struct naula_resolution {
  * it was last written and not refused in this run. An `at` with no record yet reads only its lineage, the records
  * that confirmed a place their `at` and this one both name, fixed before any home is weighed; it accepts a number for
  * an account only when every lineage record holding that account holds it, whatever else the run refuses. When they
- * hold more than one, nothing local can say which is genuine, so the session's `accept_number` is asked once per run;
- * without its yes the listing home is unverifiable, and no first record is written that would forget the dispute.
+ * hold more than one, nothing local can say which is genuine, so the session's `accept_number` is asked once per run
+ * for each lineage number that differs from the one found; without a yes to every one the listing home is refused
+ * `number-disputed`, and no first record is written that would forget the dispute.
  * A first record keeps the lineage's agreed numbers as guards. A `local:` id is refused (`unresolvable`), since it
  * names a repo with no home and is never a dependency's target, and so is a reference by `url` (`unverifiable`),
  * which only a reader of git can follow. With nothing confirmed the refusal
