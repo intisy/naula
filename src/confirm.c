@@ -692,9 +692,11 @@ static naula_status ask_for_the_number(resolver *subject, const naula_home *home
         return NAULA_OK;
     }
     int every = 1;
-    for (size_t index = 0; index < count && every; index++) {
-        every = numbers[index] == found ||
-                session->accept_number(session->context, subject->id_text, home, numbers[index], found);
+    for (size_t index = 0; index < count; index++) {
+        if (numbers[index] != found &&
+            !session->accept_number(session->context, subject->id_text, home, numbers[index], found)) {
+            every = 0;
+        }
     }
     number_answer *remembered = &subject->answers[subject->answer_count++];
     remembered->account = home;
@@ -772,7 +774,7 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
                 return status;
             }
         }
-        settle(lister, CANDIDATE_UNKNOWN, "unverifiable",
+        settle(lister, CANDIDATE_UNKNOWN, "number-disputed",
                "the records this at grew from hold different numbers for %s account %s, and none was accepted",
                home->provider, home->account);
         lister->fix = NAULA_NUMBER_FIX;
