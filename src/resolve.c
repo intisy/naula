@@ -371,18 +371,6 @@ static naula_status check_primary_change(const resolver *subject, size_t primary
     return NAULA_REFUSED;
 }
 
-/**
- * Microseconds since the epoch: a lineage disagreement is settled by the earliest confirmation, so two runs within one
- * second must still be ordered.
- */
-static int64_t confirmation_time(void) {
-    struct timespec now;
-    if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
-        return (int64_t)time(NULL) * 1000000;
-    }
-    return (int64_t)now.tv_sec * 1000000 + (int64_t)now.tv_nsec / 1000;
-}
-
 static naula_status cache_entry(const candidate *home, int64_t now, cache_home *entry) {
     memset(entry, 0, sizeof *entry);
     entry->state = CACHE_CONFIRMED;
@@ -461,9 +449,9 @@ static naula_home account_of(const cache_home *entry) {
 }
 
 /**
- * A first record for an `at` keeps, as guards, the number its lineage settled on for each account, so the protection
+ * A first record for an `at` keeps, as guards, the one number its lineage holds for each account, so the protection
  * the lineage gave this run is not lost the moment the record exists and the lineage is no longer read. An account the
- * lineage could not settle is left out, so a record never holds two numbers for one account.
+ * lineage holds more than one number for is left out, so a record never holds two numbers for one account.
  */
 static naula_status inherit_lineage(const resolver *subject, identity_cache *next) {
     for (size_t index = 0; index < subject->lineage_count; index++) {
@@ -474,8 +462,8 @@ static naula_status inherit_lineage(const resolver *subject, identity_cache *nex
                 continue;
             }
             naula_home account = account_of(home);
-            uint64_t settled = 0;
-            if (naula_resolver_lineage_number(subject, &account, &settled) != 1 || settled != home->place.number) {
+            uint64_t numbers[2];
+            if (naula_resolver_lineage_numbers(subject, &account, numbers, 1) != 1) {
                 continue;
             }
             naula_status status = copy_cache_entry(home, CACHE_GUARD, &next->homes[next->count++]);
@@ -488,7 +476,7 @@ static naula_status inherit_lineage(const resolver *subject, identity_cache *nex
 }
 
 static naula_status build_cache(const resolver *subject, size_t primary, identity_cache *next) {
-    int64_t now = confirmation_time();
+    int64_t now = (int64_t)time(NULL);
     size_t capacity = subject->count + subject->cache.count;
     for (size_t index = 0; index < subject->lineage_count; index++) {
         capacity += subject->lineage[index].count;
@@ -532,15 +520,46 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
     return inherit_lineage(subject, next);
 }
 
+/**
+ * Whether a first record would drop an account its lineage holds more than one number for: the record holds no number
+ * for it, and once it existed the lineage would no longer be read, so the dispute would be forgotten rather than asked.
+ */
+static int leaves_a_dispute_open(const resolver *subject, const identity_cache *next) {
+    if (subject->cache.present) {
+        return 0;
+    }
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        const identity_cache *record = &subject->lineage[index];
+        for (size_t entry = 0; entry < record->count; entry++) {
+            const cache_home *home = &record->homes[entry];
+            if (home->place.kind != NAULA_HOME_PROVIDER || home->account == NULL || holds_account(next, home)) {
+                continue;
+            }
+            naula_home account = account_of(home);
+            uint64_t numbers[2];
+            if (naula_resolver_lineage_numbers(subject, &account, numbers, 1) > 1) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static naula_status write_cache(const resolver *subject, size_t primary, naula_resolution *resolution) {
     if (subject->session->cache_directory == NULL) {
         return NAULA_OK;
     }
-    if (subject->clock_behind) {
-        return NAULA_OK;
-    }
+
     identity_cache next;
     naula_status status = build_cache(subject, primary, &next);
+    if (status == NAULA_OK && leaves_a_dispute_open(subject, &next)) {
+        snprintf(resolution->cache_problem, sizeof resolution->cache_problem,
+                 "the records this at grew from hold different numbers for an account no home here settled, so no "
+                 "record of %s is written until a number is accepted",
+                 subject->id_text);
+        naula_cache_release(&next);
+        return NAULA_OK;
+    }
     if (status == NAULA_OK && !subject->cache.foreign) {
         status = naula_cache_write(subject->session->cache_directory, subject->hex, subject->anchor, &next,
                                    resolution->cache_problem);
@@ -641,7 +660,8 @@ static naula_status answer_unconfirmed(const resolver *subject, naula_resolution
     char text[PLACE_TEXT_SIZE];
     naula_candidate_text(decisive, text, sizeof text);
     status = status_for(subject, decisive);
-    naula_refuse(refusal, decisive->code, is_unheard(decisive) ? NETWORK_FIX : HOME_FIX, "%s: %s", text,
+    const char *fix = decisive->fix != NULL ? decisive->fix : (is_unheard(decisive) ? NETWORK_FIX : HOME_FIX);
+    naula_refuse(refusal, decisive->code, fix, "%s: %s", text,
                  decisive->detail);
     return status;
 }
@@ -827,24 +847,6 @@ static naula_status read_lineage(resolver *subject) {
     return status;
 }
 
-static int holds_time_after(const identity_cache *record, int64_t now) {
-    for (size_t index = 0; index < record->count; index++) {
-        if (record->homes[index].confirmed > now) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/** Whether this anchor's record or its lineage holds a confirmation later than now, which a clock set back gives. */
-static int holds_a_later_time(const resolver *subject, int64_t now) {
-    int later = holds_time_after(&subject->cache, now);
-    for (size_t index = 0; index < subject->lineage_count && !later; index++) {
-        later = holds_time_after(&subject->lineage[index], now);
-    }
-    return later;
-}
-
 static naula_status read_cache(resolver *subject, const naula_reference *reference, naula_resolution *resolution) {
     const char *directory = subject->session->cache_directory;
     naula_status status =
@@ -858,13 +860,6 @@ static naula_status read_cache(resolver *subject, const naula_reference *referen
     }
     if (status == NAULA_OK) {
         status = read_lineage(subject);
-    }
-    subject->clock_behind = status == NAULA_OK && holds_a_later_time(subject, confirmation_time());
-    if (subject->clock_behind && resolution->cache_problem[0] == '\0') {
-        snprintf(resolution->cache_problem, sizeof resolution->cache_problem,
-                 "the clock is behind a confirmation the cache holds for %s: no record is written and no "
-                 "disagreement settled",
-                 subject->id_text);
     }
     return status;
 }

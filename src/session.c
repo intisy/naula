@@ -79,6 +79,7 @@ naula_status naula_session_open(const naula_session_options *options, naula_sess
     }
     opened->token_for = options->token_for;
     opened->accept_primary = options->accept_primary;
+    opened->accept_number = options->accept_number;
     opened->offline = options->offline;
     opened->context = options->context;
     *session = opened;

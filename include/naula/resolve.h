@@ -73,10 +73,12 @@ typedef struct naula_resolution {
  * never demotes a home in it; and it answers STALE when a home could not be heard, serving only homes confirmed when
  * it was last written and not refused in this run. An `at` with no record yet reads only its lineage, the records
  * that confirmed a place their `at` and this one both name, fixed before any home is weighed; it accepts a number for
- * an account only when every lineage record holding that account holds it, whatever else the run refuses, and its
- * first record keeps those numbers as guards. A `local:` id is refused (`unresolvable`), since it names a repo with
- * no home and is never a dependency's target, and so is a reference by `url` (`unverifiable`), which only a reader
- * of git can follow. With nothing confirmed the refusal
+ * an account only when every lineage record holding that account holds it, whatever else the run refuses. When they
+ * hold more than one, nothing local can say which is genuine, so the session's `accept_number` is asked once per run;
+ * without its yes the listing home is unverifiable, and no first record is written that would forget the dispute.
+ * A first record keeps the lineage's agreed numbers as guards. A `local:` id is refused (`unresolvable`), since it
+ * names a repo with no home and is never a dependency's target, and so is a reference by `url` (`unverifiable`),
+ * which only a reader of git can follow. With nothing confirmed the refusal
  * carries the verdict of the first home `at` names: NAULA_TIMED_OUT or NAULA_UNREACHABLE when that home could not be
  * heard, and NAULA_NOT_FOUND only when every place `at` names is gone. A primary other than the one the record
  * confirmed needs the session's `accept_primary` (`primary-changed`); with no record of its own, the lineage sets the

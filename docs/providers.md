@@ -188,21 +188,19 @@ supports no `NAULA_OP_` operation, since a domain has no number to look up.
   copy. The transport still marks the case in `naula_fetch_answer.host_unresolved`, which only picks the refusal code.
 - A document for another id is refused `document_for_another_id`; one that is not an identity document is MALFORMED.
 
-## Repository numbers follow creation order
+## Nothing local orders a re-registration
 
-The resolver settles two of a consumer's records that hold different numbers for one account only when the number
-confirmed earlier is also the lower one, since a host numbers repositories in the order it creates them and a
-repository made at a re-registered account is always newer than the one it replaces. This is an assumption about
-each host, stated with what supports it:
+When an account is deleted and registered again, the repository made there has a new number. A consumer with its
+own record refuses that number as `number-changed`. Two of an id's records can also disagree on an account's number,
+when one consumer's first contact took the new repository. Nothing on the machine says which number is the genuine
+one:
 
-- GitHub: `id` is not documented as sequential. Measured 2026-11-26: `torvalds/linux`, created 2011-09-04, is 2325298;
-  `intisy/naula`, created 2026-11-25, is 1472199689; every repository read while building the providers fits the same
-  order.
-- Gitea: `repository.id` is the table's auto-increment primary key, `ID int64 xorm:"pk autoincr"` in
-  `models/repo/repo.go` (line 128 at v1.22.0).
-- Forgejo: the same field, `ID int64 xorm:"pk autoincr"` in `models/repo/repo.go` (line 135 on the `forgejo` branch,
-  read 2026-11-26).
-- A `web` home has no number and never settles a disagreement.
+- Numbers do not order it. GitHub does not document its repository ids as sequential, and a repository transferred
+  into the re-registered account keeps its older, lower number; Gitea and Forgejo number a repository when it is made,
+  which a transfer keeps too.
+- Confirmation times do not order it. A record written while the clock was behind carries early times, and a clock
+  behind now cannot tell a future time from a forged one.
 
-A host that ever reused or reordered numbers would turn this into a refusal at worst: the resolver also requires the
-earlier confirmation, and when the two signals disagree it refuses both numbers.
+So a lineage that disagrees on an account's number is never settled by naula: the session's `accept_number` is asked,
+naming each number the lineage holds and the one found, and without an answer the home that lists the account stays
+unverifiable. A `web` home has no number and is never asked about.

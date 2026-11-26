@@ -9,6 +9,7 @@
 #include "resolve_internal.h"
 
 #define FORK_DEPTH_LIMIT 8u
+#define LINEAGE_NUMBER_LIMIT 16u
 #define CANDIDATE_LIMIT 64u
 #define PLACE_TEXT_SIZE 160
 #define WORKING_BRANCH "development"
@@ -557,14 +558,9 @@ static int record_number(const identity_cache *record, const naula_home *home, u
     return found;
 }
 
-int naula_resolver_lineage_number(const resolver *subject, const naula_home *home, uint64_t *number) {
-    int any = 0;
-    int all_same = 1;
-    int tie = 0;
-    uint64_t first = 0;
-    uint64_t earliest_number = 0;
-    uint64_t lowest_number = 0;
-    int64_t earliest = 0;
+size_t naula_resolver_lineage_numbers(const resolver *subject, const naula_home *home, uint64_t *numbers,
+                                      size_t capacity) {
+    size_t count = 0;
     for (size_t index = 0; index < subject->lineage_count; index++) {
         const identity_cache *record = &subject->lineage[index];
         for (size_t entry = 0; entry < record->count; entry++) {
@@ -572,39 +568,27 @@ int naula_resolver_lineage_number(const resolver *subject, const naula_home *hom
             if (!guards_account(cached, home)) {
                 continue;
             }
-            if (!any) {
-                any = 1;
-                first = earliest_number = lowest_number = cached->place.number;
-                earliest = cached->confirmed;
+            size_t seen = 0;
+            while (seen < count && seen < capacity && numbers[seen] != cached->place.number) {
+                seen++;
+            }
+            if (seen < count) {
                 continue;
             }
-            all_same &= cached->place.number == first;
-            lowest_number = cached->place.number < lowest_number ? cached->place.number : lowest_number;
-            if (cached->confirmed < earliest) {
-                earliest = cached->confirmed;
-                earliest_number = cached->place.number;
-                tie = 0;
-            } else if (cached->confirmed == earliest && cached->place.number != earliest_number) {
-                tie = 1;
+            if (count == capacity) {
+                return capacity + 1;
             }
+            numbers[count++] = cached->place.number;
         }
     }
-    if (!any) {
-        return 0;
-    }
-    *number = all_same ? first : earliest_number;
-    if (all_same) {
-        return 1;
-    }
-    return !tie && earliest_number == lowest_number && !subject->clock_behind ? 1 : 2;
+    return count;
 }
 
 /**
  * The number a listed account was confirmed at: this anchor's own record's, its confirmed home before its guards,
- * or with none, the lineage's settled number. The lineage is fixed before any home is weighed, and its numbers
+ * or with none, the one number its lineage holds. The lineage is fixed before any home is weighed, and its numbers
  * refuse a different number for the whole run whatever else the run refuses. `disagree` is set when the record's
- * guards hold different numbers, or the lineage's cannot be settled, which refuses every number for the account,
- * failing closed.
+ * guards or the lineage's records hold more than one number for the account, which only the session can settle.
  */
 static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number, int *disagree) {
     *disagree = 0;
@@ -620,9 +604,13 @@ static int cache_number(const resolver *subject, const naula_home *home, uint64_
         *disagree = holds == 2;
         return holds != 0;
     }
-    int settled = naula_resolver_lineage_number(subject, home, number);
-    *disagree = settled == 2;
-    return settled != 0;
+    uint64_t numbers[LINEAGE_NUMBER_LIMIT];
+    size_t count = naula_resolver_lineage_numbers(subject, home, numbers, LINEAGE_NUMBER_LIMIT);
+    if (count == 1) {
+        *number = numbers[0];
+    }
+    *disagree = count > 1;
+    return count != 0;
 }
 
 /**
@@ -677,6 +665,45 @@ static naula_status note_home(resolver *subject, const naula_home *home, uint64_
  * re-registered account never stands in for the home it replaced. When neither is known, or the provider could not
  * be heard, `lister` is settled and 0 answered.
  */
+/**
+ * Asks the session to take `found` for an account the lineage holds other numbers for, once per lineage number that
+ * differs from it and once per run, however many homes list the account; `accepted` only when every one was
+ * accepted. Only a lineage of a new `at` is asked: a number that
+ * differs from this anchor's own record is the re-registration itself, and is refused without asking.
+ */
+static naula_status ask_for_the_number(resolver *subject, const naula_home *home, uint64_t found, int *accepted) {
+    uint64_t numbers[LINEAGE_NUMBER_LIMIT];
+    const naula_session *session = subject->session;
+    *accepted = 0;
+    if (subject->cache.present || found == 0 || session->accept_number == NULL) {
+        return NAULA_OK;
+    }
+    for (size_t index = 0; index < subject->answer_count; index++) {
+        const number_answer *answer = &subject->answers[index];
+        if (answer->found == found && strcmp(answer->account->provider, home->provider) == 0 &&
+            naula_resolver_same_host(home->provider, answer->account->host, home->host) &&
+            naula_resolver_equals_ignoring_case(answer->account->account, home->account)) {
+            *accepted = answer->accepted;
+            return NAULA_OK;
+        }
+    }
+    size_t count = naula_resolver_lineage_numbers(subject, home, numbers, LINEAGE_NUMBER_LIMIT);
+    if (count > LINEAGE_NUMBER_LIMIT || subject->answer_count == NAULA_NUMBER_ANSWER_LIMIT) {
+        return NAULA_OK;
+    }
+    int every = 1;
+    for (size_t index = 0; index < count && every; index++) {
+        every = numbers[index] == found ||
+                session->accept_number(session->context, subject->id_text, home, numbers[index], found);
+    }
+    number_answer *remembered = &subject->answers[subject->answer_count++];
+    remembered->account = home;
+    remembered->found = found;
+    remembered->accepted = every;
+    *accepted = every;
+    return NAULA_OK;
+}
+
 static naula_status listed_number(resolver *subject, candidate *lister, const naula_home *home, uint64_t *number) {
     char detail[NAULA_RESOLVE_DETAIL_SIZE];
     size_t index = 0;
@@ -724,6 +751,15 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
         }
     }
     if (known && disagree) {
+        int accepted = 0;
+        naula_status asked = ask_for_the_number(subject, home, found, &accepted);
+        if (asked != NAULA_OK) {
+            return asked;
+        }
+        if (accepted) {
+            *number = found;
+            return NAULA_OK;
+        }
         if (found != 0) {
             snprintf(detail, sizeof detail, "the records %s/%s was confirmed in before hold different numbers",
                      home->account, name);
@@ -734,8 +770,9 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
             }
         }
         settle(lister, CANDIDATE_UNKNOWN, "unverifiable",
-               "the records this at grew from hold different numbers for %s account %s", home->provider,
-               home->account);
+               "the records this at grew from hold different numbers for %s account %s, and none was accepted",
+               home->provider, home->account);
+        lister->fix = NAULA_NUMBER_FIX;
         return NAULA_OK;
     }
     if (known) {

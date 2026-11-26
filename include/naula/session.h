@@ -20,6 +20,9 @@ extern "C" {
  * installer's way. `token_for` answers a token for a provider word and host, or NULL for none: naula reads it during
  * the call it was asked for and never copies it, so the caller decides how long a secret lives. `accept_primary`
  * answers nonzero to accept a primary other than the one the cache holds, and NULL refuses every such change.
+ * `accept_number` answers nonzero to take `becomes` as the number of `account` when records of this id that a new
+ * `at` grew from hold another number for it (`was`), since nothing local can tell a re-registration from a genuine
+ * change; NULL refuses, which leaves the home that lists the account unverifiable until it is accepted.
  * `offline` answers from the cache alone. Every callback receives `context`. First shape ends at `context`.
  */
 typedef struct naula_session_options {
@@ -29,6 +32,7 @@ typedef struct naula_session_options {
     const naula_history *history;
     const char *(*token_for)(void *context, const char *provider, const char *host);
     int (*accept_primary)(void *context, const char *id, const naula_place *was, const naula_place *becomes);
+    int (*accept_number)(void *context, const char *id, const naula_home *account, uint64_t was, uint64_t becomes);
     int offline;
     void *context;
 } naula_session_options;
