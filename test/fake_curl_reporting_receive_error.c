@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,6 +69,36 @@ int curl_easy_perform(void *curl) {
         return RECEIVE_ERROR;
     }
     return handle->body_function(body, 1, 5, handle->body_data) == 5 ? 0 : RECEIVE_ERROR;
+}
+
+typedef enum { CURLVERSION_FIRST = 0 } CURLversion;
+
+typedef struct curl_version_info_data {
+    CURLversion age;
+    const char *version;
+    unsigned int version_num;
+} curl_version_info_data;
+
+/** Reports the version NAULA_FAKE_CURL_VERSION names as major.minor.patch, 8.5.0 when it is not set. */
+curl_version_info_data *curl_version_info(CURLversion age) {
+    static char text[32];
+    static curl_version_info_data info;
+    const char *named = getenv("NAULA_FAKE_CURL_VERSION");
+    unsigned major = 8;
+    unsigned minor = 5;
+    unsigned patch = 0;
+    (void)age;
+    if (named != NULL) {
+        char *end = NULL;
+        major = (unsigned)strtoul(named, &end, 10);
+        minor = end != NULL && *end == '.' ? (unsigned)strtoul(end + 1, &end, 10) : 0;
+        patch = end != NULL && *end == '.' ? (unsigned)strtoul(end + 1, &end, 10) : 0;
+    }
+    snprintf(text, sizeof text, "%u.%u.%u", major, minor, patch);
+    info.age = CURLVERSION_FIRST;
+    info.version = text;
+    info.version_num = (major << 16) | (minor << 8) | patch;
+    return &info;
 }
 
 void curl_easy_cleanup(void *curl) {

@@ -21,7 +21,9 @@ lists by a relative address resolves against. naula names no asset itself: the c
   resolve is UNREACHABLE (`host_not_resolved`) and a timeout TIMED_OUT, as for every read.
 - **The token goes to the host the home names and nowhere else.** The asset's bytes are read from an address naula
   builds on that host, never from the `browser_download_url` an answer carries, and a redirect to another host is
-  followed without the token, as the transport does for every GET.
+  followed without the token, as the transport does for every GET. On Linux and macOS that rests on libcurl 7.58 or
+  later, which drops a custom Authorization header when a redirect changes host; through an older libcurl a request
+  with a token is refused before it is sent, naming the version, and one without a token still goes.
 
 | Code | Meaning |
 |---|---|
