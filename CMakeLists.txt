@@ -35,7 +35,7 @@ else()
     set(naula_cache_platform_source src/cache_file_posix.c)
     set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
-set(naula_sources src/status.c src/id.c src/sha256.c src/home.c src/provider_registry.c src/forge_common.c src/forge_write.c src/forge_create.c src/provider_github.c src/provider_github_write.c src/provider_gitea.c src/provider_gitea_write.c src/provider_web.c src/json.c src/json_grammar.c src/metadata.c src/repo_file.c src/repo_file_common.c src/repo_file_org.c src/repo_file_write.c src/repo_file_format_one.c src/transport.c src/transport_sink.c ${naula_transport_platform_source} src/session.c src/history_provider.c src/confirm.c src/resolve.c src/cache.c ${naula_cache_platform_source})
+set(naula_sources src/status.c src/id.c src/sha256.c src/home.c src/provider_registry.c src/forge_common.c src/forge_write.c src/forge_create.c src/provider_github.c src/provider_github_write.c src/provider_gitea.c src/provider_gitea_write.c src/provider_web.c src/json.c src/json_grammar.c src/metadata.c src/repo_file.c src/repo_file_common.c src/repo_file_org.c src/repo_file_write.c src/repo_file_format_one.c src/repo_file_rules.c src/transport.c src/transport_sink.c ${naula_transport_platform_source} src/session.c src/history_provider.c src/confirm.c src/resolve.c src/cache.c ${naula_cache_platform_source})
 
 add_library(naula STATIC ${naula_sources})
 target_include_directories(naula PUBLIC include)
@@ -77,6 +77,9 @@ naula_strict_warnings(naula_allocator_counting)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/allocation_check.cmake)
 naula_refuse_plain_allocation(${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+include(GNUInstallDirs)
+install(FILES schema/repo.schema.json DESTINATION ${CMAKE_INSTALL_DATADIR}/naula)
 
 if(NAULA_TESTS)
     enable_testing()

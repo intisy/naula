@@ -23,6 +23,9 @@ naula_status repo_file_refuse(naula_refusal *refusal, const member_path *path, c
 /** Refuses a non-object, a member written twice and a member not in the NULL-terminated `allowed`. */
 naula_status repo_file_check_members(const cJSON *object, const member_path *path, const char *const *allowed,
                                      naula_refusal *refusal);
+/** repo_file_check_members with the members the rule table names for the schema object at `location`. */
+naula_status repo_file_check_schema_members(const cJSON *object, const member_path *path, const char *location,
+                                            naula_refusal *refusal);
 
 /** A string member through `is_valid`, copied into `out`; an absent member leaves `out` NULL. */
 naula_status repo_file_read_text(const cJSON *object, const member_path *path, const char *name,
@@ -33,10 +36,22 @@ naula_status repo_file_require(const cJSON *object, const member_path *path, con
 
 /** One path segment that git and every system can hold: not `.git`, no trailing dot, no Windows device name. */
 int repo_file_is_folder_name(const char *text);
+int repo_file_is_repo_name(const char *text);
 int repo_file_is_import_name(const char *text);
 int repo_file_is_commit(const char *text);
 int repo_file_is_relative_path(const char *text);
+int repo_file_is_topic(const char *text);
+int repo_file_is_registry(const char *text);
+int repo_file_is_one_line(const char *text);
 int repo_file_is_any_text(const char *text);
+
+/** A repo's own id: git:<hex> or local:<name>, naming no path inside a repo. */
+int repo_file_is_own_id(const char *text);
+int repo_file_is_reference_id(const char *text);
+/** A reference to an org's rules repo: a git: id naming no path, since local: has no home to hold rules. */
+int repo_file_is_org_reference_id(const char *text);
+int repo_file_names_local(const char *text);
+int repo_file_names_git(const char *text);
 
 /** Allocates `count` zeroed elements; NULL for a count of zero, and for no memory, which `count` tells apart. */
 void *repo_file_allocate_array(size_t count, size_t element_size);

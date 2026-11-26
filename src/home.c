@@ -4,14 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "home_internal.h"
 #include "naula/memory.h"
+#include "repo_file_rules.h"
 
-#define WORD_LIMIT 32u
-#define ACCOUNT_LIMIT 100u
-#define HOST_LIMIT 255u
-#define URL_LIMIT 2048u
-#define NUMBER_DIGITS_LIMIT 19u
-#define PORT_DIGITS_LIMIT 5u
+#define WORD_LIMIT ((size_t)REPO_FILE_PROVIDER_LENGTH_LIMIT)
+#define ACCOUNT_LIMIT ((size_t)REPO_FILE_ACCOUNT_LENGTH_LIMIT)
+#define HOST_LIMIT ((size_t)REPO_FILE_DOMAIN_LENGTH_LIMIT)
+#define URL_LIMIT ((size_t)REPO_FILE_URL_LENGTH_LIMIT)
+#define NUMBER_DIGITS_LIMIT ((size_t)REPO_FILE_NUMBER_DIGITS_LIMIT)
+#define PORT_DIGITS_LIMIT ((size_t)REPO_FILE_PORT_DIGITS_LIMIT)
 #define PLACE_TEXT_SIZE 2304
 #define PLACE_HOST_SIZE 300
 
@@ -107,6 +109,26 @@ static int is_git_url(const char *text) {
         }
     }
     return 1;
+}
+
+int naula_home_is_provider(const char *text) {
+    return strcmp(text, "web") != 0 && is_word(text, strlen(text));
+}
+
+int naula_home_is_account(const char *text) {
+    return is_account(text, strlen(text));
+}
+
+int naula_home_is_domain(const char *text) {
+    return is_domain(text, strlen(text));
+}
+
+int naula_home_is_host(const char *text) {
+    return is_host(text, strlen(text));
+}
+
+int naula_home_is_git_url(const char *text) {
+    return is_git_url(text);
 }
 
 static char *duplicate_range(const char *text, size_t length) {
@@ -213,23 +235,23 @@ static naula_status check_web_home(const home_members *members, naula_refusal *r
     if (members->domain == NULL || members->account != NULL || members->host != NULL) {
         return refuse_home(refusal, "a %s home names a domain and nothing else", "web");
     }
-    if (!is_domain(members->domain, strlen(members->domain))) {
+    if (!naula_home_is_domain(members->domain)) {
         return refuse_home(refusal, "the domain %s is not a bare domain name", members->domain);
     }
     return NAULA_OK;
 }
 
 static naula_status check_provider_home(const home_members *members, naula_refusal *refusal) {
-    if (!is_word(members->provider, strlen(members->provider))) {
+    if (!naula_home_is_provider(members->provider)) {
         return refuse_home(refusal, "the provider %s is not a provider word", members->provider);
     }
     if (members->account == NULL || members->domain != NULL) {
         return refuse_home(refusal, "the %s home names an account and no domain", members->provider);
     }
-    if (!is_account(members->account, strlen(members->account))) {
+    if (!naula_home_is_account(members->account)) {
         return refuse_home(refusal, "the account %s is not an account name", members->account);
     }
-    if (members->host != NULL && !is_host(members->host, strlen(members->host))) {
+    if (members->host != NULL && !naula_home_is_host(members->host)) {
         return refuse_home(refusal, "the host %s is not a host name", members->host);
     }
     return NAULA_OK;
@@ -287,25 +309,6 @@ naula_status naula_home_from_json(const cJSON *json, naula_home *home, naula_ref
     return NAULA_OK;
 }
 
-static naula_status read_number(const char *text, const char *digits, uint64_t *number, naula_refusal *refusal) {
-    size_t length = strlen(digits);
-    if (length == 0 || length > NUMBER_DIGITS_LIMIT) {
-        return refuse_place(refusal, text, "carries no repository number");
-    }
-    uint64_t value = 0;
-    for (size_t index = 0; index < length; index++) {
-        if (!is_digit(digits[index])) {
-            return refuse_place(refusal, text, "carries no repository number");
-        }
-        value = value * 10u + (uint64_t)(digits[index] - '0');
-    }
-    if (value == 0) {
-        return refuse_place(refusal, text, "carries the number 0, which is no repository");
-    }
-    *number = value;
-    return NAULA_OK;
-}
-
 typedef struct place_parts {
     const char *word;
     size_t word_length;
@@ -339,9 +342,71 @@ static int split_place(const char *text, place_parts *parts) {
     return 1;
 }
 
+static int split_named_place(const char *text, place_parts *parts) {
+    return strstr(text, "://") == NULL && split_place(text, parts) && is_word(parts->word, parts->word_length);
+}
+
+static int is_web_word(const place_parts *parts) {
+    return parts->word_length == 3 && strncmp(parts->word, "web", 3) == 0;
+}
+
+static int is_digit_run(const char *digits, size_t length) {
+    if (length == 0 || length > NUMBER_DIGITS_LIMIT) {
+        return 0;
+    }
+    for (size_t index = 0; index < length; index++) {
+        if (!is_digit(digits[index])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int is_zero_run(const char *digits, size_t length) {
+    return is_digit_run(digits, length) && strspn(digits, "0") == length;
+}
+
+static int is_place_number(const char *digits) {
+    size_t length = strlen(digits);
+    return is_digit_run(digits, length) && !is_zero_run(digits, length);
+}
+
+static int is_numbered_parts(const place_parts *parts) {
+    return is_place_number(parts->rest) && (parts->host == NULL || is_host(parts->host, parts->host_length));
+}
+
+static int is_web_parts(const place_parts *parts) {
+    return parts->host == NULL && is_domain(parts->rest, strlen(parts->rest));
+}
+
+int naula_home_is_numbered_place(const char *text) {
+    place_parts parts;
+    return split_named_place(text, &parts) && !is_web_word(&parts) && is_numbered_parts(&parts);
+}
+
+int naula_home_is_web_place(const char *text) {
+    place_parts parts;
+    return split_named_place(text, &parts) && is_web_word(&parts) && is_web_parts(&parts);
+}
+
+static const char *numbered_place_fault(const place_parts *parts) {
+    if (is_zero_run(parts->rest, strlen(parts->rest))) {
+        return "carries the number 0, which is no repository";
+    }
+    return is_place_number(parts->rest) ? "names a host that is not a host name" : "carries no repository number";
+}
+
+static uint64_t number_value(const char *digits) {
+    uint64_t value = 0;
+    for (const char *digit = digits; *digit != '\0'; digit++) {
+        value = value * 10u + (uint64_t)(*digit - '0');
+    }
+    return value;
+}
+
 static naula_status fill_web_place(const char *text, const place_parts *parts, naula_place *place,
                                    naula_refusal *refusal) {
-    if (parts->host != NULL || !is_domain(parts->rest, strlen(parts->rest))) {
+    if (!is_web_parts(parts)) {
         return refuse_place(refusal, text, "does not name a bare web domain");
     }
     place->kind = NAULA_HOME_WEB;
@@ -351,13 +416,10 @@ static naula_status fill_web_place(const char *text, const place_parts *parts, n
 
 static naula_status fill_numbered_place(const char *text, const place_parts *parts, naula_place *place,
                                         naula_refusal *refusal) {
-    naula_status status = read_number(text, parts->rest, &place->number, refusal);
-    if (status != NAULA_OK) {
-        return status;
+    if (!is_numbered_parts(parts)) {
+        return refuse_place(refusal, text, numbered_place_fault(parts));
     }
-    if (parts->host != NULL && !is_host(parts->host, parts->host_length)) {
-        return refuse_place(refusal, text, "names a host that is not a host name");
-    }
+    place->number = number_value(parts->rest);
     place->kind = NAULA_HOME_PROVIDER;
     place->provider = duplicate_range(parts->word, parts->word_length);
     place->host = parts->host == NULL ? NULL : duplicate_range(parts->host, parts->host_length);
@@ -378,11 +440,11 @@ static naula_status fill_place(const char *text, naula_place *place, naula_refus
     if (strstr(text, "://") != NULL) {
         return fill_url_place(text, place, refusal);
     }
-    if (!split_place(text, &parts) || !is_word(parts.word, parts.word_length)) {
+    if (!split_named_place(text, &parts)) {
         return refuse_place(refusal, text, "is not <provider>:<number>, web:<domain> or a git url");
     }
-    int is_web = parts.word_length == 3 && strncmp(parts.word, "web", 3) == 0;
-    return is_web ? fill_web_place(text, &parts, place, refusal) : fill_numbered_place(text, &parts, place, refusal);
+    return is_web_word(&parts) ? fill_web_place(text, &parts, place, refusal)
+                               : fill_numbered_place(text, &parts, place, refusal);
 }
 
 naula_status naula_place_parse(const char *text, naula_place *place, naula_refusal *refusal) {
