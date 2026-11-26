@@ -22,6 +22,7 @@ typedef SOCKET fixture_socket;
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -33,6 +34,28 @@ typedef int fixture_socket;
 #endif
 
 #define REQUEST_LIMIT 8192
+
+#if defined(_WIN32)
+typedef volatile LONG fixture_flag;
+
+static void raise_flag(fixture_flag *flag) {
+    InterlockedExchange(flag, 1);
+}
+
+static int is_raised(fixture_flag *flag) {
+    return InterlockedCompareExchange(flag, 0, 0) != 0;
+}
+#else
+typedef atomic_int fixture_flag;
+
+static void raise_flag(fixture_flag *flag) {
+    atomic_store(flag, 1);
+}
+
+static int is_raised(fixture_flag *flag) {
+    return atomic_load(flag) != 0;
+}
+#endif
 #define LOG_LIMIT 65536
 
 struct http_fixture {
@@ -42,7 +65,7 @@ struct http_fixture {
     int is_proxy;
     fixture_socket listener;
     unsigned short port;
-    volatile int stopping;
+    fixture_flag stopping;
     char log[LOG_LIMIT];
     size_t log_length;
 #if defined(_WIN32)
@@ -223,12 +246,12 @@ static void serve_connection(http_fixture *fixture, fixture_socket connection) {
 }
 
 static void serve(http_fixture *fixture) {
-    while (!fixture->stopping) {
+    while (!is_raised(&fixture->stopping)) {
         fixture_socket connection = accept(fixture->listener, NULL, NULL);
         if (connection == INVALID_FIXTURE_SOCKET) {
             continue;
         }
-        if (!fixture->stopping) {
+        if (!is_raised(&fixture->stopping)) {
             serve_connection(fixture, connection);
         }
 #if defined(_WIN32)
@@ -335,7 +358,7 @@ static void wake_listener(const http_fixture *fixture) {
 }
 
 char *http_fixture_stop(http_fixture *fixture) {
-    fixture->stopping = 1;
+    raise_flag(&fixture->stopping);
     wake_listener(fixture);
 #if defined(_WIN32)
     WaitForSingleObject(fixture->thread, INFINITE);
