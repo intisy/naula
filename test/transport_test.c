@@ -491,6 +491,30 @@ static void a_stopped_transfer_is_settled_by_its_own_flag_whatever_libcurl_repor
     release(&answer);
     naula_fetch_curl_use_library(NULL);
 }
+
+static naula_fetch_answer fetch_through_fake_curl(const char *version, const char *authorization) {
+    naula_fetch_sink sink;
+    setenv("NAULA_FAKE_CURL_VERSION", version, 1);
+    naula_fetch_curl_use_library(NAULA_FAKE_CURL);
+    naula_fetch_answer answer = fetch_into_buffer("https://forge.invalid/large", authorization, 5000, BODY_LENGTH, &sink);
+    naula_fetch_curl_use_library(NULL);
+    unsetenv("NAULA_FAKE_CURL_VERSION");
+    return answer;
+}
+
+static void a_token_is_never_sent_through_a_libcurl_older_than_7_58(void) {
+    naula_fetch_answer answer = fetch_through_fake_curl("7.57.9", SECRET);
+    CHECK(answer.outcome == NAULA_FETCH_REFUSED);
+    CHECK(strstr(answer.detail, "7.57.9") != NULL && strstr(answer.detail, SECRET) == NULL);
+    CHECK(answer.fix != NULL && strstr(answer.fix, "7.58") != NULL);
+    release(&answer);
+    answer = fetch_through_fake_curl("7.57.9", NULL);
+    CHECK(answer.outcome == NAULA_FETCH_RECEIVED);
+    release(&answer);
+    answer = fetch_through_fake_curl("7.58.0", SECRET);
+    CHECK(answer.outcome == NAULA_FETCH_RECEIVED);
+    release(&answer);
+}
 #endif
 
 #if defined(__linux__)
@@ -528,6 +552,7 @@ int main(void) {
 #endif
 #if !defined(_WIN32)
     a_stopped_transfer_is_settled_by_its_own_flag_whatever_libcurl_reports();
+    a_token_is_never_sent_through_a_libcurl_older_than_7_58();
 #endif
 #if defined(__linux__)
     a_linux_without_libcurl_is_refused_naming_the_package();

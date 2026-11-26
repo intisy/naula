@@ -792,7 +792,7 @@ static naula_status is_lineage(const resolver *subject, const identity_cache *ot
         if (other->homes[entry].state != CACHE_CONFIRMED) {
             continue;
         }
-        char *text = naula_cache_place_text(&other->homes[entry].place);
+        char *text = naula_place_text(&other->homes[entry].place);
         if (text == NULL) {
             return NAULA_OUT_OF_MEMORY;
         }

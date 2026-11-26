@@ -55,10 +55,29 @@ void naula_repository_release(naula_repository *repository);
 void naula_repository_list_release(naula_repository *repositories, size_t count);
 
 /**
+ * A release's index: its `bytes`, and `url`, the address the release offers it at, which a file the index lists by a
+ * relative address resolves against. The caller sets `size`; release it with naula_release_index_release. First
+ * shape ends at `url`.
+ */
+typedef struct naula_release_index {
+    uint32_t size;
+    uint8_t *bytes;
+    size_t length;
+    char *url;
+} naula_release_index;
+
+void naula_release_index_release(naula_release_index *index);
+
+/**
  * `describe` answers the NAULA_OP_ bits this provider supports; a call to an operation it lacks is refused. `word` and
- * `context` outlive the registration. Bytes answered by read_file and release_index are released with
- * naula_memory_release. First shape ends at `release_index`; the writes, `create` to `write_metadata`, were appended
- * and are read only when `size` covers `write_metadata` (naula_provider_offers_writes).
+ * `context` outlive the registration. Bytes answered by read_file are released with naula_memory_release. First
+ * shape ends at `release_index`; the writes, `create` to `write_metadata`, were appended and are read only when
+ * `size` covers `write_metadata` (naula_provider_offers_writes).
+ *
+ * `release_index` reads the asset named `asset` of the release tagged `tag`, or of the latest release when `tag` is
+ * NULL. A 404 for the release or the asset is NAULA_NOT_FOUND only once a lookup by number says the repository is
+ * gone; on a live one it is refused `missing_release` or `missing_index`, and a release without the asset
+ * `no_index_asset`.
  *
  * Every write needs a token and refuses NULL, and a name or account that is not a plain name or starts with `-`,
  * before any request. `rename`, `transfer` and `archive` keep the number. A write the host refuses with a 404 is
@@ -89,7 +108,8 @@ typedef struct naula_provider {
     naula_status (*list_repos)(void *context, const char *host, const char *account, const char *token,
                                naula_repository **out, size_t *count, naula_refusal *refusal);
     naula_status (*release_index)(void *context, const char *host, uint64_t number, const char *tag,
-                                  const char *token, uint8_t **bytes, size_t *length, naula_refusal *refusal);
+                                  const char *asset, const char *token, naula_release_index *out,
+                                  naula_refusal *refusal);
     naula_status (*create)(void *context, const char *host, const char *account, const char *name,
                            const naula_metadata *metadata, const char *token, uint64_t *number,
                            naula_refusal *refusal);

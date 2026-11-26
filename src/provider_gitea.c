@@ -18,6 +18,8 @@
 #define MINIMUM_FIX "upgrade the host to Gitea 1.20 or later, or to a Forgejo built on it"
 #define GITEA_PART "+gitea-"
 #define VERSION_NUMBER_LIMIT 100000ul
+#define API_PATH "/api/v1"
+#define ATTACHMENT_ID_LIMIT 64u
 
 /**
  * @implNote Gitea and Forgejo answer one API, so one table serves both words. Forgejo 17.0.0-121 (API of Gitea 1.22.0)
@@ -50,6 +52,9 @@ static const missing_answer missing_file = {"missing_file_or_ref", "file or ref"
 static const missing_answer missing_commit = {"missing_commit", "commit", "check the commit exists in the repository"};
 static const missing_answer missing_commit_or_ref = {"missing_commit_or_ref", "commit or ref",
                                                      "check the commit and the branch exist in the repository"};
+static const missing_answer missing_release = {"missing_release", "release",
+                                               "publish a release, or name a tag the repository has"};
+static const missing_answer missing_index = {"missing_index", "index asset", "publish the index with the release again"};
 
 static const char *const request_headers[] = {ACCEPT_HEADER, NULL};
 
@@ -83,7 +88,7 @@ static naula_status build_root(const gitea_target *at, char *root, naula_refusal
     if (!naula_forge_is_host_text(at->host)) {
         return naula_forge_refuse_input(&at->edition->flavor, refusal, "the host");
     }
-    snprintf(root, FORGE_ROOT_SIZE, "https://%s/api/v1", at->host);
+    snprintf(root, FORGE_ROOT_SIZE, "https://%s" API_PATH, at->host);
     return NAULA_OK;
 }
 
@@ -513,24 +518,115 @@ static naula_status gitea_list_repos(void *context, const char *host, const char
     return NAULA_OK;
 }
 
+static naula_status read_release(const gitea_target *at, const naula_repository *repository, const char *tag,
+                                 cJSON **release, naula_refusal *refusal) {
+    char prefix[FORGE_ROUTE_SIZE / 4];
+    char suffix[FORGE_ROUTE_SIZE / 2];
+    char route[FORGE_ROUTE_SIZE];
+    forge_reply reply;
+    *release = NULL;
+    if (!naula_gitea_repository_prefix(repository, prefix, sizeof prefix) ||
+        !naula_forge_release_route(tag, suffix, sizeof suffix)) {
+        return naula_forge_refuse_input(&at->edition->flavor, refusal, "the tag");
+    }
+    snprintf(route, sizeof route, "%s/%s", prefix, suffix);
+    naula_status status = get(at, route, FORGE_SMALL_BODY_CAPACITY, &reply, refusal);
+    if (status == NAULA_OK) {
+        *release = naula_forge_parse_release(&at->edition->flavor, &reply, &status, refusal);
+        naula_forge_reply_release(&reply);
+    }
+    return status;
+}
+
+static int is_attachment_id(const char *text) {
+    size_t length = text == NULL ? 0 : strlen(text);
+    if (length == 0 || length > ATTACHMENT_ID_LIMIT) {
+        return 0;
+    }
+    for (size_t index = 0; index < length; index++) {
+        char character = text[index];
+        int hex = (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') ||
+                  (character >= 'A' && character <= 'F');
+        if (!hex && character != '-') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/**
+ * The asset by its attachment id on the host's web root, the one address Gitea serves an asset's bytes at that is not
+ * by owner and name.
+ */
+static naula_status read_attachment(const gitea_target *at, const cJSON *asset, naula_release_index *out,
+                                    naula_refusal *refusal) {
+    char root[FORGE_ROOT_SIZE];
+    char url[URL_SIZE];
+    forge_reply reply;
+    const forge_flavor *flavor = &at->edition->flavor;
+    const char *attachment = naula_forge_text_member(asset, "uuid");
+    if (!is_attachment_id(attachment)) {
+        return naula_forge_refuse_malformed(flavor, refusal, "an asset with no attachment id");
+    }
+    naula_status status = build_root(at, root, refusal);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    size_t length = strlen(root);
+    if (length >= strlen(API_PATH) && strcmp(root + length - strlen(API_PATH), API_PATH) == 0) {
+        root[length - strlen(API_PATH)] = '\0';
+    }
+    snprintf(url, sizeof url, "%s/attachments/%s", root, attachment);
+    status = naula_forge_fetch(flavor, url, at->token, FORGE_INDEX_BODY_CAPACITY, &reply, refusal);
+    if (status == NAULA_OK) {
+        status = naula_forge_keep_release_index(flavor, &reply, asset, out, refusal);
+        naula_forge_reply_release(&reply);
+    }
+    return status;
+}
+
+static naula_status read_release_index(const gitea_target *at, const naula_repository *repository, const char *tag,
+                                       const char *asset, naula_release_index *out, naula_refusal *refusal) {
+    cJSON *release = NULL;
+    const missing_answer *missing = &missing_release;
+    naula_status status = read_release(at, repository, tag, &release, refusal);
+    const cJSON *found =
+        status == NAULA_OK ? naula_forge_release_asset(&at->edition->flavor, release, asset, &status, refusal) : NULL;
+    if (found != NULL) {
+        missing = &missing_index;
+        status = read_attachment(at, found, out, refusal);
+    }
+    cJSON_Delete(release);
+    return naula_gitea_settle_read(at, repository, status, missing, refusal);
+}
+
 static naula_status gitea_release_index(void *context, const char *host, uint64_t number, const char *tag,
-                                        const char *token, uint8_t **bytes, size_t *length, naula_refusal *refusal) {
-    const gitea_edition *edition = context;
-    (void)host;
-    (void)number;
-    (void)tag;
-    (void)token;
-    *bytes = NULL;
-    *length = 0;
-    return naula_forge_refuse_unsupported(&edition->flavor, refusal, "release_index",
-                                          "read the index from a web or url home");
+                                        const char *asset, const char *token, naula_release_index *out,
+                                        naula_refusal *refusal) {
+    gitea_target at = {context, host, number, token};
+    naula_repository repository = naula_gitea_fresh_repository();
+    naula_status status = naula_forge_check_release_request(&at.edition->flavor, number, tag, asset, out, refusal);
+    if (status == NAULA_OK) {
+        status = naula_gitea_lookup(&at, &repository, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = naula_gitea_require_version(&at, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = read_release_index(&at, &repository, tag, asset, out, refusal);
+    }
+    if (status != NAULA_OK) {
+        naula_release_index_release(out);
+    }
+    naula_repository_release(&repository);
+    return status;
 }
 
 static naula_status gitea_describe(void *context, uint32_t *supported, int *anonymous_lookup) {
     (void)context;
     *supported = NAULA_OP_LOOKUP | NAULA_OP_FIND | NAULA_OP_READ_FILE | NAULA_OP_CONTAINS | NAULA_OP_PARENT_COUNT |
-                 NAULA_OP_LIST_REPOS | NAULA_OP_CREATE | NAULA_OP_RENAME | NAULA_OP_TRANSFER | NAULA_OP_ARCHIVE |
-                 NAULA_OP_READ_METADATA | NAULA_OP_WRITE_METADATA;
+                 NAULA_OP_LIST_REPOS | NAULA_OP_RELEASE_INDEX | NAULA_OP_CREATE | NAULA_OP_RENAME | NAULA_OP_TRANSFER |
+                 NAULA_OP_ARCHIVE | NAULA_OP_READ_METADATA | NAULA_OP_WRITE_METADATA;
     *anonymous_lookup = 0;
     return NAULA_OK;
 }

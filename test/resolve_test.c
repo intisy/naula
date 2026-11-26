@@ -322,14 +322,15 @@ static naula_status fake_list_repos(void *context, const char *host, const char 
 }
 
 static naula_status fake_release_index(void *context, const char *host, uint64_t number, const char *tag,
-                                       const char *token, uint8_t **bytes, size_t *length, naula_refusal *refusal) {
+                                       const char *asset, const char *token, naula_release_index *out,
+                                       naula_refusal *refusal) {
     (void)context;
     (void)host;
     (void)number;
     (void)tag;
+    (void)asset;
     (void)token;
-    *bytes = NULL;
-    *length = 0;
+    (void)out;
     return fake_refuse(refusal, NAULA_REFUSED, "unsupported_operation");
 }
 
@@ -854,6 +855,32 @@ static void skips_a_dead_listed_home_and_reports_it(void) {
     naula_status status = resolve_once(NULL, ID, "forge:10", NULL, &resolution, &refusal);
     CHECK(status == NAULA_REFUSED);
     check_text(refusal.code, "unverifiable", "a listed home missing by name and never seen by number");
+    naula_resolution_release(&resolution);
+}
+
+static void an_unknown_provider_names_its_fix_apart_from_its_detail(void) {
+    forge_reset();
+    naula_resolution resolution;
+    naula_refusal refusal;
+    CHECK(resolve_once(NULL, ID, "nonesuch:5", NULL, &resolution, &refusal) == NAULA_NOT_FOUND);
+    check_text(refusal.code, "dead-skipped", "an at on an unknown provider");
+    check_text(refusal.fix, NAULA_UNKNOWN_PROVIDER_FIX, "its fix");
+    CHECK(strstr(refusal.detail, NAULA_UNKNOWN_PROVIDER_FIX) == NULL && strstr(refusal.detail, "nonesuch") != NULL);
+    naula_resolution_release(&resolution);
+
+    add_repo(NULL, 10, "alpha", "lib",
+             repo_file("lib", HOME("alpha") ",{\"provider\":\"nonesuch\",\"account\":\"x\"}", NULL));
+    CHECK(resolve_once(NULL, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    int found = 0;
+    for (size_t index = 0; index < resolution.verdict_count; index++) {
+        const naula_verdict *verdict = &resolution.verdicts[index];
+        if (verdict->home.provider != NULL && strcmp(verdict->home.provider, "nonesuch") == 0) {
+            found = 1;
+            check_text(verdict->code, "dead-skipped", "a listed home on an unknown provider");
+            CHECK(strstr(verdict->detail, NAULA_UNKNOWN_PROVIDER_FIX) == NULL);
+        }
+    }
+    CHECK(found);
     naula_resolution_release(&resolution);
 }
 
@@ -2447,6 +2474,7 @@ int main(void) {
     refuses_a_home_whose_number_changed_since_the_cache();
     resolve_treats_a_timeout_as_unknown_not_dead();
     skips_a_dead_listed_home_and_reports_it();
+    an_unknown_provider_names_its_fix_apart_from_its_detail();
     marks_a_web_only_repo_domain_only();
     ssh_home_is_unverifiable_never_confirmed();
     answers_stale_from_cache_offline();

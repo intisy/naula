@@ -217,6 +217,12 @@ naula_status naula_id_parse(const char *text, size_t length, naula_id *id, naula
     return NAULA_OK;
 }
 
+int naula_id_is_valid(const char *text, size_t length) {
+    uint32_t kind = 0;
+    size_t after_head = 0;
+    return text != NULL && check_grammar(text, length, NULL, &kind, &after_head) == NAULA_OK;
+}
+
 void naula_id_release(naula_id *id) {
     size_t at;
     if (id == NULL) {

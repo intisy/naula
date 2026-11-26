@@ -536,7 +536,7 @@ static void list_repos_falls_back_to_a_user_and_answers_not_found_for_neither(vo
     naula_memory_release(finish(server));
 }
 
-static void describe_names_the_supported_operations_and_release_index_is_refused(void) {
+static void describe_names_the_supported_operations(void) {
     const naula_provider *words[] = {naula_provider_gitea(), naula_provider_forgejo()};
     const char *const names[] = {"gitea", "forgejo"};
     for (size_t index = 0; index < 2; index++) {
@@ -545,14 +545,238 @@ static void describe_names_the_supported_operations_and_release_index_is_refused
         check_text(words[index]->word, names[index], "word");
         CHECK(words[index]->describe(words[index]->context, &supported, &anonymous) == NAULA_OK);
         CHECK((supported & NAULA_OP_CONTAINS) != 0 && (supported & NAULA_OP_PARENT_COUNT) != 0);
-        CHECK((supported & NAULA_OP_RELEASE_INDEX) == 0 && anonymous == 0);
-        naula_refusal refusal = fresh_refusal();
-        uint8_t *bytes = NULL;
-        size_t length = 0;
-        CHECK(words[index]->release_index(words[index]->context, HOST, NUMBER, "v1", NULL, &bytes, &length, &refusal) ==
-              NAULA_REFUSED);
-        check_text(refusal.code, "unsupported_operation", "release_index");
+        CHECK((supported & NAULA_OP_RELEASE_INDEX) != 0 && anonymous == 0);
     }
+}
+
+#define RELEASE_LATEST_ROUTE PREFIX "/releases/latest"
+#define INDEX_ASSET "forgejo-17.0.2-linux-amd64.sha256"
+#define ATTACHMENT_ROUTE "/attachments/92e3c606-69a4-4c32-94fe-c28942633339"
+#define INDEX_URL "https://codeberg.org/forgejo/forgejo/releases/download/v17.0.2/forgejo-17.0.2-linux-amd64.sha256"
+#define INDEX_BYTES "{\"items\":{}}\n"
+#define OLD_VERSION "{\"version\":\"1.19.4\"}"
+
+static naula_release_index fresh_index(void) {
+    naula_release_index index;
+    memset(&index, 0, sizeof index);
+    index.size = sizeof index;
+    return index;
+}
+
+static naula_status release_index(const char *tag, const char *asset, naula_release_index *out,
+                                  naula_refusal *refusal) {
+    return gitea()->release_index(gitea()->context, HOST, NUMBER, tag, asset, TOKEN_TEXT, out, refusal);
+}
+
+static void release_index_reads_by_the_looked_up_names_after_the_version(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RELEASE_LATEST_ROUTE, 200, release), route(ATTACHMENT_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = serve(routes, 4);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == strlen(INDEX_BYTES) && index.bytes != NULL &&
+          memcmp(index.bytes, INDEX_BYTES, index.length) == 0);
+    check_text(index.url, INDEX_URL, "the address the release offers the index at");
+    naula_release_index_release(&index);
+    char *log = finish(server);
+    const char *lookup_request = log == NULL ? NULL : strstr(log, "GET " REPOSITORY_ROUTE);
+    const char *version_request = log == NULL ? NULL : strstr(log, "GET " VERSION_ROUTE);
+    const char *release_request = log == NULL ? NULL : strstr(log, "GET " RELEASE_LATEST_ROUTE);
+    const char *attachment_request = log == NULL ? NULL : strstr(log, "GET " ATTACHMENT_ROUTE);
+    CHECK(lookup_request != NULL && version_request != NULL && release_request != NULL && attachment_request != NULL);
+    CHECK(lookup_request < version_request && version_request < release_request && release_request < attachment_request);
+    CHECK(attachment_request != NULL && strstr(attachment_request, "GET " REPOSITORY_ROUTE) != NULL);
+    naula_memory_release(log);
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
+static void release_index_reads_the_attachment_from_the_web_root_beside_the_api(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    http_route routes[4] = {route("/api/v1" REPOSITORY_ROUTE, 200, body), route("/api/v1" VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route("/api/v1" RELEASE_LATEST_ROUTE, 200, release), route(ATTACHMENT_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = http_fixture_start(routes, 4);
+    CHECK(server != NULL);
+    char root[80];
+    snprintf(root, sizeof root, "http://127.0.0.1:%u/api/v1", (unsigned)http_fixture_port(server));
+    naula_gitea_use_api_root(root);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == strlen(INDEX_BYTES));
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
+static void release_index_reads_a_tagged_release_and_refuses_an_old_host(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(PREFIX "/releases/tags/v17%2F2", 200, release),
+                            route(ATTACHMENT_ROUTE, 200, INDEX_BYTES)};
+    http_fixture *server = serve(routes, 4);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index("v17/2", INDEX_ASSET, &index, &refusal) == NAULA_OK);
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+    routes[1] = route(VERSION_ROUTE, 200, OLD_VERSION);
+    server = serve(routes, 4);
+    CHECK(release_index("v17/2", INDEX_ASSET, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "unsupported_operation", "a host older than the minimum");
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "/releases/") == NULL);
+    naula_memory_release(log);
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
+static void release_index_refuses_a_missing_release_or_asset_of_a_live_repository(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RELEASE_LATEST_ROUTE, 404, NOT_FOUND_BODY), route(ATTACHMENT_ROUTE, 404, NOT_FOUND_BODY)};
+    http_fixture *server = serve(routes, 4);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_release", "no release on a live repository");
+    naula_memory_release(finish(server));
+
+    http_route gone[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                          route(RELEASE_LATEST_ROUTE, 404, NOT_FOUND_BODY), route(REPOSITORY_ROUTE, 404, NOT_FOUND_BODY)};
+    gone[0].answer_limit = 1;
+    server = serve(gone, 4);
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_NOT_FOUND);
+    naula_memory_release(finish(server));
+
+    routes[2] = route(RELEASE_LATEST_ROUTE, 200, release);
+    server = serve(routes, 4);
+    refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "missing_index", "an asset gone from a live repository");
+    refusal = fresh_refusal();
+    CHECK(release_index(NULL, "weivel-index.json", &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "no_index_asset", "a release without the asset");
+    CHECK(index.bytes == NULL && index.url == NULL);
+    naula_memory_release(finish(server));
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
+static void release_index_refuses_an_index_from_a_repository_renamed_during_the_read(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    const char other[] = "{\"id\":16490,\"name\":\"other-name\",\"owner\":{\"login\":\"Codeberg\"}}";
+    http_route routes[5] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RELEASE_LATEST_ROUTE, 200, release), route(ATTACHMENT_ROUTE, 200, INDEX_BYTES),
+                            route(REPOSITORY_ROUTE, 200, other)};
+    routes[0].answer_limit = 1;
+    http_fixture *server = serve(routes, 5);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "repository_changed", "renamed during the read");
+    CHECK(index.bytes == NULL && index.url == NULL && index.length == 0);
+    naula_memory_release(finish(server));
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
+static void release_index_empties_a_garbage_result_before_refusing_it(void) {
+    const naula_provider *words[] = {naula_provider_gitea(), naula_provider_forgejo()};
+    for (size_t at = 0; at < 2; at++) {
+        naula_release_index index;
+        memset(&index, 0xAB, sizeof index);
+        index.size = sizeof index;
+        naula_refusal refusal = fresh_refusal();
+        CHECK(words[at]->release_index(words[at]->context, HOST, 0, NULL, INDEX_ASSET, TOKEN_TEXT, &index,
+                                       &refusal) == NAULA_REFUSED);
+        CHECK(index.bytes == NULL && index.url == NULL && index.length == 0);
+        naula_release_index_release(&index);
+    }
+}
+
+#define TWICE_NAMED_RELEASE                                                                                           \
+    "{\"assets\":[{\"name\":\"" INDEX_ASSET "\",\"uuid\":\"00000000-0000-0000-0000-000000000000\"},"                 \
+    "{\"name\":\"" INDEX_ASSET "\",\"uuid\":\"92e3c606-69a4-4c32-94fe-c28942633339\",\"browser_download_url\":\""   \
+    INDEX_URL "\"}]}"
+
+#define LAST_ASSETS_RELEASE                                                                                           \
+    "{\"assets\":[],\"assets\":[{\"name\":\"" INDEX_ASSET "\",\"uuid\":\"92e3c606-69a4-4c32-94fe-c28942633339\","   \
+    "\"browser_download_url\":\"" INDEX_URL "\"}]}"
+
+static void release_index_takes_the_addressed_asset_and_the_last_value_of_a_member(void) {
+    const char *const releases[] = {TWICE_NAMED_RELEASE, LAST_ASSETS_RELEASE};
+    char *body = load("repository.json");
+    for (size_t at = 0; at < 2; at++) {
+        http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                                route(RELEASE_LATEST_ROUTE, 200, releases[at]),
+                                route(ATTACHMENT_ROUTE, 200, INDEX_BYTES)};
+        http_fixture *server = serve(routes, 4);
+        naula_release_index index = fresh_index();
+        naula_refusal refusal = fresh_refusal();
+        CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_OK);
+        check_text(index.url, INDEX_URL, releases[at]);
+        naula_release_index_release(&index);
+        naula_memory_release(finish(server));
+    }
+    naula_memory_release(body);
+}
+
+#define INDEX_CAP (4u * 1024u * 1024u)
+
+static void release_index_refuses_an_index_past_four_mebibytes(void) {
+    char *body = load("repository.json");
+    char *release = load("release.json");
+    char *large = malloc(INDEX_CAP + 2);
+    CHECK(large != NULL);
+    if (large == NULL) {
+        return;
+    }
+    memset(large, 'x', INDEX_CAP + 1);
+    large[INDEX_CAP + 1] = '\0';
+    http_route routes[4] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RELEASE_LATEST_ROUTE, 200, release), route(ATTACHMENT_ROUTE, 200, large)};
+    http_fixture *server = serve(routes, 4);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "answer_too_large", "an index past the cap");
+    CHECK(index.bytes == NULL && index.url == NULL);
+    naula_memory_release(finish(server));
+    large[INDEX_CAP] = '\0';
+    routes[3] = route(ATTACHMENT_ROUTE, 200, large);
+    server = serve(routes, 4);
+    CHECK(release_index(NULL, INDEX_ASSET, &index, &refusal) == NAULA_OK);
+    CHECK(index.length == INDEX_CAP);
+    naula_release_index_release(&index);
+    naula_memory_release(finish(server));
+    free(large);
+    naula_memory_release(release);
+    naula_memory_release(body);
+}
+
+static void release_index_refuses_an_unusable_attachment_id_before_asking_for_it(void) {
+    char *body = load("repository.json");
+    const char release[] = "{\"assets\":[{\"name\":\"index.json\",\"uuid\":\"../../x\","
+                           "\"browser_download_url\":\"https://codeberg.org/a\"}]}";
+    http_route routes[3] = {route(REPOSITORY_ROUTE, 200, body), route(VERSION_ROUTE, 200, CODEBERG_VERSION),
+                            route(RELEASE_LATEST_ROUTE, 200, release)};
+    http_fixture *server = serve(routes, 3);
+    naula_release_index index = fresh_index();
+    naula_refusal refusal = fresh_refusal();
+    CHECK(release_index(NULL, "index.json", &index, &refusal) == NAULA_MALFORMED);
+    char *log = finish(server);
+    CHECK(log != NULL && strstr(log, "/attachments/") == NULL && strstr(log, "GET /x") == NULL);
+    naula_memory_release(log);
+    naula_memory_release(body);
 }
 
 static void forgejo_answers_from_its_own_word_and_the_registry_holds_every_built_in(void) {
@@ -600,7 +824,16 @@ int main(void) {
     parent_count_reads_the_commit();
     list_repos_reads_pages_until_an_empty_one();
     list_repos_falls_back_to_a_user_and_answers_not_found_for_neither();
-    describe_names_the_supported_operations_and_release_index_is_refused();
+    describe_names_the_supported_operations();
+    release_index_reads_by_the_looked_up_names_after_the_version();
+    release_index_reads_the_attachment_from_the_web_root_beside_the_api();
+    release_index_reads_a_tagged_release_and_refuses_an_old_host();
+    release_index_refuses_a_missing_release_or_asset_of_a_live_repository();
+    release_index_refuses_an_index_from_a_repository_renamed_during_the_read();
+    release_index_refuses_an_unusable_attachment_id_before_asking_for_it();
+    release_index_empties_a_garbage_result_before_refusing_it();
+    release_index_takes_the_addressed_asset_and_the_last_value_of_a_member();
+    release_index_refuses_an_index_past_four_mebibytes();
     forgejo_answers_from_its_own_word_and_the_registry_holds_every_built_in();
     return check_summary("provider_gitea_test");
 }

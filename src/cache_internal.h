@@ -56,9 +56,6 @@ naula_status naula_cache_normal_at(const naula_place *places, size_t count, char
 
 void naula_cache_release_texts(char **texts, size_t count);
 
-/** One place in the normalised text form an `at` is stored in; NULL only when memory runs out. */
-char *naula_cache_place_text(const naula_place *place);
-
 /**
  * The anchor a record belongs to: the 64 lowercase hex of the sha256 of the normalised `at` joined by "\n" with no
  * trailing newline. One record per anchor keeps a consumer's answer, offline or stale, its own: another consumer's

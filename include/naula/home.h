@@ -46,6 +46,13 @@ naula_status naula_home_from_json(const cJSON *json, naula_home *home, naula_ref
 /** Reads `github:1222336612`, `gitea@git.example.com:12`, `web:naula.dev` or a git url. */
 naula_status naula_place_parse(const char *text, naula_place *place, naula_refusal *refusal);
 
+/**
+ * A place in the normal text form an `at` is kept in: `github:7`, `gitea@git.example.com:12`, `web:naula.dev` or the
+ * url as written, the host and domain lowercased and GitHub's own host left out, since a GitHub place may write it or
+ * not. Release it with naula_memory_release; NULL only when memory runs out.
+ */
+char *naula_place_text(const naula_place *place);
+
 void naula_home_release(naula_home *home);
 void naula_place_release(naula_place *place);
 

@@ -115,7 +115,8 @@ void naula_fetch_deadline_passed(naula_fetch_answer *answer, const naula_fetch_r
  *
  * @implNote The header goes to the host and port url names and to no other: a redirect to another host is followed
  * without it. WinHTTP follows redirects by hand here, so the check is ours; libcurl drops a custom Authorization
- * header when a redirect changes host (7.58 and later, CURLOPT_UNRESTRICTED_AUTH left at 0).
+ * header when a redirect changes host (7.58 and later, CURLOPT_UNRESTRICTED_AUTH left at 0), so a request carrying
+ * authorization through an older libcurl is REFUSED, naming its version, before anything is sent.
  */
 void naula_fetch_into_memory(const char *url, const char *authorization, unsigned deadline_milliseconds,
                              naula_fetch_sink *sink, naula_fetch_answer *answer);

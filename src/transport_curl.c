@@ -20,6 +20,8 @@
 #define CONNECT_MILLISECONDS 15000L
 #define MAXIMUM_REDIRECTS 5L
 #define ERROR_BUFFER_SIZE 256
+#define FIRST_SAFE_VERSION 0x073A00u
+#define OLD_LIBCURL_FIX "upgrade libcurl to 7.58 or later, or fetch without a token"
 
 /**
  * @implNote The option, info and code numbers below, and the layout of struct curl_slist, are libcurl's public ABI
@@ -67,8 +69,23 @@ enum {
 typedef void curl_handle;
 typedef size_t (*curl_data_function)(char *, size_t, size_t, void *);
 
+typedef enum { CURLVERSION_FIRST = 0 } CURLversion;
+
+/**
+ * The first members of curl.h's struct, which every age of it starts with.
+ *
+ * @implNote The struct and enum keep curl.h's names, so the pointer type matches the function's own, which
+ * -fsanitize=function checks on every call.
+ */
+typedef struct curl_version_info_data {
+    CURLversion age;
+    const char *version;
+    unsigned int version_num;
+} curl_version_info_data;
+
 typedef struct curl_api {
     void *handle;
+    curl_version_info_data *(*version_info)(CURLversion);
     curl_handle *(*easy_init)(void);
     int (*easy_setopt)(curl_handle *, int, ...);
     int (*easy_perform)(curl_handle *);
@@ -118,7 +135,8 @@ static int resolve(void *handle, const char *symbol, void *slot) {
 
 static int resolve_all(curl_api *api) {
     void *handle = api->handle;
-    return resolve(handle, "curl_easy_init", &api->easy_init) &&
+    return resolve(handle, "curl_version_info", &api->version_info) &&
+           resolve(handle, "curl_easy_init", &api->easy_init) &&
            resolve(handle, "curl_easy_setopt", &api->easy_setopt) &&
            resolve(handle, "curl_easy_perform", &api->easy_perform) &&
            resolve(handle, "curl_easy_cleanup", &api->easy_cleanup) &&
@@ -443,6 +461,12 @@ static void perform(const curl_api *api, curl_handle *curl, const naula_fetch_re
     api->slist_free_all(headers);
 }
 
+/** 7.58 is the first libcurl that drops a custom Authorization header when a redirect changes host. */
+static int drops_authorization_on_another_host(const curl_api *api) {
+    const curl_version_info_data *version = api->version_info(CURLVERSION_FIRST);
+    return version != NULL && version->version_num >= FIRST_SAFE_VERSION;
+}
+
 void naula_fetch_over_network(const naula_fetch_request *request, naula_fetch_sink *sink,
                                 naula_fetch_answer *answer) {
     if (!naula_fetch_request_is_usable(request, answer)) {
@@ -457,6 +481,14 @@ void naula_fetch_over_network(const naula_fetch_request *request, naula_fetch_si
     if (api == NULL) {
         naula_fetch_refuse(answer, MISSING_LIBCURL_FIX, "libcurl could not be loaded, so %s cannot be fetched",
                              request->url);
+        return;
+    }
+    if (request->authorization != NULL && !drops_authorization_on_another_host(api)) {
+        const curl_version_info_data *version = api->version_info(CURLVERSION_FIRST);
+        naula_fetch_refuse(answer, OLD_LIBCURL_FIX,
+                           "libcurl %s may send the token to another host on a redirect, so %s is not fetched with it",
+                           version == NULL || version->version == NULL ? "of an unknown version" : version->version,
+                           request->url);
         return;
     }
     curl_handle *curl = api->easy_init();

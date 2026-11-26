@@ -1,6 +1,5 @@
 #include <string.h>
 
-#include "json_document.h"
 #include "naula/json.h"
 #include "naula/memory.h"
 
@@ -113,4 +112,42 @@ naula_status naula_json_parse(const uint8_t *bytes, size_t length, cJSON **root,
     *root = cJSON_ParseWithLength(text, length);
     naula_memory_release(text);
     return *root == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
+}
+
+static cJSON *detach_later_duplicates(cJSON *object, const cJSON *member) {
+    cJSON *last = NULL;
+    cJSON *later = member->next;
+    while (later != NULL) {
+        cJSON *next = later->next;
+        if (later->string != NULL && strcmp(later->string, member->string) == 0) {
+            cJSON_Delete(last);
+            last = cJSON_DetachItemViaPointer(object, later);
+        }
+        later = next;
+    }
+    return last;
+}
+
+static void keep_last_of_each_key(cJSON *item) {
+    cJSON *child = item->child;
+    while (child != NULL) {
+        if (cJSON_IsObject(item) && child->string != NULL) {
+            cJSON *last = detach_later_duplicates(item, child);
+            if (last != NULL) {
+                cJSON_ReplaceItemViaPointer(item, child, last);
+                child = last;
+            }
+        }
+        keep_last_of_each_key(child);
+        child = child->next;
+    }
+}
+
+naula_status naula_json_parse_keeping_last_value(const uint8_t *bytes, size_t length, cJSON **root,
+                                                 const char **reason) {
+    naula_status status = naula_json_parse(bytes, length, root, reason);
+    if (status == NAULA_OK) {
+        keep_last_of_each_key(*root);
+    }
+    return status;
 }

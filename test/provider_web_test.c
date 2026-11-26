@@ -167,7 +167,13 @@ static void the_web_provider_supports_no_operation_and_refuses_each(void) {
     check_text(refusal.code, "unsupported_operation", "lookup");
     CHECK(web->read_file(web->context, "naula.dev", 1, "main", "repo.json", NULL, &bytes, &length, &refusal) ==
           NAULA_REFUSED);
-    CHECK(web->release_index(web->context, "naula.dev", 1, "v1", NULL, &bytes, &length, &refusal) == NAULA_REFUSED);
+    naula_release_index index;
+    memset(&index, 0xAB, sizeof index);
+    index.size = sizeof index;
+    CHECK(web->release_index(web->context, "naula.dev", 1, "v1", "index.json", NULL, &index, &refusal) ==
+          NAULA_REFUSED);
+    CHECK(index.bytes == NULL && index.url == NULL && index.length == 0);
+    naula_release_index_release(&index);
 }
 
 static void the_web_provider_refuses_every_write(void) {
