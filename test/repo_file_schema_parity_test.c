@@ -8,6 +8,7 @@
 #include "naula/repo_file.h"
 #include "repo_file_rules.h"
 #include "schema_json.h"
+#include "schema_pattern.h"
 #include "schema_validate.h"
 
 #ifndef NAULA_REPO_SCHEMA
@@ -436,6 +437,27 @@ static void every_document_has_one_verdict(const cJSON *schema, const cJSON *doc
     }
 }
 
+/** Each of these reads differently over bytes than ECMA-262 reads it over code points, or is outside the subset. */
+static void the_pattern_engine_refuses_what_it_cannot_read(void) {
+    static const char *const refused[] = {"\\s",       "\\S",      "[\\s]",    "\\x80", "[\\xff]", "\xc3\xa9",
+                                          "[\xc3\xa9]", "[^a]",     "[^a]{2}",  "[^a]?",  ".",       "a*?",
+                                          "\\w",        "(?<=a)b"};
+    static const char *const compiled[] = {"^[^a]*$", "^[^a]+$", "^[\\x00-\\x7f]{2}$", "^\\d{3}$"};
+    for (size_t index = 0; index < sizeof refused / sizeof refused[0]; index++) {
+        schema_pattern *pattern = schema_pattern_compile(refused[index]);
+        if (pattern != NULL) {
+            fprintf(stderr, "the pattern engine compiled %s, which it cannot read as ECMA-262 does\n", refused[index]);
+            check_failures++;
+        }
+        schema_pattern_release(pattern);
+    }
+    for (size_t index = 0; index < sizeof compiled / sizeof compiled[0]; index++) {
+        schema_pattern *pattern = schema_pattern_compile(compiled[index]);
+        CHECK(pattern != NULL);
+        schema_pattern_release(pattern);
+    }
+}
+
 static void the_schema_names_its_draft(const cJSON *schema) {
     const cJSON *draft = cJSON_GetObjectItemCaseSensitive(schema, "$schema");
     check_text(cJSON_IsString(draft) ? draft->valuestring : NULL, "http://json-schema.org/draft-07/schema#",
@@ -451,6 +473,7 @@ int main(void) {
         fprintf(stderr, "cannot read the schema and its cases\n");
         return 1;
     }
+    the_pattern_engine_refuses_what_it_cannot_read();
     the_schema_names_its_draft(schema);
     walk_schema(&state, schema, "");
     every_rule_is_stated_once(&state);

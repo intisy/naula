@@ -5,9 +5,10 @@
 
 /**
  * An ECMA-262 pattern, as JSON Schema's `pattern` reads one, held to the subset schema/repo.schema.json writes:
- * `^`, `$`, literals, classes with ranges, `\d \s \S \t \n \r \v \f \xHH` and escaped metacharacters, groups,
- * `(?:)`, `(?=)`, `(?!)`, `|`, and greedy `* + ? {n} {n,} {n,m}`. It matches bytes, which equals matching code points
- * for every pattern here because each class that admits a byte above 0x7F also admits every byte of its sequence.
+ * `^`, `$`, ASCII literals, classes with ranges, `\d \t \n \r \v \f`, `\xHH` up to 7F and escaped
+ * metacharacters, groups, `(?:)`, `(?=)`, `(?!)`, `|`, and greedy `* + ? {n} {n,} {n,m}`. It matches bytes, so a class
+ * admitting bytes above 7F (a negated one) is refused unless it repeats as `*` or `+`, where bytes and code points
+ * give the same verdict.
  *
  * @implNote A pattern outside the subset does not compile, so the parity test fails loudly rather than reading a
  * construct it does not implement as something else.

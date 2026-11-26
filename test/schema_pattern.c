@@ -5,6 +5,7 @@
 
 #define UNBOUNDED (-1)
 #define BYTE_SET_SIZE 32
+#define HIGHEST_ASCII 0x7F
 
 typedef enum node_kind { NODE_BYTES, NODE_GROUP, NODE_AHEAD, NODE_NOT_AHEAD, NODE_START, NODE_END } node_kind;
 
@@ -81,11 +82,6 @@ static int has_byte(const unsigned char *set, unsigned char value) {
     return (set[value / 8] >> (value % 8)) & 1u;
 }
 
-static void add_space(unsigned char *set) {
-    add_range(set, '\t', '\r');
-    add_byte(set, ' ');
-}
-
 static void add_set(unsigned char *set, const unsigned char *other, int negated) {
     for (size_t index = 0; index < BYTE_SET_SIZE; index++) {
         set[index] |= negated ? (unsigned char)~other[index] : other[index];
@@ -109,10 +105,19 @@ static int control_escape(char character) {
     return found == NULL ? -1 : (unsigned char)values[found - letters];
 }
 
-/** Reads the escape after a backslash into `set`; answers the single byte it names, or -1 for a set such as \s. */
+/** Whether `set` admits a byte that only a multi-byte UTF-8 sequence holds. */
+static int admits_non_ascii(const unsigned char *set) {
+    for (unsigned value = HIGHEST_ASCII + 1; value <= 0xFF; value++) {
+        if (has_byte(set, (unsigned char)value)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** Reads the escape after a backslash into `set`; answers the single byte it names, or -1 for the set \d. */
 static int read_escape(reader *in, unsigned char *set) {
     char escaped = peek(in);
-    unsigned char class_set[BYTE_SET_SIZE] = {0};
     if (escaped == '\0') {
         in->failed = 1;
         return -1;
@@ -123,14 +128,13 @@ static int read_escape(reader *in, unsigned char *set) {
         return -1;
     }
     if (escaped == 's' || escaped == 'S') {
-        add_space(class_set);
-        add_set(set, class_set, escaped == 'S');
+        in->failed = 1;
         return -1;
     }
     if (escaped == 'x') {
         int high = hex_value(peek(in));
         int low = high < 0 ? -1 : hex_value(in->text[in->at + 1]);
-        if (low < 0) {
+        if (low < 0 || high * 16 + low > HIGHEST_ASCII) {
             in->failed = 1;
             return -1;
         }
@@ -152,7 +156,7 @@ static int read_escape(reader *in, unsigned char *set) {
 
 static int read_class_member(reader *in, unsigned char *set) {
     char character = peek(in);
-    if (character == '\0') {
+    if (character == '\0' || (unsigned char)character > HIGHEST_ASCII) {
         in->failed = 1;
         return -1;
     }
@@ -268,11 +272,20 @@ static void parse_atom(reader *in, node *out) {
         parse_class(in, out);
     } else if (character == '\\') {
         read_escape(in, out->bytes);
-    } else if (strchr(".*+?{}]", character) != NULL) {
+    } else if (strchr(".*+?{}]", character) != NULL || (unsigned char)character > HIGHEST_ASCII) {
         in->failed = 1;
     } else {
         add_byte(out->bytes, (unsigned char)character);
     }
+}
+
+/**
+ * A class admitting bytes above ASCII reads a multi-byte character byte by byte, which equals reading it as one code
+ * point only when the class repeats without bound, as `*` or `+` do.
+ */
+static int matches_as_code_points(const node *atom) {
+    return atom->kind != NODE_BYTES || !admits_non_ascii(atom->bytes) ||
+           (atom->least <= 1 && atom->most == UNBOUNDED);
 }
 
 static void parse_sequence(reader *in, sequence *out) {
@@ -293,6 +306,9 @@ static void parse_sequence(reader *in, sequence *out) {
         out->count++;
         if (!in->failed) {
             parse_quantifier(in, &out->nodes[out->count - 1]);
+        }
+        if (!in->failed && !matches_as_code_points(&out->nodes[out->count - 1])) {
+            in->failed = 1;
         }
     }
 }
