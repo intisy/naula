@@ -101,7 +101,7 @@ target_link_libraries(repo_file_test PRIVATE naula naula_allocator_counting)
 target_compile_definitions(repo_file_test PRIVATE NAULA_REPO_FILE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/repo-file"
     NAULA_REPO_FILE_FORMAT_ONE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/repo-file-format-one/repo.json")
 
-naula_test(repo_file_schema_parity_test schema_pattern.c schema_validate.c)
+naula_test(repo_file_schema_parity_test schema_json.c schema_pattern.c schema_validate.c)
 target_include_directories(repo_file_schema_parity_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(repo_file_schema_parity_test PRIVATE naula naula_allocator)
 target_compile_definitions(repo_file_schema_parity_test PRIVATE NAULA_REPO_SCHEMA="${PROJECT_SOURCE_DIR}/schema/repo.schema.json"

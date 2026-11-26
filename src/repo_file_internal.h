@@ -44,6 +44,7 @@ int repo_file_is_topic(const char *text);
 int repo_file_is_registry(const char *text);
 int repo_file_is_one_line(const char *text);
 int repo_file_is_any_text(const char *text);
+int repo_file_is_branch(const char *text);
 
 /** A repo's own id: git:<hex> or local:<name>, naming no path inside a repo. */
 int repo_file_is_own_id(const char *text);

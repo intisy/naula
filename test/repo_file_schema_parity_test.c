@@ -6,6 +6,7 @@
 #include "check.h"
 #include "naula/repo_file.h"
 #include "repo_file_rules.h"
+#include "schema_json.h"
 #include "schema_validate.h"
 
 #ifndef NAULA_REPO_SCHEMA
@@ -66,7 +67,7 @@ static text_file read_file(const char *path) {
 
 static cJSON *read_json(const char *path) {
     text_file read = read_file(path);
-    cJSON *json = read.bytes == NULL ? NULL : cJSON_ParseWithLength(read.bytes, read.length);
+    cJSON *json = read.bytes == NULL ? NULL : schema_json_read(read.bytes, read.length);
     if (read.bytes != NULL && json == NULL) {
         fprintf(stderr, "%s is not JSON\n", path);
         check_failures++;
@@ -269,14 +270,20 @@ static int ends_with(const char *text, const char *suffix) {
     return length >= suffix_length && strcmp(text + length - suffix_length, suffix) == 0;
 }
 
-static void check_vector(const cJSON *schema, const cJSON *subschema, const repo_file_rule *rule, const char *text,
+/**
+ * A vector holding a NUL never reaches a matcher, since naula_json_parse refuses the NUL first: the schema alone must
+ * refuse it, and a document carrying one proves the parser does.
+ */
+static int holds_a_nul(const cJSON *vector) {
+    return schema_json_string_length(vector) != strlen(vector->valuestring);
+}
+
+static void check_vector(const cJSON *schema, const cJSON *subschema, const repo_file_rule *rule, const cJSON *vector,
                          int expected) {
-    char problem[PROBLEM_CAPACITY] = "no memory";
-    cJSON *value = cJSON_CreateString(text);
-    schema_verdict verdict =
-        value == NULL ? SCHEMA_UNSUPPORTED : schema_validate(schema, subschema, value, problem, sizeof problem);
-    int matched = rule->matcher(text);
-    cJSON_Delete(value);
+    char problem[PROBLEM_CAPACITY];
+    const char *text = vector->valuestring;
+    schema_verdict verdict = schema_validate(schema, subschema, vector, problem, sizeof problem);
+    int matched = holds_a_nul(vector) ? 0 : rule->matcher(text);
     if (verdict == SCHEMA_UNSUPPORTED) {
         fprintf(stderr, "%s: the schema cannot be read here: %s\n", rule->location, problem);
         check_failures++;
@@ -296,7 +303,7 @@ static void check_vector_list(const cJSON *schema, const cJSON *subschema, const
     for (const cJSON *text = list == NULL ? NULL : list->child; text != NULL; text = text->next) {
         CHECK(cJSON_IsString(text));
         if (cJSON_IsString(text)) {
-            check_vector(schema, subschema, rule, text->valuestring, expected);
+            check_vector(schema, subschema, rule, text, expected);
         }
     }
 }
@@ -343,7 +350,7 @@ static void check_document(const cJSON *schema, const char *name, const char *by
     char parser_problem[1024];
     char schema_problem[PROBLEM_CAPACITY];
     int parsed = parser_accepts(bytes, length, parser_problem, sizeof parser_problem);
-    cJSON *document = cJSON_ParseWithLength(bytes, length);
+    cJSON *document = schema_json_read(bytes, length);
     schema_verdict verdict =
         document == NULL ? SCHEMA_REFUSED
                          : schema_validate(schema, schema, document, schema_problem, sizeof schema_problem);
@@ -376,10 +383,13 @@ static void every_document_has_one_verdict(const cJSON *schema, const cJSON *doc
     for (const cJSON *each = documents == NULL ? NULL : documents->child; each != NULL; each = each->next) {
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(each, "name");
         const cJSON *accepted = cJSON_GetObjectItemCaseSensitive(each, "accepted");
-        char *text = cJSON_PrintUnformatted(cJSON_GetObjectItemCaseSensitive(each, "document"));
-        CHECK(cJSON_IsString(name) && cJSON_IsBool(accepted) && text != NULL);
-        if (cJSON_IsString(name) && cJSON_IsBool(accepted) && text != NULL) {
-            check_document(schema, name->valuestring, text, strlen(text), cJSON_IsTrue(accepted));
+        const cJSON *written = cJSON_GetObjectItemCaseSensitive(each, "text");
+        char *text = cJSON_IsString(written) ? NULL
+                                             : cJSON_PrintUnformatted(cJSON_GetObjectItemCaseSensitive(each, "document"));
+        const char *bytes = cJSON_IsString(written) ? written->valuestring : text;
+        CHECK(cJSON_IsString(name) && cJSON_IsBool(accepted) && bytes != NULL);
+        if (cJSON_IsString(name) && cJSON_IsBool(accepted) && bytes != NULL) {
+            check_document(schema, name->valuestring, bytes, strlen(bytes), cJSON_IsTrue(accepted));
         }
         cJSON_free(text);
     }

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "schema_json.h"
 #include "schema_pattern.h"
 
 typedef struct validation {
@@ -43,7 +44,8 @@ int schema_json_equal(const cJSON *left, const cJSON *right) {
         return left->valuedouble == right->valuedouble;
     }
     if (cJSON_IsString(left)) {
-        return strcmp(left->valuestring, right->valuestring) == 0;
+        size_t length = schema_json_string_length(left);
+        return length == schema_json_string_length(right) && memcmp(left->valuestring, right->valuestring, length) == 0;
     }
     if (cJSON_IsArray(left)) {
         const cJSON *other = right->child;
@@ -90,10 +92,12 @@ static int is_type(const cJSON *instance, const char *name) {
     return strcmp(name, "null") == 0 && cJSON_IsNull(instance);
 }
 
-static size_t code_points(const char *text) {
+static size_t code_points(const cJSON *string) {
     size_t count = 0;
-    for (const unsigned char *byte = (const unsigned char *)text; *byte != '\0'; byte++) {
-        count += (*byte & 0xC0u) != 0x80u;
+    size_t length = schema_json_string_length(string);
+    const unsigned char *bytes = (const unsigned char *)string->valuestring;
+    for (size_t index = 0; index < length; index++) {
+        count += (bytes[index] & 0xC0u) != 0x80u;
     }
     return count;
 }
@@ -107,7 +111,7 @@ static int check_pattern(validation *state, const cJSON *value, const cJSON *ins
         unsupported(state, "the pattern", value->valuestring);
         return 0;
     }
-    int found = schema_pattern_search(pattern, instance->valuestring, strlen(instance->valuestring));
+    int found = schema_pattern_search(pattern, instance->valuestring, schema_json_string_length(instance));
     schema_pattern_release(pattern);
     return found;
 }
@@ -116,7 +120,7 @@ static int check_length(const char *keyword, const cJSON *value, const cJSON *in
     if (!cJSON_IsString(instance)) {
         return 1;
     }
-    double length = (double)code_points(instance->valuestring);
+    double length = (double)code_points(instance);
     return strcmp(keyword, "minLength") == 0 ? length >= value->valuedouble : length <= value->valuedouble;
 }
 

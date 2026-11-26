@@ -1889,5 +1889,51 @@
       ],
       "access": "open"
     }
+  },
+  {
+    "name": "a description in any script",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "description": "caf\u00e9 \u2603"
+    }
+  },
+  {
+    "name": "a NUL in the description",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"description\": \"a\\u0000b\"}"
+  },
+  {
+    "name": "a NUL in the homepage",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"homepage\": \"https://a\\u0000b\"}"
+  },
+  {
+    "name": "a NUL in the default branch",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"settings\": {\"defaultBranch\": \"ma\\u0000in\"}}"
+  },
+  {
+    "name": "a NUL in a project description",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"org\": {\"name\": \"spisor\", \"projects\": {\"shared\": \"a\\u0000b\"}}}"
+  },
+  {
+    "name": "a NUL in a registry",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"homes\": [{\"provider\": \"github\", \"account\": \"x\"}], \"registries\": {\"npm\": \"@a\\u0000b\"}}"
+  },
+  {
+    "name": "a NUL in a local id",
+    "accepted": false,
+    "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"id\": \"local:a\\u0000b\"}"
   }
 ]

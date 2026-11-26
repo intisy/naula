@@ -1,4 +1,30 @@
 {
+  "/definitions/freeText": {
+    "accept": [
+      "",
+      "Lays out, identifies and renames git repos.",
+      "https://naula.dev",
+      "a\nb",
+      "caf\u00e9"
+    ],
+    "refuse": [
+      "a\u0000b",
+      "\u0000"
+    ]
+  },
+  "/definitions/branch": {
+    "accept": [
+      "main",
+      "development",
+      "feature/x",
+      "a b"
+    ],
+    "refuse": [
+      "",
+      "ma\u0000in",
+      "\u0000"
+    ]
+  },
   "/definitions/repoName": {
     "accept": [
       "naula",
@@ -156,7 +182,8 @@
       "a\tb",
       "a\u007fb",
       " ",
-      "a\n"
+      "a\n",
+      "a\u0000b"
     ]
   },
   "/definitions/commit": {
@@ -196,6 +223,7 @@
       "github:1",
       "local:a b",
       "local:a\tb",
+      "local:a\u0000b",
       "Git:dd92836cca7c292258635112ecfe1acb7b4f6ecd",
       "git:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
     ]
@@ -402,7 +430,8 @@
       "",
       "a\nb",
       "a\rb",
-      "a\n"
+      "a\n",
+      "a\u0000b"
     ]
   },
   "/if/properties/id": {

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "repo.json, format 2",
   "description": "What a repo states about itself to naula: its name, where it lives, what it needs and, in an org's rules repo, the org. naula's parser reads exactly this; its suite holds the two to each other.",
-  "$comment": "Three rules of the parser are below what a schema can state, since a validator only sees the parsed value: a member written twice is refused, every JSON text is UTF-8 with no NUL, and a number in access must be finite.",
+  "$comment": "A validator sees only the parsed value, so four of the parser's rules are left unstated here: a member written twice is refused, the text is well-formed UTF-8, no member name and nothing inside access holds a NUL, and every number in access is finite.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "name", "importName"],
@@ -17,20 +17,20 @@
       "items": { "$ref": "#/definitions/home" }
     },
     "id": { "$ref": "#/definitions/ownId" },
-    "description": { "type": "string" },
+    "description": { "$ref": "#/definitions/freeText" },
     "topics": {
       "type": "array",
       "maxItems": 20,
       "uniqueItems": true,
       "items": { "$ref": "#/definitions/topic" }
     },
-    "homepage": { "type": "string" },
+    "homepage": { "$ref": "#/definitions/freeText" },
     "settings": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "visibility": { "enum": ["public", "private"] },
-        "defaultBranch": { "type": "string", "minLength": 1 },
+        "defaultBranch": { "$ref": "#/definitions/branch" },
         "issues": { "type": "boolean" },
         "wiki": { "type": "boolean" }
       }
@@ -89,6 +89,15 @@
   "then": { "properties": { "homes": { "not": {} } } },
   "else": { "required": ["homes"] },
   "definitions": {
+    "freeText": {
+      "description": "Any text without a NUL.",
+      "type": "string",
+      "pattern": "^[^\\x00]*$"
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^[^\\x00]+$"
+    },
     "repoName": {
       "description": "A folder name: not .git in any case, no trailing dot, no Windows device name with any extension.",
       "type": "string",
@@ -230,7 +239,7 @@
     },
     "projectDescription": {
       "type": "string",
-      "pattern": "^[^\\r\\n]+$"
+      "pattern": "^[^\\x00\\r\\n]+$"
     },
     "projects": {
       "type": "object",

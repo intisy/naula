@@ -238,6 +238,10 @@ int repo_file_is_any_text(const char *text) {
     return 1;
 }
 
+int repo_file_is_branch(const char *text) {
+    return text[0] != '\0';
+}
+
 void *repo_file_allocate_array(size_t count, size_t element_size) {
     if (count == 0 || count > SIZE_MAX / element_size) {
         return NULL;
@@ -311,7 +315,7 @@ static int is_setting_valid(const cJSON *setting) {
                                            strcmp(setting->valuestring, "private") == 0);
     }
     if (strcmp(setting->string, "defaultBranch") == 0) {
-        return cJSON_IsString(setting) && setting->valuestring[0] != '\0';
+        return cJSON_IsString(setting) && repo_file_is_branch(setting->valuestring);
     }
     return cJSON_IsBool(setting);
 }
