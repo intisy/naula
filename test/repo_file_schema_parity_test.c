@@ -221,9 +221,30 @@ static void check_reference_stands_alone(const cJSON *schema, const char *locati
     }
 }
 
+/**
+ * A condition (an `if`, `then` or `else`, or a branch of `oneOf`, `anyOf` or `allOf`) tests or adds to the object its
+ * parent shapes, so it states a type for strict validators without closing the object a second time.
+ */
+static int is_condition(const char *location) {
+    static const char *const condition_steps[] = {"/if", "/then", "/else"};
+    static const char *const combination_steps[] = {"/oneOf/", "/anyOf/", "/allOf/"};
+    const char *last = strrchr(location, '/');
+    for (size_t index = 0; last != NULL && index < 3; index++) {
+        if (strcmp(last, condition_steps[index]) == 0) {
+            return 1;
+        }
+        size_t length = strlen(combination_steps[index]);
+        if ((size_t)(last - location) + 1 >= length &&
+            strncmp(last + 1 - length, combination_steps[index], length) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void check_object_is_closed(const cJSON *schema, const char *location) {
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(schema, "type");
-    if (cJSON_IsString(type) && strcmp(type->valuestring, "object") == 0 &&
+    if (cJSON_IsString(type) && strcmp(type->valuestring, "object") == 0 && !is_condition(location) &&
         cJSON_GetObjectItemCaseSensitive(schema, "additionalProperties") == NULL) {
         fprintf(stderr, "%s is an object that leaves additionalProperties open\n", location[0] == '\0' ? "/" : location);
         check_failures++;

@@ -78,16 +78,16 @@
           "items": { "$ref": "#/definitions/orgReference" }
         }
       },
-      "if": { "required": ["parent"] },
-      "then": { "properties": { "hold": { "not": {} } } }
+      "if": { "type": "object", "required": ["parent"], "properties": { "parent": {} } },
+      "then": { "type": "object", "properties": { "hold": { "not": {} } } }
     },
     "access": {
       "description": "Kept as written; its own spec defines it."
     }
   },
-  "if": { "required": ["id"], "properties": { "id": { "pattern": "^local:" } } },
-  "then": { "properties": { "homes": { "not": {} } } },
-  "else": { "required": ["homes"] },
+  "if": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "pattern": "^local:" } } },
+  "then": { "type": "object", "properties": { "homes": { "not": {} } } },
+  "else": { "type": "object", "required": ["homes"] },
   "definitions": {
     "freeText": {
       "description": "Any text without a NUL.",
@@ -218,10 +218,11 @@
     },
     "idOrUrl": {
       "description": "Exactly one of id and url; at is required with a git: id and forbidden otherwise.",
-      "oneOf": [{ "required": ["id"] }, { "required": ["url"] }],
-      "if": { "required": ["id"], "properties": { "id": { "pattern": "^git:" } } },
-      "then": { "required": ["at"] },
-      "else": { "properties": { "at": { "not": {} } } }
+      "oneOf": [{ "type": "object", "required": ["id"], "properties": { "id": {} } },
+        { "type": "object", "required": ["url"], "properties": { "url": {} } }],
+      "if": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string", "pattern": "^git:" } } },
+      "then": { "type": "object", "required": ["at"], "properties": { "at": {} } },
+      "else": { "type": "object", "properties": { "at": { "not": {} } } }
     },
     "orgReference": {
       "type": "object",
