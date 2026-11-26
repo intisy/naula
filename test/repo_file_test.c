@@ -261,6 +261,8 @@ static void members_out_of_shape_are_refused(void) {
     expect_text_refused("{ \"format\": 2, \"name\": \"a\", \"importName\": \"A\", " GITHUB_HOME " }", "importName",
                         "an uppercase importName");
     expect_text_refused(FILE_HEAD GITHUB_HOME ", \"topics\": [ \"Tools\" ] }", "topics[0]", "an uppercase topic");
+    expect_text_refused(FILE_HEAD GITHUB_HOME ", \"topics\": [ \"git\", \"tools\", \"git\" ] }", "topics[2]",
+                        "a repeated topic");
     expect_text_refused(FILE_HEAD GITHUB_HOME ", \"settings\": { \"pages\": true } }", "settings", "a settings member");
     expect_text_refused(FILE_HEAD GITHUB_HOME ", \"registries\": { \"pypi\": \"x\" } }", "registries",
                         "a registry naula does not know");

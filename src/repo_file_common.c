@@ -13,7 +13,7 @@
 
 static const char *const UNKNOWN_MEMBER_FIX = "remove the member, or spell it as repo.json format 2 does";
 static const char *const TOPIC_FIX =
-    "list at most 20 topics of lowercase letters, digits and hyphens, 50 characters each";
+    "list at most 20 different topics of lowercase letters, digits and hyphens, 50 characters each";
 static const char *const SETTINGS_FIX =
     "keep settings to visibility (\"public\" or \"private\"), defaultBranch (a name), issues and wiki (true or false)";
 
@@ -244,6 +244,19 @@ static int is_topic(const char *text) {
     return 1;
 }
 
+/**
+ * Whether topic repeats one before it in the list. A host keeps each topic once (Gitea drops a repeat and answers
+ * 204), so a file that repeats one would differ from its host on every sync and be written back for ever.
+ */
+static int is_listed_before(const cJSON *topics, const cJSON *topic) {
+    for (const cJSON *earlier = topics->child; earlier != topic; earlier = earlier->next) {
+        if (strcmp(earlier->valuestring, topic->valuestring) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static naula_status read_topics(const cJSON *topics, const member_path *path, naula_metadata *metadata,
                                 naula_refusal *refusal) {
     int count = cJSON_GetArraySize(topics);
@@ -261,6 +274,9 @@ static naula_status read_topics(const cJSON *topics, const member_path *path, na
         member_path topic_path = member_path_index(path, index);
         if (!cJSON_IsString(topic) || topic->valuestring == NULL || !is_topic(topic->valuestring)) {
             return repo_file_refuse(refusal, &topic_path, TOPIC_FIX, "is not a topic");
+        }
+        if (is_listed_before(topics, topic)) {
+            return repo_file_refuse(refusal, &topic_path, TOPIC_FIX, "repeats a topic listed before it");
         }
         metadata->topics[index] = naula_memory_duplicate_text(topic->valuestring);
         if (metadata->topics[index] == NULL) {
