@@ -27,13 +27,15 @@ set_target_properties(naula_cjson PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISI
 
 if(WIN32)
     set(naula_transport_platform_source src/transport_windows.c)
+    set(naula_cache_platform_source src/cache_file_windows.c)
     set(naula_transport_libraries Winhttp Shlwapi)
 else()
     find_package(Threads REQUIRED)
     set(naula_transport_platform_source src/transport_curl.c)
+    set(naula_cache_platform_source src/cache_file_posix.c)
     set(naula_transport_libraries ${CMAKE_DL_LIBS} Threads::Threads m)
 endif()
-set(naula_sources src/status.c src/id.c src/sha256.c src/home.c src/provider_registry.c src/forge_common.c src/forge_write.c src/forge_create.c src/provider_github.c src/provider_github_write.c src/provider_gitea.c src/provider_gitea_write.c src/provider_web.c src/json.c src/json_grammar.c src/metadata.c src/repo_file.c src/repo_file_common.c src/repo_file_org.c src/repo_file_write.c src/repo_file_format_one.c src/transport.c src/transport_sink.c ${naula_transport_platform_source})
+set(naula_sources src/status.c src/id.c src/sha256.c src/home.c src/provider_registry.c src/forge_common.c src/forge_write.c src/forge_create.c src/provider_github.c src/provider_github_write.c src/provider_gitea.c src/provider_gitea_write.c src/provider_web.c src/json.c src/json_grammar.c src/metadata.c src/repo_file.c src/repo_file_common.c src/repo_file_org.c src/repo_file_write.c src/repo_file_format_one.c src/transport.c src/transport_sink.c ${naula_transport_platform_source} src/session.c src/history_provider.c src/confirm.c src/resolve.c src/cache.c ${naula_cache_platform_source})
 
 add_library(naula STATIC ${naula_sources})
 target_include_directories(naula PUBLIC include)

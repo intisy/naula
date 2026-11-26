@@ -7,3 +7,8 @@ A C library and command line that lays out, identifies and renames git repos fro
 - **One allocator** (`naula/memory.h`): every allocation in shipped code goes through `naula_memory_allocate` and its
   family. `naula` carries no allocator itself: each final binary links exactly one of `naula_allocator` and the
   test-only `naula_allocator_counting`, and the configure refuses a plain `malloc` anywhere else in `src/`.
+- **The resolver** (`naula/resolve.h`, `naula/session.h`, `naula/history.h`): from a dependency's `{ id, at }` to the
+  homes that speak for that id. Trust starts at the numbers `at` holds and the session's cache, never at a name; homes
+  confirm each other by listing each other both ways, and only a definite answer (a 404 by number, a provider that is
+  not installed) counts a home as gone, so a timeout or an unresolved host never lets a copy past the home that would
+  disown it.

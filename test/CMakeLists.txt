@@ -103,3 +103,10 @@ target_compile_definitions(repo_file_test PRIVATE NAULA_REPO_FILE_FIXTURES="${CM
 
 naula_test(json_test)
 target_link_libraries(json_test PRIVATE naula naula_allocator_counting)
+
+naula_test(resolve_test http_fixture.c)
+target_link_libraries(resolve_test PRIVATE naula_test_hooks naula_allocator_counting)
+target_compile_definitions(resolve_test PRIVATE NAULA_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}")
+if(WIN32)
+    target_link_libraries(resolve_test PRIVATE ws2_32)
+endif()
