@@ -1,11 +1,14 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "cache_internal.h"
@@ -84,10 +87,30 @@ static char *joined(const char *left, const char *right) {
     return text;
 }
 
+static void remove_stale_temporaries(const char *identities) {
+    DIR *folder = opendir(identities);
+    if (folder == NULL) {
+        return;
+    }
+    time_t now = time(NULL);
+    for (struct dirent *entry = readdir(folder); entry != NULL; entry = readdir(folder)) {
+        char path[4096];
+        struct stat about;
+        if (!naula_cache_is_temporary_name(entry->d_name) ||
+            snprintf(path, sizeof path, "%s/%s", identities, entry->d_name) >= (int)sizeof path) {
+            continue;
+        }
+        if (lstat(path, &about) == 0 && S_ISREG(about.st_mode) && now - about.st_mtime > NAULA_CACHE_STALE_SECONDS) {
+            unlink(path);
+        }
+    }
+    closedir(folder);
+}
+
 naula_status naula_cache_file_replace(const char *directory, const char *path, const uint8_t *bytes, size_t length) {
-    static unsigned long counter;
+    static atomic_ulong counter;
     char suffix[64];
-    snprintf(suffix, sizeof suffix, ".%ld.%lu.tmp", (long)getpid(), ++counter);
+    snprintf(suffix, sizeof suffix, ".%ld.%lu.tmp", (long)getpid(), atomic_fetch_add(&counter, 1) + 1);
     char *identities = joined(directory, "/identities");
     char *temporary = joined(path, suffix);
     if (identities == NULL || temporary == NULL) {
@@ -97,6 +120,7 @@ naula_status naula_cache_file_replace(const char *directory, const char *path, c
     }
     naula_status status = NAULA_REFUSED;
     if (make_directory(directory) && make_directory(identities)) {
+        remove_stale_temporaries(identities);
         int descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (descriptor >= 0) {
             int written = write_all(descriptor, bytes, length);

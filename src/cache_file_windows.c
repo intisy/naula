@@ -128,6 +128,50 @@ static naula_status widen_paths(const char *directory, const char *path, replace
     return status;
 }
 
+static int is_stale(const FILETIME *written) {
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    ULARGE_INTEGER then_ticks = {{written->dwLowDateTime, written->dwHighDateTime}};
+    ULARGE_INTEGER now_ticks = {{now.dwLowDateTime, now.dwHighDateTime}};
+    return now_ticks.QuadPart > then_ticks.QuadPart &&
+           now_ticks.QuadPart - then_ticks.QuadPart > (ULONGLONG)NAULA_CACHE_STALE_SECONDS * 10000000u;
+}
+
+static int narrow_ascii(const wchar_t *wide, char *out, size_t size) {
+    size_t index = 0;
+    for (; wide[index] != L'\0'; index++) {
+        if (wide[index] >= 0x80 || index + 1 >= size) {
+            return 0;
+        }
+        out[index] = (char)wide[index];
+    }
+    out[index] = '\0';
+    return 1;
+}
+
+static void remove_stale_temporaries(const wchar_t *identities) {
+    wchar_t pattern[MAX_PATH * 4];
+    wchar_t path[MAX_PATH * 4];
+    char name[MAX_PATH];
+    WIN32_FIND_DATAW found;
+    if (swprintf(pattern, sizeof pattern / sizeof pattern[0], L"%ls\\*.tmp", identities) < 0) {
+        return;
+    }
+    HANDLE search = FindFirstFileW(pattern, &found);
+    if (search == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    do {
+        if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            narrow_ascii(found.cFileName, name, sizeof name) && naula_cache_is_temporary_name(name) &&
+            is_stale(&found.ftLastWriteTime) &&
+            swprintf(path, sizeof path / sizeof path[0], L"%ls\\%ls", identities, found.cFileName) >= 0) {
+            DeleteFileW(path);
+        }
+    } while (FindNextFileW(search, &found));
+    FindClose(search);
+}
+
 naula_status naula_cache_file_replace(const char *directory, const char *path, const uint8_t *bytes, size_t length) {
     replace_paths paths;
     naula_status status = widen_paths(directory, path, &paths);
@@ -137,11 +181,13 @@ naula_status naula_cache_file_replace(const char *directory, const char *path, c
     }
     status = NAULA_REFUSED;
     if (make_directory(paths.directory) && make_directory(paths.identities)) {
+        remove_stale_temporaries(paths.identities);
         HANDLE file = CreateFileW(paths.temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
         if (file != INVALID_HANDLE_VALUE) {
             int written = write_all(file, bytes, length);
             CloseHandle(file);
-            if (written && MoveFileExW(paths.temporary, paths.target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DWORD flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+            if (written && MoveFileExW(paths.temporary, paths.target, flags)) {
                 status = NAULA_OK;
             } else {
                 DeleteFileW(paths.temporary);

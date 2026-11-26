@@ -248,28 +248,74 @@ static int refused_as(const naula_refusal *refusal, const char *code) {
     return strcmp(refusal->code, code) == 0;
 }
 
-static naula_status read_repo_file(const naula_provider *provider, const char *token, candidate *subject,
-                                   uint8_t **bytes, size_t *length, naula_refusal *refusal) {
-    const char *branch = WORKING_BRANCH;
-    naula_status status = provider->read_file(provider->context, subject->place.host, subject->place.number, branch,
-                                              REPO_FILE, token, bytes, length, refusal);
-    const char *fallback = subject->repository.default_branch;
-    if (status == NAULA_REFUSED && refused_as(refusal, "missing_file_or_ref") && fallback != NULL &&
-        strcmp(fallback, WORKING_BRANCH) != 0) {
-        *refusal = fresh_refusal();
-        branch = fallback;
-        status = provider->read_file(provider->context, subject->place.host, subject->place.number, branch,
-                                     REPO_FILE, token, bytes, length, refusal);
+/**
+ * Whether the home has a development branch, asked of its history: a ref it does not have answers
+ * `missing_commit_or_ref`, while a branch that exists answers whether it holds the id either way.
+ */
+static naula_status has_working_branch(resolver *subject, candidate *home, int *exists, naula_refusal *refusal) {
+    const naula_history *history = &subject->session->history;
+    int contained = 0;
+    *exists = 0;
+    naula_status status =
+        history->contains(history->context, &home->place, WORKING_BRANCH, subject->hex, &contained, refusal);
+    if (status == NAULA_REFUSED && refused_as(refusal, "missing_commit_or_ref")) {
+        return NAULA_OK;
     }
-    if (status == NAULA_OK) {
-        subject->branch = copy_text(branch);
-        if (subject->branch == NULL) {
-            naula_memory_release(*bytes);
-            *bytes = NULL;
-            return NAULA_OUT_OF_MEMORY;
+    *exists = status == NAULA_OK;
+    return status;
+}
+
+/**
+ * Reads repo.json from development, or from the default branch only when there is no development branch: a
+ * development branch without the file states nothing, and reading another branch then would let a stale default
+ * branch speak for the home. Settles the home when no file is read.
+ */
+static naula_status read_repo_file(resolver *subject, const naula_provider *provider, const char *token,
+                                   candidate *home, uint8_t **bytes, size_t *length) {
+    naula_refusal refusal = fresh_refusal();
+    const char *branch = WORKING_BRANCH;
+    naula_status status = provider->read_file(provider->context, home->place.host, home->place.number, branch,
+                                              REPO_FILE, token, bytes, length, &refusal);
+    const char *fallback = home->repository.default_branch;
+    if (status == NAULA_REFUSED && refused_as(&refusal, "missing_file_or_ref")) {
+        int exists = 0;
+        naula_refusal asked = fresh_refusal();
+        naula_status branch_status = has_working_branch(subject, home, &exists, &asked);
+        if (branch_status != NAULA_OK) {
+            return settle_failure(home, branch_status, &asked);
+        }
+        if (exists || fallback == NULL || strcmp(fallback, WORKING_BRANCH) == 0) {
+            settle(home, CANDIDATE_REFUSED, "not-listed", "its working branch holds no repo.json");
+            return NAULA_OK;
+        }
+        refusal = fresh_refusal();
+        branch = fallback;
+        status = provider->read_file(provider->context, home->place.host, home->place.number, branch, REPO_FILE,
+                                     token, bytes, length, &refusal);
+    }
+    if (status == NAULA_REFUSED && refused_as(&refusal, "missing_file_or_ref")) {
+        settle(home, CANDIDATE_REFUSED, "not-listed", "its working branch holds no repo.json");
+        return NAULA_OK;
+    }
+    if (status != NAULA_OK) {
+        return settle_failure(home, status, &refusal);
+    }
+    home->branch = copy_text(branch);
+    if (home->branch == NULL) {
+        naula_memory_release(*bytes);
+        *bytes = NULL;
+        return NAULA_OUT_OF_MEMORY;
+    }
+    return NAULA_OK;
+}
+
+const cache_home *naula_resolver_cached_place(const resolver *subject, const naula_place *place) {
+    for (size_t index = 0; index < subject->cache.count; index++) {
+        if (naula_resolver_same_place(&subject->cache.homes[index].place, NULL, place, NULL)) {
+            return &subject->cache.homes[index];
         }
     }
-    return status;
+    return NULL;
 }
 
 static naula_status read_provider_home(resolver *subject, candidate *home) {
@@ -278,6 +324,11 @@ static naula_status read_provider_home(resolver *subject, candidate *home) {
     if (provider == NULL) {
         settle(home, CANDIDATE_DEAD, "dead-skipped", "no provider is installed for %s: %s", home->place.provider,
                NAULA_UNKNOWN_PROVIDER_FIX);
+        return NAULA_OK;
+    }
+    const cache_home *cached = naula_resolver_cached_place(subject, &home->place);
+    if (cached != NULL && cached->state == CACHE_DEAD) {
+        settle(home, CANDIDATE_DEAD, "dead-skipped", "it answered that it is gone before, and is not asked again");
         return NAULA_OK;
     }
     const char *token = naula_session_token(subject->session, home->place.provider, home->place.host);
@@ -293,13 +344,9 @@ static naula_status read_provider_home(resolver *subject, candidate *home) {
     }
     uint8_t *bytes = NULL;
     size_t length = 0;
-    status = read_repo_file(provider, token, home, &bytes, &length, &refusal);
-    if (status == NAULA_REFUSED && refused_as(&refusal, "missing_file_or_ref")) {
-        settle(home, CANDIDATE_REFUSED, "not-listed", "it serves no repo.json on its working branch");
-        return NAULA_OK;
-    }
-    if (status != NAULA_OK) {
-        return settle_failure(home, status, &refusal);
+    status = read_repo_file(subject, provider, token, home, &bytes, &length);
+    if (status != NAULA_OK || home->outcome != CANDIDATE_PENDING) {
+        return status;
     }
     status = naula_repo_file_parse(bytes, length, &home->file, &refusal);
     naula_memory_release(bytes);
@@ -410,7 +457,8 @@ static naula_status check_stated_id(resolver *subject, candidate *home, int *sta
     if (status == NAULA_OUT_OF_MEMORY) {
         return status;
     }
-    if (status == NAULA_OK && id.kind == NAULA_ID_GIT && id.segment_count == 0 && strcmp(id.commit, subject->hex) == 0) {
+    if (status == NAULA_OK && id.kind == NAULA_ID_GIT && id.segment_count == 0 &&
+        strcmp(id.commit, subject->hex) == 0) {
         *stated = 1;
     } else {
         settle(home, CANDIDATE_REFUSED, "states-another-id", "its repo.json states the id %s", home->file.id);
@@ -437,6 +485,7 @@ static naula_status check_history(resolver *subject, candidate *home, int stated
     if (status != NAULA_OK) {
         return settle_failure(home, status, &refusal);
     }
+    home->holds_id = contained;
     if (!contained) {
         settle(home, CANDIDATE_REFUSED, "not-in-history", "its working branch does not hold %s", subject->hex);
         return NAULA_OK;
@@ -498,29 +547,41 @@ static naula_status check_fork_parent(resolver *subject, candidate *home, unsign
     return NAULA_OK;
 }
 
-static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number) {
+/**
+ * The cached home for a listed account: one confirmed last time before one kept as a guard, and either before one
+ * that answered it is gone, which still guards the account.
+ */
+static const cache_home *cache_for_account(const resolver *subject, const naula_home *home) {
+    const cache_home *best = NULL;
     for (size_t index = 0; index < subject->cache.count; index++) {
         const cache_home *cached = &subject->cache.homes[index];
         if (cached->place.kind == NAULA_HOME_PROVIDER && strcmp(cached->place.provider, home->provider) == 0 &&
             naula_resolver_same_host(home->provider, cached->place.host, home->host) &&
-            naula_resolver_equals_ignoring_case(cached->account, home->account)) {
-            *number = cached->place.number;
-            return 1;
+            naula_resolver_equals_ignoring_case(cached->account, home->account) &&
+            (best == NULL || cached->state < best->state)) {
+            best = cached;
         }
     }
-    return 0;
+    return best;
+}
+
+static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number) {
+    const cache_home *cached = cache_for_account(subject, home);
+    if (cached != NULL) {
+        *number = cached->place.number;
+    }
+    return cached != NULL;
 }
 
 /**
- * A home already reached by number that answers to the listed account: for a provider lister, one whose repo.json
- * states the lister's name, which finds a home whose host still carries an old name; for a web lister, whose document
- * names no repo, one already confirmed.
+ * A home already reached by number that answers to the listed account and confirms or holds the id: for a provider
+ * lister, one whose repo.json states the lister's name, which finds a home whose host still carries an old name.
  */
 static uint64_t reached_number(const resolver *subject, const naula_home *home, const char *name) {
     for (size_t index = 0; index < subject->count; index++) {
         const candidate *other = subject->candidates[index];
-        int fits = name == NULL ? other->outcome == CANDIDATE_CONFIRMED && !other->probe
-                                : other->readable && naula_resolver_equals_ignoring_case(other->file.name, name);
+        int trusted = (other->outcome == CANDIDATE_CONFIRMED && !other->probe) || other->holds_id;
+        int fits = trusted && (name == NULL || naula_resolver_equals_ignoring_case(other->file.name, name));
         if (fits && naula_home_names(home, other)) {
             return other->place.number;
         }
@@ -550,17 +611,19 @@ static naula_status note_home(resolver *subject, const naula_home *home, uint64_
         *index = NAULA_NO_CANDIDATE;
         return NAULA_OK;
     }
-    if (status == NAULA_OK && outcome != CANDIDATE_PENDING && subject->candidates[*index]->outcome == CANDIDATE_PENDING) {
+    if (status == NAULA_OK && outcome != CANDIDATE_PENDING &&
+        subject->candidates[*index]->outcome == CANDIDATE_PENDING) {
         settle(subject->candidates[*index], outcome, code, "%s", detail);
     }
     return status;
 }
 
 /**
- * The number of a home `lister` lists by account: the one the cache confirmed there before, else one already reached
- * by number, else the one its provider finds under the account and `lister`'s name. A number found that differs from the cached one is refused as
- * `number-changed`, so a re-registered account never stands in for the home it replaced. When neither is known, or
- * the provider could not be heard, `lister` is settled and 0 answered.
+ * The number of a home `lister` lists by account: the one the cache holds for that account (confirmed, kept as a
+ * guard, or gone for good), else one already reached by number, else the one its provider finds under the account
+ * and `lister`'s name. A number found that differs from the cached one is refused as `number-changed`, so a
+ * re-registered account never stands in for the home it replaced. When neither is known, or the provider could not
+ * be heard, `lister` is settled and 0 answered.
  */
 static naula_status listed_number(resolver *subject, candidate *lister, const naula_home *home, uint64_t *number) {
     char detail[NAULA_RESOLVE_DETAIL_SIZE];
@@ -568,7 +631,8 @@ static naula_status listed_number(resolver *subject, candidate *lister, const na
     *number = 0;
     const naula_provider *provider = naula_providers_find(subject->session->providers, home->provider, NULL);
     if (provider == NULL) {
-        snprintf(detail, sizeof detail, "no provider is installed for %s: %s", home->provider, NAULA_UNKNOWN_PROVIDER_FIX);
+        snprintf(detail, sizeof detail, "no provider is installed for %s: %s", home->provider,
+                 NAULA_UNKNOWN_PROVIDER_FIX);
         return note_home(subject, home, 0, CANDIDATE_DEAD, "dead-skipped", detail, &index);
     }
     uint64_t cached = 0;

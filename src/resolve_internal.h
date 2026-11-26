@@ -39,10 +39,12 @@ typedef enum candidate_outcome {
 } candidate_outcome;
 
 /**
- * One home the resolver met. `wanted` marks one reached from `at`, the cache or a confirmed home's `homes`, which is
- * confirmed or refused in full; any other is only read, to see whom it lists, or probed as a fork parent. A home
- * listed by an account whose number was never learned has number 0 and keeps that `account`. `listed` maps each
- * entry of its homes to the candidate it named, NAULA_NO_CANDIDATE for itself and for one never reached.
+ * One home the resolver met. `wanted` marks one reached from `at` or a confirmed home's `homes`, which is confirmed
+ * or refused in full; any other is only read, to see whom it lists, or probed as a fork parent. `in_closure` marks a
+ * confirmed home linked both ways to the anchor, the only homes an answer holds. `holds_id` is set once its history
+ * holds the id. A home listed by an account whose number was never learned has number 0 and keeps that `account`.
+ * `listed` maps each entry of its homes to the candidate it named, NAULA_NO_CANDIDATE for itself and for one never
+ * reached.
  */
 typedef struct candidate {
     naula_place place;
@@ -62,6 +64,8 @@ typedef struct candidate {
     int probe;
     int evaluating;
     int expanded;
+    int holds_id;
+    int in_closure;
 } candidate;
 
 typedef struct resolver {
@@ -91,6 +95,9 @@ naula_status naula_resolver_add(resolver *subject, const naula_place *place, con
 naula_status naula_resolver_confirm(resolver *subject, size_t index, unsigned depth);
 
 void naula_resolver_release_candidates(resolver *subject);
+
+/** The cached home at `place`, whatever its state, or NULL. */
+const cache_home *naula_resolver_cached_place(const resolver *subject, const naula_place *place);
 
 naula_status naula_resolver_copy_place(const naula_place *from, naula_place *to);
 
