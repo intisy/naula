@@ -301,39 +301,60 @@ static naula_status follow_primary(const resolver *subject, size_t anchor, size_
     return status;
 }
 
+/** Whether any home of lineage record `index` was refused in this run, which leaves it no say over the primary. */
+static int is_disqualified_baseline(const resolver *subject, size_t index) {
+    const identity_cache *record = &subject->lineage[index];
+    for (size_t entry = 0; entry < record->count; entry++) {
+        for (size_t candidate_index = 0; candidate_index < subject->count; candidate_index++) {
+            const candidate *home = subject->candidates[candidate_index];
+            if (home->outcome == CANDIDATE_REFUSED &&
+                naula_resolver_same_place(&home->place, home->account, &record->homes[entry].place,
+                                          record->homes[entry].account)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /**
- * The baseline a new primary is asked against: this anchor's record's primary, or with no record of its own the
- * primary of its lineage, any disagreement among them asking in any case, so a consumer that edits its `at` during a
- * move keeps the prompt.
+ * The former primary a new one is asked against, decided once confirmation is complete: this anchor's record's, or
+ * with no record of its own the lineage's. `ask` is set when the lineage's records disagree or one of them was
+ * disqualified by a refusal in this run, failing closed; `was` is then a former primary that differs from `becomes`
+ * where there is one, never this run's own.
  */
-static naula_status baseline_primary(const resolver *subject, const naula_place **was, int *conflicting) {
+static void baseline_primary(const resolver *subject, const naula_place *becomes, const naula_place **was, int *ask) {
     *was = NULL;
-    *conflicting = 0;
+    *ask = 0;
     if (subject->cache.present) {
         *was = subject->cache.has_primary ? &subject->cache.homes[subject->cache.primary].place : NULL;
-        return NAULA_OK;
+        *ask = *was != NULL && !naula_resolver_same_place(*was, NULL, becomes, NULL);
+        return;
     }
+    const naula_place *first = NULL;
+    const naula_place *differing = NULL;
     for (size_t index = 0; index < subject->lineage_count; index++) {
         const identity_cache *record = &subject->lineage[index];
-        if (!record->has_primary || !naula_resolver_lineage_usable(subject, index)) {
+        if (!record->has_primary) {
             continue;
         }
         const naula_place *primary = &record->homes[record->primary].place;
-        if (*was == NULL) {
-            *was = primary;
-        } else {
-            *conflicting |= !naula_resolver_same_place(*was, NULL, primary, NULL);
+        first = first == NULL ? primary : first;
+        if (!naula_resolver_same_place(primary, NULL, becomes, NULL)) {
+            differing = differing == NULL ? primary : differing;
+            *ask = 1;
         }
+        *ask |= is_disqualified_baseline(subject, index);
     }
-    return NAULA_OK;
+    *was = differing != NULL ? differing : first;
 }
 
 static naula_status check_primary_change(const resolver *subject, size_t primary, naula_refusal *refusal) {
     const naula_place *was = NULL;
-    int conflicting = 0;
-    baseline_primary(subject, &was, &conflicting);
+    int ask = 0;
     const naula_place *becomes = &subject->candidates[primary]->place;
-    if (was == NULL || (!conflicting && naula_resolver_same_place(was, NULL, becomes, NULL))) {
+    baseline_primary(subject, becomes, &was, &ask);
+    if (!ask) {
         return NAULA_OK;
     }
     const naula_session *session = subject->session;
@@ -399,9 +420,43 @@ static int is_reconfirmed(const resolver *subject, const cache_home *cached) {
     return 0;
 }
 
+static int holds_entry(const identity_cache *next, const cache_home *entry) {
+    for (size_t index = 0; index < next->count; index++) {
+        if (naula_resolver_same_place(&next->homes[index].place, next->homes[index].account, &entry->place,
+                                      entry->account)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * A first record for an `at` keeps, as guards, every account number its lineage held, so the protection the lineage
+ * gave this run is not lost the moment the record exists and the lineage is no longer read.
+ */
+static naula_status inherit_lineage(const resolver *subject, identity_cache *next) {
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        const identity_cache *record = &subject->lineage[index];
+        for (size_t entry = 0; entry < record->count; entry++) {
+            const cache_home *home = &record->homes[entry];
+            if (home->place.kind != NAULA_HOME_PROVIDER || home->account == NULL || holds_entry(next, home)) {
+                continue;
+            }
+            naula_status status = copy_cache_entry(home, CACHE_GUARD, &next->homes[next->count++]);
+            if (status != NAULA_OK) {
+                return status;
+            }
+        }
+    }
+    return NAULA_OK;
+}
+
 static naula_status build_cache(const resolver *subject, size_t primary, identity_cache *next) {
     int64_t now = (int64_t)time(NULL);
     size_t capacity = subject->count + subject->cache.count;
+    for (size_t index = 0; index < subject->lineage_count; index++) {
+        capacity += subject->lineage[index].count;
+    }
     memset(next, 0, sizeof *next);
     next->homes = naula_memory_allocate(capacity * sizeof *next->homes);
     next->at = naula_memory_allocate(subject->at_text_count * sizeof *next->at);
@@ -437,7 +492,7 @@ static naula_status build_cache(const resolver *subject, size_t primary, identit
             return status;
         }
     }
-    return NAULA_OK;
+    return inherit_lineage(subject, next);
 }
 
 static naula_status write_cache(const resolver *subject, size_t primary, naula_resolution *resolution) {

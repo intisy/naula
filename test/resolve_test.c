@@ -1654,6 +1654,120 @@ static void a_copys_record_never_sets_a_baseline(void) {
     naula_resolution_release(&resolution);
 }
 
+/**
+ * The record guards bee at 20 and still holds a former mirror (40); a new `at` names the mirror, which this run
+ * refuses. `mirror_order` 0 puts the mirror second in `at`, 1 first, 2 first with a mirror that lists no bee.
+ */
+static naula_status a_former_mirror_in_a_new_at(int mirror_order, naula_resolution *resolution) {
+    char cache[512];
+    char name[32];
+    naula_refusal refusal;
+    snprintf(name, sizeof name, "former-mirror-%d", mirror_order);
+    cache_directory(name, cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *with_mirror = repo_file("lib", HOME("bee") "," HOME("alpha") "," HOME("mirror"), NULL);
+    fake_repo *alpha = add_repo(NULL, 10, "alpha", "lib", with_mirror);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", with_mirror);
+    fake_repo *mirror = add_repo(NULL, 40, "mirror", "lib", with_mirror);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(resolution);
+    const char *without = repo_file("lib", HOME("bee") "," HOME("alpha"), NULL);
+    alpha->development = without;
+    bee->development = without;
+    accept_answer = 1;
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", without);
+    if (mirror_order == 2) {
+        mirror->development = repo_file("lib", HOME("alpha") "," HOME("mirror"), NULL);
+    }
+    accept_answer = 0;
+    accept_calls = 0;
+    accepted_was = 0;
+    return mirror_order == 0 ? resolve_once(cache, ID, "forge:10", "forge:40", resolution, &refusal)
+                             : resolve_once(cache, ID, "forge:40", "forge:10", resolution, &refusal);
+}
+
+static void a_refusal_never_lifts_a_lineage_guard_whatever_the_order(void) {
+    naula_status statuses[3];
+    for (int order = 0; order < 3; order++) {
+        naula_resolution resolution;
+        statuses[order] = a_former_mirror_in_a_new_at(order, &resolution);
+        if (has_home(&resolution, NULL, 21)) {
+            fprintf(stderr, "order %d: a refused former mirror lifted the guard, and 21 became a home\n", order);
+            check_failures++;
+        }
+        if (statuses[order] != NAULA_REFUSED || accept_calls != 1 || accepted_was != 20) {
+            fprintf(stderr, "order %d: answered %d with %d prompts naming %llu, expected primary-changed asked of 20\n",
+                    order, (int)statuses[order], accept_calls, (unsigned long long)accepted_was);
+            check_failures++;
+        }
+        naula_resolution_release(&resolution);
+    }
+    CHECK(statuses[0] == statuses[1] && statuses[1] == statuses[2]);
+}
+
+static void a_home_refused_before_it_is_read_is_released_and_unheard(void) {
+    char cache[512];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("refused-then-read", cache, sizeof cache);
+    forget_cache(cache);
+    forge_reset();
+    const char *genuine = repo_file("lib", HOME("bee") "," HOME("alpha") "," HOME("gamma"), NULL);
+    add_repo(NULL, 10, "alpha", "lib", genuine);
+    fake_repo *bee = add_repo(NULL, 20, "bee", "lib", genuine);
+    add_repo(NULL, 30, "gamma", "lib", genuine);
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    bee->gone = 1;
+    add_repo(NULL, 21, "bee", "lib", genuine);
+    accept_answer = 1;
+    resolve_once(cache, ID, "forge:10", "forge:21", &resolution, &refusal);
+    CHECK(!has_home(&resolution, NULL, 21));
+    naula_resolution_release(&resolution);
+    for (int run = 0; run < 3; run++) {
+        resolve_once(cache, ID, "forge:10", "forge:30", &resolution, &refusal);
+        CHECK(!has_home(&resolution, NULL, 21));
+        naula_resolution_release(&resolution);
+    }
+    accept_answer = 0;
+}
+
+/**
+ * A home refused number-changed for one account and then reached by number through a second account's guard: it is
+ * read once already settled, which must release what it read, and counts as unheard rather than as disowning.
+ */
+static void a_settled_home_read_later_releases_its_file(void) {
+    char cache[512];
+    char path[1024];
+    naula_resolution resolution;
+    naula_refusal refusal;
+    cache_directory("settled-then-read", cache, sizeof cache);
+    forget_cache(cache);
+    record_path(cache, X, "forge:10", path, sizeof path);
+    forge_reset();
+    fake_repo *alpha = add_repo(NULL, 10, "alpha", "lib", repo_file("lib", HOME("alpha"), NULL));
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_OK);
+    naula_resolution_release(&resolution);
+    const char *listing = repo_file("lib", HOME("alpha") "," HOME("bee") "," HOME("bea"), NULL);
+    alpha->development = listing;
+    add_repo(NULL, 21, "bee", "lib", listing);
+    write_text_file(path, "{\"at\":[\"forge:10\"],\"id\":\"" ID "\",\"primary\":0,\"homes\":["
+                          "{\"state\":\"confirmed\",\"provider\":\"forge\",\"account\":\"alpha\",\"number\":10,"
+                          "\"confirmed\":1},"
+                          "{\"state\":\"guard\",\"provider\":\"forge\",\"account\":\"bee\",\"number\":20,"
+                          "\"confirmed\":1},"
+                          "{\"state\":\"guard\",\"provider\":\"forge\",\"account\":\"bea\",\"number\":21,"
+                          "\"confirmed\":1}]}");
+    CHECK(resolve_once(cache, ID, "forge:10", NULL, &resolution, &refusal) == NAULA_REFUSED);
+    check_text(refusal.code, "unverifiable", "a listed home refused earlier in the run is unheard");
+    CHECK(verdict_is(&resolution, NULL, 21, "number-changed", 0));
+    naula_resolution_release(&resolution);
+}
+
 static void records_that_disagree_on_the_primary_ask(void) {
     char cache[512];
     naula_resolution resolution;
@@ -2198,6 +2312,9 @@ int main(void) {
     a_first_contact_elsewhere_never_accepts_a_number_here(1);
     a_copys_homes_never_evict_what_protects_an_edited_at();
     a_copys_record_never_sets_a_baseline();
+    a_refusal_never_lifts_a_lineage_guard_whatever_the_order();
+    a_home_refused_before_it_is_read_is_released_and_unheard();
+    a_settled_home_read_later_releases_its_file();
     records_that_disagree_on_the_primary_ask();
     a_record_for_another_at_is_ignored_and_kept();
     one_run_of_404s_never_demotes_a_confirmed_home();

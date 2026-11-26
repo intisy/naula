@@ -332,6 +332,7 @@ static naula_status read_provider_home(resolver *subject, candidate *home) {
     size_t length = 0;
     status = read_repo_file(subject, provider, token, home, &bytes, &length);
     if (status != NAULA_OK || home->outcome != CANDIDATE_PENDING) {
+        naula_memory_release(bytes);
         return status;
     }
     status = naula_repo_file_parse(bytes, length, &home->file, &refusal);
@@ -539,21 +540,6 @@ static int guards_account(const cache_home *cached, const naula_home *home) {
            naula_resolver_equals_ignoring_case(cached->account, home->account);
 }
 
-int naula_resolver_lineage_usable(const resolver *subject, size_t index) {
-    const identity_cache *record = &subject->lineage[index];
-    for (size_t entry = 0; entry < record->count; entry++) {
-        for (size_t candidate_index = 0; candidate_index < subject->count; candidate_index++) {
-            const candidate *home = subject->candidates[candidate_index];
-            if (home->outcome == CANDIDATE_REFUSED &&
-                naula_resolver_same_place(&home->place, home->account, &record->homes[entry].place,
-                                          record->homes[entry].account)) {
-                return 0;
-            }
-        }
-    }
-    return 1;
-}
-
 /** The entries of `record` for a listed account: 0 none, 1 all one `number`, 2 more than one number. */
 static int record_number(const identity_cache *record, const naula_home *home, uint64_t *number) {
     int found = 0;
@@ -572,30 +558,30 @@ static int record_number(const identity_cache *record, const naula_home *home, u
 }
 
 /**
- * The number a listed account was confirmed at: this anchor's own record's, or with none, the one every lineage
- * record that holds the account agrees on. `disagree` is set when lineage records hold different numbers, which
- * refuses every number for the account, failing closed.
+ * The number a listed account was confirmed at: this anchor's own record's, its confirmed home before its guards,
+ * or with none, the one every lineage record that holds the account agrees on. The lineage is fixed before any home
+ * is weighed, and its numbers refuse a different number for the whole run whatever else the run refuses. `disagree`
+ * is set when the record's guards or the lineage's records hold different numbers, which refuses every number for
+ * the account, failing closed.
  */
 static int cache_number(const resolver *subject, const naula_home *home, uint64_t *number, int *disagree) {
     *disagree = 0;
     if (subject->cache.present) {
-        const cache_home *best = NULL;
         for (size_t index = 0; index < subject->cache.count; index++) {
             const cache_home *cached = &subject->cache.homes[index];
-            if (guards_account(cached, home) && (best == NULL || cached->state < best->state)) {
-                best = cached;
+            if (guards_account(cached, home) && cached->state == CACHE_CONFIRMED) {
+                *number = cached->place.number;
+                return 1;
             }
         }
-        if (best != NULL) {
-            *number = best->place.number;
-        }
-        return best != NULL;
+        int holds = record_number(&subject->cache, home, number);
+        *disagree = holds == 2;
+        return holds != 0;
     }
     int known = 0;
     for (size_t index = 0; index < subject->lineage_count; index++) {
         uint64_t held = 0;
-        int holds = naula_resolver_lineage_usable(subject, index) ? record_number(&subject->lineage[index], home, &held)
-                                                                  : 0;
+        int holds = record_number(&subject->lineage[index], home, &held);
         if (holds == 2 || (holds == 1 && known && held != *number)) {
             *disagree = 1;
         }
@@ -755,8 +741,9 @@ static void disown(candidate *lister, const candidate *home, const char *reason)
 
 /**
  * Whether the home `lister` lists at `entry` lists `lister` back. A home that is gone is skipped; one that cannot be
- * heard leaves `lister` unknown, never confirmed, since treating it as gone would let anyone who can slow one home
- * silence the home that would disown a copy.
+ * heard, or that this run already refused, leaves `lister` unknown, never confirmed: treating it as gone would let
+ * anyone who can slow one home silence the home that would disown a copy, and a refused home neither lists nor
+ * disowns.
  */
 static naula_status check_listed_home(resolver *subject, candidate *lister, size_t entry) {
     size_t count = 0;
@@ -795,17 +782,18 @@ static naula_status check_listed_home(resolver *subject, candidate *lister, size
     }
     size_t listed_count = 0;
     const naula_home *listed_homes = naula_candidate_homes(listed, &listed_count);
-    if (listed->readable) {
+    char text[PLACE_TEXT_SIZE];
+    naula_candidate_text(listed, text, sizeof text);
+    if (listed->outcome == CANDIDATE_REFUSED) {
+        settle(lister, CANDIDATE_UNKNOWN, "unverifiable", "%s, which it lists, was refused in this run: %s", text,
+               listed->detail);
+    } else if (listed->readable) {
         if (!lists(listed_homes, listed_count, lister)) {
             disown(lister, listed, "does not list it back");
         }
     } else if (listed->outcome == CANDIDATE_UNKNOWN) {
-        char text[PLACE_TEXT_SIZE];
-        naula_candidate_text(listed, text, sizeof text);
         settle(lister, CANDIDATE_UNKNOWN, listed->code, "%s, which it lists, could not be heard: %s", text,
                listed->detail);
-    } else if (listed->outcome == CANDIDATE_REFUSED) {
-        disown(lister, listed, "serves nothing that lists it");
     }
     return NAULA_OK;
 }
