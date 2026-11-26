@@ -102,7 +102,7 @@ void naula_fetch_refuse(naula_fetch_answer *answer, const char *fix, const char 
 /** Marks a REFUSED answer as one whose host name did not resolve; does nothing for an answer too small to carry it. */
 void naula_fetch_mark_host_unresolved(naula_fetch_answer *answer);
 
-/** Answers that memory ran out before the transport could answer. */
+/** Answers that memory ran out, releasing any validators already taken so the answer carries nothing. */
 void naula_fetch_out_of_memory(naula_fetch_answer *answer);
 
 /** Answers CUT_OFF for a transfer that did not finish within request->deadline_milliseconds. */

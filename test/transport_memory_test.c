@@ -75,6 +75,7 @@ static void every_allocation_a_fetch_makes_answers_out_of_memory_when_it_fails(v
                     answer.last_modified == NULL ? "(none)" : answer.last_modified);
         }
         CHECK(answer.outcome == NAULA_FETCH_OUT_OF_MEMORY);
+        CHECK(answer.etag == NULL && answer.last_modified == NULL && answer.detail[0] == '\0');
         release(&answer);
     }
     CHECK(attempt > 1 && attempt <= ATTEMPT_LIMIT);
