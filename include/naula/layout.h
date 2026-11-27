@@ -67,9 +67,13 @@ typedef struct naula_layout_repo {
  * When two orgs claim one account, a declaring repo homed there beats a confirmation, which is reported
  * `member-of-contested`; two confirmations hold neither, both reported; a sub-org entry naming the account of the repo
  * that declares it gives way, reported `suborg-lists-parent-account`; two declaring repos refuse the plan. An org nests
- * under its `parent` only when its declaring repo is homed in an account the parent holds, or the parent lists its
- * name and that repo is homed in an account the entry names; otherwise it is laid out under the root and reported
- * `parent-not-listing`, and the parent's entry stays. A listed sub-org whose declaration the entry accepts is nested by
+ * under its `parent` only when its declaring repo is homed in an account the parent's own declaring repo is homed in
+ * (a confirmation never counts here), or the parent lists its name and that repo is homed in an account the entry
+ * names; otherwise it is laid out under the root and reported `parent-not-listing`, and the parent's entry stays. An
+ * org at the root by default or refused by its parent never takes the folder of the top org's, an entry's or an
+ * accepted org's: it is left out and reported `org-name-taken`; two orgs of equal standing refuse the plan as
+ * `name-collides`. Two `orgs` from one declaring repo with different declarations refuse the input as
+ * `layout-input-invalid`; an identical one is kept once. A listed sub-org whose declaration the entry accepts is nested by
  * the entry and takes its members from its own declaration, reported `suborg-declares-itself`.
  */
 /** First shape ends at `target`. */
@@ -115,8 +119,10 @@ typedef enum naula_layout_step_kind {
  * - MAKE_FOLDER `path` makes the folder if it is missing.
  * - MOVE_CHECKOUT moves the checkout at `path` to `target`; the applier refuses when `path` is a link.
  * - REMOVE_LINK removes the link at `path` only while it is a link to `target`, never what it points at. Only a link
- *   naula could have made is removed: at an org folder's top, in a project folder or in `archive`, pointing directly
- *   into that org folder's `repos`, and outside every checkout.
+ *   naula could have made is removed: at an org folder's top or one folder below it (`archive`, or any folder that is
+ *   neither reserved nor a laid-out org, since a renamed project or a released org's projects are named nowhere),
+ *   pointing at a checkout folder (twelve lowercase hex, or `local-...`) directly in that org folder's `repos`, and
+ *   outside every checkout.
  * - REMOVE_CLONE removes the archived checkout at `path`, which is a real folder and never a link: the applier refuses
  *   a link at `path` and never follows a link or other reparse point inside it, removing the link itself instead.
  * - WRITE_FILE gives the file at `path` exactly `content`.
