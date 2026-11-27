@@ -187,27 +187,46 @@ static int is_gone_error(unsigned long code) {
     return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
 }
 
+typedef struct removal_folder {
+    HANDLE handle;
+    int read_to_end;
+    unsigned refills;
+} removal_folder;
+
 /** The folders being emptied, the clone at the bottom, each held open by its handle; never the call stack. */
 typedef struct removal {
     relative_opener opener;
-    HANDLE *folders;
+    removal_folder *folders;
     size_t depth;
     size_t capacity;
     unsigned char *buffer;
+    disk_removal_refusal reason;
 } removal;
 
 static naula_status push_folder(removal *removing, HANDLE folder) {
     if (removing->depth == removing->capacity) {
         size_t grown = removing->capacity == 0 ? 64 : removing->capacity * 2;
-        HANDLE *larger = naula_memory_reallocate(removing->folders, grown * sizeof *larger);
+        removal_folder *larger = naula_memory_reallocate(removing->folders, grown * sizeof *larger);
         if (larger == NULL) {
             return NAULA_OUT_OF_MEMORY;
         }
         removing->folders = larger;
         removing->capacity = grown;
     }
-    removing->folders[removing->depth++] = folder;
+    removal_folder *pushed = &removing->folders[removing->depth++];
+    pushed->handle = folder;
+    pushed->read_to_end = 0;
+    pushed->refills = 0;
     return NAULA_OK;
+}
+
+/** A folder once read to its end holds only what came after, so every later find counts toward a refill. */
+static int is_refilled(removal_folder *folder, int read_to_end) {
+    if (folder->read_to_end) {
+        folder->refills++;
+    }
+    folder->read_to_end |= read_to_end;
+    return folder->refills >= DISK_REMOVAL_REFILL_PASSES;
 }
 
 /**
@@ -271,15 +290,51 @@ static naula_status take_listing(removal *removing, HANDLE folder, HANDLE *desce
     }
 }
 
-static naula_status remove_top_folder(removal *removing, unsigned long *error) {
-    HANDLE folder = removing->folders[removing->depth - 1];
+/** Removes the emptied top folder and pops it; one that something refilled first stays, with `refilled` set. */
+static naula_status remove_top_folder(removal *removing, int *refilled, unsigned long *error) {
+    *refilled = 0;
+    HANDLE folder = removing->folders[removing->depth - 1].handle;
     DWORD attributes = 0;
     naula_status status = attributes_of(folder, &attributes, error);
     if (status == NAULA_OK) {
         status = delete_by_handle(folder, attributes, error);
     }
+    if (status == NAULA_REFUSED && *error == ERROR_DIR_NOT_EMPTY) {
+        *refilled = 1;
+        return NAULA_OK;
+    }
     CloseHandle(folder);
     removing->depth--;
+    return status;
+}
+
+/** One listing of the top folder: what it holds goes, a folder in it is pushed, and an empty one is removed. */
+static naula_status take_one_pass(removal *removing, unsigned long *error) {
+    removal_folder *top = &removing->folders[removing->depth - 1];
+    HANDLE descend = INVALID_HANDLE_VALUE;
+    int found = 0;
+    naula_status status = take_listing(removing, top->handle, &descend, &found, error);
+    if (status == NAULA_OK && !found) {
+        status = remove_top_folder(removing, &found, error);
+    }
+    if (status != NAULA_OK || !found) {
+        return status;
+    }
+    if (is_refilled(top, descend == INVALID_HANDLE_VALUE)) {
+        if (descend != INVALID_HANDLE_VALUE) {
+            CloseHandle(descend);
+        }
+        removing->reason = DISK_REMOVAL_REFILLED;
+        *error = ERROR_DIR_NOT_EMPTY;
+        return NAULA_REFUSED;
+    }
+    if (descend == INVALID_HANDLE_VALUE) {
+        return NAULA_OK;
+    }
+    status = push_folder(removing, descend);
+    if (status != NAULA_OK) {
+        CloseHandle(descend);
+    }
     return status;
 }
 
@@ -291,20 +346,10 @@ static naula_status remove_held_tree(removal *removing, HANDLE clone, unsigned l
         CloseHandle(clone);
     }
     while (status == NAULA_OK && removing->depth > 0) {
-        HANDLE descend = INVALID_HANDLE_VALUE;
-        int removed = 0;
-        status = take_listing(removing, removing->folders[removing->depth - 1], &descend, &removed, error);
-        if (status == NAULA_OK && descend != INVALID_HANDLE_VALUE) {
-            status = push_folder(removing, descend);
-            if (status != NAULA_OK) {
-                CloseHandle(descend);
-            }
-        } else if (status == NAULA_OK && !removed) {
-            status = remove_top_folder(removing, error);
-        }
+        status = take_one_pass(removing, error);
     }
     while (removing->depth > 0) {
-        CloseHandle(removing->folders[--removing->depth]);
+        CloseHandle(removing->folders[--removing->depth].handle);
     }
     naula_memory_release(removing->folders);
     naula_memory_release(removing->buffer);
@@ -387,8 +432,9 @@ static int is_removal_held_error(unsigned long code) {
     return code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION;
 }
 
-naula_status disk_tree_remove(const char *root, const char *below, int *held, unsigned long *error) {
-    *held = 0;
+naula_status disk_tree_remove(const char *root, const char *below, disk_removal_refusal *reason,
+                              unsigned long *error) {
+    *reason = DISK_REMOVAL_REFUSED;
     *error = 0;
     removal removing;
     memset(&removing, 0, sizeof removing);
@@ -406,7 +452,10 @@ naula_status disk_tree_remove(const char *root, const char *below, int *held, un
     if (status == NAULA_OK) {
         status = remove_held_tree(&removing, clone, error);
     }
-    *held = status == NAULA_REFUSED && is_removal_held_error(*error);
+    *reason = removing.reason;
+    if (status == NAULA_REFUSED && *reason == DISK_REMOVAL_REFUSED && is_removal_held_error(*error)) {
+        *reason = DISK_REMOVAL_HELD;
+    }
     return status;
 }
 

@@ -54,9 +54,20 @@ naula_status disk_move(const char *from, const char *to, int *held, unsigned lon
  * every component of `below` relative to the one before it, never following a link, so a link anywhere from `root`
  * down, `below` itself included, is refused rather than followed. A link or other reparse point found inside is
  * removed itself and never entered. The walk keeps its folders on its own stack, never the call stack, so depth is
- * bounded only by memory. `held` is set when another process holds something inside.
+ * bounded only by memory. A folder counts as empty only once a whole listing of it finds nothing; one that is found
+ * refilled on DISK_REMOVAL_REFILL_PASSES listings after its first whole one stops the removal. `reason` says why a
+ * refusal came.
  */
-naula_status disk_tree_remove(const char *root, const char *below, int *held, unsigned long *error);
+typedef enum disk_removal_refusal {
+    DISK_REMOVAL_REFUSED = 0,
+    DISK_REMOVAL_HELD = 1,
+    DISK_REMOVAL_REFILLED = 2
+} disk_removal_refusal;
+
+#define DISK_REMOVAL_REFILL_PASSES 8
+
+naula_status disk_tree_remove(const char *root, const char *below, disk_removal_refusal *reason,
+                              unsigned long *error);
 
 /** The whole regular file at `path`, never through a link: NAULA_NOT_FOUND when there is none. */
 naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, unsigned long *error);

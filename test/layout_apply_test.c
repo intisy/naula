@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "check.h"
 #include "disk.h"
@@ -2069,6 +2070,109 @@ static void an_alias_windows_generates_for_naulas_files_is_refused(void) {
 #endif
 }
 
+#define REFILL_WRITERS 3
+#define REFILL_SECONDS 20
+#define REFILL_FILES 2000
+
+typedef struct refill_race {
+    char folder[PATH_SIZE];
+    volatile int removal_returned;
+} refill_race;
+
+typedef struct refill_writer {
+    refill_race *race;
+    int number;
+} refill_writer;
+
+/** Writes new files into the folder until the removal returns or the time is up, so a removal that never stops ends. */
+static void keep_refilling(refill_writer *writer) {
+    time_t deadline = time(NULL) + REFILL_SECONDS;
+    for (long made = 0; !writer->race->removal_returned && time(NULL) < deadline; made++) {
+        char path[PATH_SIZE];
+        snprintf(path, sizeof path, "%s/w%d-%08ld", writer->race->folder, writer->number, made);
+        FILE *file = fopen(path, "wb");
+        if (file != NULL) {
+            fclose(file);
+        }
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI refill_thread(LPVOID context) {
+    keep_refilling(context);
+    return 0;
+}
+#else
+static void *refill_thread(void *context) {
+    keep_refilling(context);
+    return NULL;
+}
+#endif
+
+static naula_status remove_clone_while_refilling(refill_race *race) {
+    refill_writer writers[REFILL_WRITERS];
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+#ifdef _WIN32
+    HANDLE threads[REFILL_WRITERS];
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        writers[index].race = race;
+        writers[index].number = index;
+        threads[index] = CreateThread(NULL, 0, refill_thread, &writers[index], 0, NULL);
+    }
+    naula_status status = apply_plan();
+    race->removal_returned = 1;
+    WaitForMultipleObjects(REFILL_WRITERS, threads, TRUE, INFINITE);
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        CloseHandle(threads[index]);
+    }
+#else
+    pthread_t threads[REFILL_WRITERS];
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        writers[index].race = race;
+        writers[index].number = index;
+        pthread_create(&threads[index], NULL, refill_thread, &writers[index]);
+    }
+    naula_status status = apply_plan();
+    race->removal_returned = 1;
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        pthread_join(threads[index], NULL);
+    }
+#endif
+    return status;
+}
+
+/**
+ * Other programs keep writing into a folder of the clone while it is removed. The removal stops as `folder-refills`
+ * rather than chase them for ever, leaving its journal to be resumed, and the resume finishes once they have stopped.
+ */
+static void a_folder_that_keeps_refilling_stops_the_removal(void) {
+    fresh("refill");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/refill"));
+    for (int index = 0; index < REFILL_FILES; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "clone/refill/f%05d", index);
+        write_text(at(name), "x");
+    }
+    refill_race race;
+    memset(&race, 0, sizeof race);
+    compose(race.folder, at("clone/refill"), NULL);
+    time_t started = time(NULL);
+    naula_status status = remove_clone_while_refilling(&race);
+    printf("a_folder_that_keeps_refilling_stops_the_removal: answered %d %s after %ld s\n", (int)status, refusal.code,
+           (long)(time(NULL) - started));
+    CHECK(refused_with(status, "folder-refills"));
+    CHECK(kind_at(at("clone/refill")) == 1);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    naula_memory_release(journal_file);
+    finish("refill");
+}
+
 /** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
 static void lay_out_an_outside_org(const char *outside) {
     char path[PATH_SIZE];
@@ -2087,9 +2191,9 @@ static void removing_a_clone_refuses_a_folder_above_it_that_is_a_link(void) {
     lay_out_an_outside_org(outside);
     char *before = snapshot("above/outside-org");
     make_link(at("org"), outside);
-    int held = 0;
+    disk_removal_refusal reason = DISK_REMOVAL_REFUSED;
     unsigned long error = 0;
-    CHECK(disk_tree_remove(root, "org/clone", &held, &error) == NAULA_REFUSED);
+    CHECK(disk_tree_remove(root, "org/clone", &reason, &error) == NAULA_REFUSED);
     char *after = snapshot("above/outside-org");
     CHECK(strcmp(before, after) == 0);
     free(before);
@@ -2369,6 +2473,7 @@ static const named_test TESTS[] = {
     {"two_journals_of_one_sequence_refuse_the_run_and_the_resume", two_journals_of_one_sequence_refuse_the_run_and_the_resume},
     {"a_step_into_naulas_files_is_refused_by_their_identity", a_step_into_naulas_files_is_refused_by_their_identity},
     {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
+    {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

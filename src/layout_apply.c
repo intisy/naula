@@ -15,6 +15,8 @@ static const char *const HELD_FIX = "close every program, shell and session work
                                     "sync again to resume";
 static const char *const DISK_FIX = "check the folder's permissions and free space, then run naula sync again to "
                                     "resume";
+static const char *const REFILLS_FIX = "stop the program that keeps writing into the clone, then run naula sync "
+                                       "again to resume";
 static const char *const BANK_FIX = "merge or remove one of the two memory banks by hand, then run naula sync again";
 
 typedef struct applier {
@@ -672,10 +674,16 @@ static naula_status perform_make_link(applier *applying, const naula_layout_step
 
 static naula_status perform_remove_clone(applier *applying, const naula_layout_step *step) {
     unsigned long error = 0;
-    int held = 0;
-    naula_status status = disk_tree_remove(applying->root, apply_below(applying->root, step->path), &held, &error);
-    if (status == NAULA_REFUSED && held) {
+    disk_removal_refusal reason = DISK_REMOVAL_REFUSED;
+    naula_status status = disk_tree_remove(applying->root, apply_below(applying->root, step->path), &reason, &error);
+    if (status == NAULA_REFUSED && reason == DISK_REMOVAL_HELD) {
         return apply_refuse_disk(applying->refusal, "folder-held", HELD_FIX, "cannot remove", step->path, error);
+    }
+    if (status == NAULA_REFUSED && reason == DISK_REMOVAL_REFILLED) {
+        naula_refuse(applying->refusal, "folder-refills", REFILLS_FIX,
+                     "%s kept filling with new entries while naula removed it, %d listings after it was first emptied",
+                     step->path, DISK_REMOVAL_REFILL_PASSES);
+        return NAULA_REFUSED;
     }
     return refuse_change(applying, status, "cannot remove", step->path, error);
 }
