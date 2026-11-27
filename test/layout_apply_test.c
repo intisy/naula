@@ -3,6 +3,7 @@
 #else
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -502,6 +503,57 @@ static void memory_bank_key_matches_the_measured_form(void) {
     check_text(key, "-a-z", "a byte that is not UTF-8");
 }
 
+/**
+ * Past 200 units Claude Code keeps the first 200, then `-` and a base 36 hash of the path. The first vector is the
+ * folder Claude Code 2.1.332 made for a probe run on 2026-11-27; the others are its bundled hash function evaluated
+ * independently, one over a character past U+FFFF.
+ */
+static void a_long_memory_bank_key_ends_in_claude_codes_hash(void) {
+    char path[512];
+    char key[512];
+    char expected[512];
+    compose(path, "C:\\Users\\finn\\AppData\\Local\\Temp\\claude\\e1cb3709954c7f49\\a9c280f0-bdb8-4a46-86bc-81d337debcf1"
+                  "\\scratchpad\\keyprobe\\naula_long_key_probe.",
+            NULL);
+    size_t length = strlen(path);
+    memset(path + length, 'x', 90);
+    path[length + 90] = '\0';
+    compose(expected, "C--Users-finn-AppData-Local-Temp-claude-e1cb3709954c7f49-a9c280f0-bdb8-4a46-86bc-81d337debcf1-"
+                      "scratchpad-keyprobe-naula-long-key-probe-",
+            NULL);
+    length = strlen(expected);
+    memset(expected + length, 'x', 200 - length);
+    compose(expected + 200, "-i1xwsc", NULL);
+    naula_memory_bank_key(path, key, sizeof key);
+    check_text(key, expected, "measured with Claude Code 2.1.332");
+
+    memset(path, 'a', 201);
+    path[0] = '/';
+    path[201] = '\0';
+    memset(expected, 'a', 200);
+    expected[0] = '-';
+    compose(expected + 200, "-b6ymvl", NULL);
+    naula_memory_bank_key(path, key, sizeof key);
+    check_text(key, expected, "201 units");
+    path[200] = '\0';
+    naula_memory_bank_key(path, key, sizeof key);
+    expected[200] = '\0';
+    check_text(key, expected, "200 units keep no hash");
+
+    memset(path, 'b', 198);
+    path[0] = '/';
+    compose(path + 198, "\xf0\x9f\x98\x80" "c", NULL);
+    memset(expected, 'b', 200);
+    expected[0] = '-';
+    expected[198] = '-';
+    expected[199] = '-';
+    compose(expected + 200, "-79yvtf", NULL);
+    naula_memory_bank_key(path, key, sizeof key);
+    check_text(key, expected, "a character past U+FFFF is two units, hashed as its surrogates");
+    naula_memory_bank_key(path, key, 207);
+    check_text(key, "", "a long key that does not fit is never cut short");
+}
+
 static void apply_makes_folders_links_and_files(void) {
     fresh("makes");
     make_checkout(at("old"), "checkout");
@@ -615,7 +667,9 @@ static void apply_stops_at_a_held_folder_and_resumes(void) {
     CHECK(unfinished_journal() == NULL);
     char *journal_file = only_journal();
     CHECK(journal_file != NULL);
-    CHECK(resume(journal_file) == NAULA_OK);
+    CHECK(refused_with(resume(journal_file), "journal-stopped"));
+    CHECK(kind_at(at("old")) == 1);
+    CHECK(apply_plan() == NAULA_OK);
     CHECK(kind_at(at("old")) == 0);
     CHECK(file_holds(at("repos/" HEX "/README.md"), "held checkout"));
     CHECK(links_to(at("name"), at("repos/" HEX)));
@@ -1470,6 +1524,7 @@ static void a_run_refused_halfway_through_a_step_must_be_resumed(void) {
     plan_start();
     plan_add(NAULA_REMOVE_CLONE, at("archived"), NULL, NULL);
     CHECK(refused_with(apply_plan(), "change-refused"));
+    CHECK(strstr(refusal.detail, "system error 32)") != NULL);
     CHECK(kind_at(at("archived/a")) == 0);
     char *journal_file = unfinished_journal();
     CHECK(journal_file != NULL);
@@ -1482,6 +1537,377 @@ static void a_run_refused_halfway_through_a_step_must_be_resumed(void) {
 #else
     printf("a_run_refused_halfway_through_a_step_must_be_resumed: skipped, an open file is removed on POSIX\n");
 #endif
+}
+
+typedef struct swap_race {
+    char watched[PATH_SIZE];
+    char swapped[PATH_SIZE];
+    char moved_to[PATH_SIZE];
+    char outside[PATH_SIZE];
+    volatile int removal_returned;
+    int swapped_in;
+} swap_race;
+
+/** Waits for the removal to take its first file, then moves a folder it has not reached yet and links it outside. */
+static void swap_once_removal_starts(swap_race *race) {
+    while (kind_at(race->watched) != 0 && !race->removal_returned) {
+    }
+#ifdef _WIN32
+    int moved = MoveFileA(race->swapped, race->moved_to) != 0;
+#else
+    int moved = rename(race->swapped, race->moved_to) == 0;
+#endif
+    if (moved) {
+        unsigned long error = 0;
+        race->swapped_in = disk_link_make(race->swapped, race->outside, &error) == NAULA_OK;
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI swap_thread(LPVOID context) {
+    swap_once_removal_starts(context);
+    return 0;
+}
+#else
+static void *swap_thread(void *context) {
+    swap_once_removal_starts(context);
+    return NULL;
+}
+#endif
+
+static naula_status remove_clone_while_racing(swap_race *race) {
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("victim"), NULL, NULL);
+#ifdef _WIN32
+    HANDLE thread = CreateThread(NULL, 0, swap_thread, race, 0, NULL);
+    naula_status status = apply_plan();
+    race->removal_returned = 1;
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+#else
+    pthread_t thread;
+    pthread_create(&thread, NULL, swap_thread, race);
+    naula_status status = apply_plan();
+    race->removal_returned = 1;
+    pthread_join(thread, NULL);
+#endif
+    return status;
+}
+
+#define SWAP_ROUNDS 8
+#define SWAP_FILES 2000
+
+static void lay_out_a_victim(swap_race *race, const char *outside) {
+    fresh("swap");
+    make_checkout(at("victim"), "victim");
+    make_folder(at("victim/a"));
+    for (int index = 0; index < SWAP_FILES; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "victim/a/f%05d.txt", index);
+        write_text(at(name), "x");
+    }
+    make_folder(at("victim/z"));
+    write_text(at("victim/z/z.txt"), "z");
+    memset(race, 0, sizeof *race);
+    compose(race->watched, at("victim/a/f00000.txt"), NULL);
+    compose(race->swapped, at("victim/z"), NULL);
+    compose(race->moved_to, base, "/swap/z-moved", NULL);
+    compose(race->outside, outside, NULL);
+}
+
+/**
+ * Another process renames a folder of the clone away mid-removal and puts a link to a folder outside the root in its
+ * place. The outside folder must come through byte for byte, whether the removal then finishes or refuses.
+ */
+static void removing_a_clone_never_follows_a_folder_swapped_for_a_link_while_it_runs(void) {
+    char outside[PATH_SIZE];
+    char keep[PATH_SIZE];
+    compose(outside, base, "/swap-outside", NULL);
+    compose(keep, outside, "/keep.txt", NULL);
+    remove_tree(outside);
+    make_folder(outside);
+    write_text(keep, "must survive");
+    char *before = snapshot("swap-outside");
+    int swaps = 0;
+    for (int round = 0; round < SWAP_ROUNDS; round++) {
+        swap_race race;
+        lay_out_a_victim(&race, outside);
+        naula_status status = remove_clone_while_racing(&race);
+        CHECK(status == NAULA_OK || status == NAULA_REFUSED);
+        char *after = snapshot("swap-outside");
+        if (strcmp(before, after) != 0) {
+            fprintf(stderr, "round %d: the folder outside the root changed:\n%s\n", round, after);
+            check_failures++;
+        }
+        free(after);
+        swaps += race.swapped_in;
+        if (kind_at(at("victim/z")) == 3) {
+            unlink_link(at("victim/z"));
+        }
+        finish("swap");
+    }
+    printf("removing_a_clone_never_follows_a_folder_swapped_for_a_link_while_it_runs: %d of %d rounds swapped\n",
+           swaps, SWAP_ROUNDS);
+#ifdef _WIN32
+    CHECK(swaps > 0);
+#endif
+    free(before);
+    remove_tree(outside);
+}
+
+static void a_resumed_move_refused_after_its_checkout_moved_stays_unfinished(void) {
+    fresh("resume-moved");
+    make_folder(at("repos"));
+    make_checkout(at("old"), "checkout");
+    char old_bank[PATH_SIZE];
+    char new_bank[PATH_SIZE];
+    compose(old_bank, bank_of(at("old")), NULL);
+    compose(new_bank, bank_of(at("repos/" HEX)), NULL);
+    make_folder(old_bank);
+    plan_start();
+    plan_add(NAULA_MOVE_CHECKOUT, at("old"), at("repos/" HEX), NULL);
+    naula_apply_test_stop_at(3);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    CHECK(kind_at(at("old")) == 0);
+    CHECK(kind_at(at("repos/" HEX)) == 1);
+    CHECK(kind_at(old_bank) == 1);
+    make_folder(new_bank);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    CHECK(refused_with(resume(journal_file), "memory-bank-exists"));
+    char *still = unfinished_journal();
+    CHECK(still != NULL);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("other"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "journal-unfinished"));
+    remove_tree(new_bank);
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(old_bank) == 0);
+    CHECK(kind_at(new_bank) == 1);
+    naula_memory_release(journal_file);
+    naula_memory_release(still);
+    finish("resume-moved");
+}
+
+static void a_resumed_link_replacement_refused_after_the_old_link_went_stays_unfinished(void) {
+    fresh("resume-relink");
+    make_folder(at("repos"));
+    make_checkout(at("repos/old"), "old");
+    make_checkout(at("repos/new"), "new");
+    make_link(at("name"), at("repos/old"));
+    record_link(at("name"), at("repos/old"));
+    plan_start();
+    plan_add(NAULA_MAKE_LINK, at("name"), at("repos/new"), NULL);
+    naula_apply_test_stop_at(3);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    CHECK(kind_at(at("name")) == 0);
+    remove_tree(at("repos/new"));
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    CHECK(refused_with(resume(journal_file), "target-missing"));
+    char *still = unfinished_journal();
+    CHECK(still != NULL);
+    naula_memory_release(journal_file);
+    naula_memory_release(still);
+    finish("resume-relink");
+}
+
+static void a_stopped_journal_is_never_resumed(void) {
+    fresh("resume-stopped");
+    make_folder(at("repos"));
+    make_checkout(at("keep"), "work the newer layout keeps");
+    plan_start();
+    plan_add(NAULA_MAKE_LINK, at("name"), at("repos/" HEX), NULL);
+    plan_add(NAULA_REMOVE_CLONE, at("keep"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "target-missing"));
+    CHECK(unfinished_journal() == NULL);
+    char *journal_file = only_journal();
+    CHECK(journal_file != NULL);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    make_checkout(at("repos/" HEX), "later");
+    CHECK(journal_file != NULL && refused_with(resume(journal_file), "journal-stopped"));
+    CHECK(file_holds(at("keep/README.md"), "work the newer layout keeps"));
+    CHECK(kind_at(at("name")) == 0);
+    free(journal_file);
+    finish("resume-stopped");
+}
+
+static void a_journal_a_newer_one_follows_is_never_resumed(void) {
+    fresh("resume-superseded");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    naula_apply_test_stop_at(2);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    record_link(at("gone"), at("org"));
+    naula_layout_links scanned;
+    CHECK(refused_with(naula_layout_links_scan(root, &scanned, &refusal), "journal-unfinished"));
+    naula_layout_links_release(&scanned);
+    CHECK(is_recorded(at("gone"), NULL));
+    char newer[PATH_SIZE * 2];
+    snprintf(newer, sizeof newer, "{\"journal\":1,\"root\":\"%s\",\"steps\":0}\n{\"state\":\"finished\"}\n", root);
+    write_text(at(".naula-journal/99991231T235959Z.jsonl"), newer);
+    CHECK(journal_file != NULL && refused_with(resume(journal_file), "journal-superseded"));
+    CHECK(strstr(refusal.detail, "99991231T235959Z.jsonl") != NULL);
+    CHECK(kind_at(at("org")) == 0);
+    naula_memory_release(journal_file);
+    finish("resume-superseded");
+}
+
+static void a_journal_torn_inside_its_opening_append_reads_as_stopped(void) {
+    fresh("torn-opening");
+    make_folder(at(".naula-journal"));
+    char text[PATH_SIZE * 2];
+    snprintf(text, sizeof text,
+             "{\"journal\":1,\"root\":\"%s\",\"steps\":2}\n{\"step\":0,\"state\":\"planned\",\"kind\":1,\"path\":\"%s\"}"
+             "\n{\"step\":1,\"sta",
+             root, at("org"));
+    write_text(at(".naula-journal/20260101T000000Z.jsonl"), text);
+    CHECK(unfinished_journal() == NULL);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("org")) == 1);
+    CHECK(refused_with(resume(at(".naula-journal/20260101T000000Z.jsonl")), "journal-stopped"));
+    finish("torn-opening");
+}
+
+static void set_read_only_folder(const char *path, int read_only) {
+#ifdef _WIN32
+    SetFileAttributesA(path, read_only ? FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_DIRECTORY);
+#else
+    chmod(path, read_only ? 0555 : 0755);
+#endif
+}
+
+static void a_clone_holding_a_read_only_folder_is_removed(void) {
+    fresh("read-only-folder");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/ro"));
+    write_text(at("clone/ro/inside.txt"), "inside");
+    set_read_only_folder(at("clone/ro"), 1);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_status status = apply_plan();
+    if (status != NAULA_OK) {
+        fprintf(stderr, "removing a clone with a read-only folder: %s %s\n", refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    if (kind_at(at("clone/ro")) == 1) {
+        set_read_only_folder(at("clone/ro"), 0);
+    }
+    finish("read-only-folder");
+}
+
+static void removing_a_clone_leaves_a_hard_linked_read_only_file_read_only(void) {
+#ifdef _WIN32
+    fresh("hard-link");
+    char outside[PATH_SIZE];
+    compose(outside, base, "/hard-link/object", NULL);
+    write_text(outside, "object");
+    SetFileAttributesA(outside, FILE_ATTRIBUTE_READONLY);
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/.git/objects"));
+    CHECK(CreateHardLinkA(at("clone/.git/objects/object"), outside, NULL));
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(GetFileAttributesA(outside) & FILE_ATTRIBUTE_READONLY);
+    CHECK(file_holds(outside, "object"));
+    SetFileAttributesA(outside, FILE_ATTRIBUTE_NORMAL);
+    finish("hard-link");
+#else
+    printf("removing_a_clone_leaves_a_hard_linked_read_only_file_read_only: skipped, POSIX unlinks without touching "
+           "the mode\n");
+#endif
+}
+
+static void a_step_naming_an_entry_by_an_alias_is_refused(void) {
+    fresh("alias");
+    make_folder(at(".naula-journal"));
+    make_folder(at("x"));
+    plan_start();
+    plan_add(NAULA_WRITE_FILE, at(".naula-journal./links.json"), NULL, "{\"links\":[]}");
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    CHECK(kind_at(at(".naula-journal/links.json")) == 0);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org "), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("NAULA-~1/org"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    plan_start();
+    plan_add(NAULA_MAKE_LINK, at("name"), at("x."), NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    CHECK(kind_at(at("name")) == 0);
+    finish("alias");
+}
+
+static void a_repointed_recorded_link_is_forgotten_by_the_scan(void) {
+    fresh("repointed");
+    make_folder(at("repos"));
+    make_checkout(at("repos/" HEX), "one");
+    make_checkout(at("repos/bbbbbbbbbbbb"), "two");
+    make_folder(at("tools"));
+    plan_start();
+    plan_add(NAULA_MAKE_LINK, at("tools/naula"), at("repos/" HEX), NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    unlink_link(at("tools/naula"));
+    make_link(at("tools/naula"), at("repos/bbbbbbbbbbbb"));
+    naula_layout_links scanned;
+    CHECK(naula_layout_links_scan(root, &scanned, &refusal) == NAULA_OK);
+    naula_layout_links_release(&scanned);
+    CHECK(!is_recorded(at("tools/naula"), NULL));
+    CHECK(a_journal_holds("\"state\":\"forgotten\"", at("tools/naula")));
+    unlink_link(at("tools/naula"));
+    make_link(at("tools/naula"), at("repos/" HEX));
+    CHECK(naula_layout_links_scan(root, &scanned, &refusal) == NAULA_OK);
+    const naula_layout_link *pointed_back = scanned_at(&scanned, at("tools/naula"));
+    CHECK(pointed_back != NULL && pointed_back->made_by_naula == 0);
+    naula_layout_links_release(&scanned);
+    finish("repointed");
+}
+
+static void writing_the_root_file_takes_the_roots_lock(void) {
+    fresh("root-file-lock");
+    naula_place top_place = place(1472199689);
+    naula_root_file file;
+    memset(&file, 0, sizeof file);
+    file.size = sizeof file;
+    file.top.size = sizeof file.top;
+    file.top.id = "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    file.top.at = &top_place;
+    file.top.at_count = 1;
+    write_lock(own_process_id());
+    CHECK(refused_with(naula_root_file_write(root, &file, &refusal), "root-locked"));
+    CHECK(kind_at(at(".naula.json")) == 0);
+    remove_tree(at(".naula-journal/lock"));
+    CHECK(naula_root_file_write(root, &file, &refusal) == NAULA_OK);
+    CHECK(kind_at(at(".naula.json")) == 2);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    finish("root-file-lock");
+}
+
+static void a_move_never_replaces_an_empty_folder(void) {
+    fresh("move-no-replace");
+    make_folder(at("from"));
+    write_text(at("from/work.txt"), "work");
+    make_folder(at("to"));
+    int held = 0;
+    unsigned long error = 0;
+    CHECK(disk_move(at("from"), at("to"), &held, &error) == NAULA_REFUSED);
+    CHECK(file_holds(at("from/work.txt"), "work"));
+    CHECK(kind_at(at("to")) == 1);
+    CHECK(kind_at(at("to/work.txt")) == 0);
+    finish("move-no-replace");
 }
 
 typedef struct named_test {
@@ -1522,6 +1948,19 @@ static const named_test TESTS[] = {
     {"a_second_apply_waits_for_an_unfinished_journal", a_second_apply_waits_for_an_unfinished_journal},
     {"a_run_refused_before_any_change_leaves_nothing_to_resume", a_run_refused_before_any_change_leaves_nothing_to_resume},
     {"a_run_refused_halfway_through_a_step_must_be_resumed", a_run_refused_halfway_through_a_step_must_be_resumed},
+    {"a_long_memory_bank_key_ends_in_claude_codes_hash", a_long_memory_bank_key_ends_in_claude_codes_hash},
+    {"removing_a_clone_never_follows_a_folder_swapped_for_a_link_while_it_runs", removing_a_clone_never_follows_a_folder_swapped_for_a_link_while_it_runs},
+    {"a_resumed_move_refused_after_its_checkout_moved_stays_unfinished", a_resumed_move_refused_after_its_checkout_moved_stays_unfinished},
+    {"a_resumed_link_replacement_refused_after_the_old_link_went_stays_unfinished", a_resumed_link_replacement_refused_after_the_old_link_went_stays_unfinished},
+    {"a_stopped_journal_is_never_resumed", a_stopped_journal_is_never_resumed},
+    {"a_journal_a_newer_one_follows_is_never_resumed", a_journal_a_newer_one_follows_is_never_resumed},
+    {"a_journal_torn_inside_its_opening_append_reads_as_stopped", a_journal_torn_inside_its_opening_append_reads_as_stopped},
+    {"a_clone_holding_a_read_only_folder_is_removed", a_clone_holding_a_read_only_folder_is_removed},
+    {"removing_a_clone_leaves_a_hard_linked_read_only_file_read_only", removing_a_clone_leaves_a_hard_linked_read_only_file_read_only},
+    {"a_step_naming_an_entry_by_an_alias_is_refused", a_step_naming_an_entry_by_an_alias_is_refused},
+    {"a_repointed_recorded_link_is_forgotten_by_the_scan", a_repointed_recorded_link_is_forgotten_by_the_scan},
+    {"writing_the_root_file_takes_the_roots_lock", writing_the_root_file_takes_the_roots_lock},
+    {"a_move_never_replaces_an_empty_folder", a_move_never_replaces_an_empty_folder},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */
