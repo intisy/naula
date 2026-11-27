@@ -344,7 +344,7 @@ static naula_home weivel_and_forebay_accounts[] = {
     {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "weivel", NULL, NULL},
     {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "forebay", NULL, NULL}};
 
-static void two_orgs_confirmed_for_one_account_are_refused(void) {
+static void two_confirmation_only_claims_hold_neither(void) {
     scenario world;
     start_world(&world);
     world.orgs[1].accounts = weivel_and_forebay_accounts;
@@ -358,10 +358,59 @@ static void two_orgs_confirmed_for_one_account_are_refused(void) {
     naula_layout_plan_release(&plan);
 
     add_repo(&world, repo_at(hex_of('1'), "proxy", "forebay", NULL))->member_of = &weivel_records_reference;
-    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
-    CHECK(check_text(refusal.code, "account-held-twice", "two confirmed orgs"));
-    CHECK(strstr(refusal.detail, "forebay") != NULL && strstr(refusal.detail, "weivel") != NULL);
-    CHECK(plan.step_count == 0);
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "member-of-contested", ROOT "/spisor/forebay") != NULL);
+    CHECK(find_report(&plan, "member-of-contested", ROOT "/weivel") != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/forebay/host") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/weivel/proxy") == NULL);
+    CHECK(find_report(&plan, "member-of-unlisted", NULL) == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static naula_home weivel_and_spisor_accounts[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "weivel", NULL, NULL},
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "spisor", NULL, NULL}};
+
+static void a_declaring_repo_wins_over_a_confirmation_only_claim(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[1].accounts = weivel_and_spisor_accounts;
+    world.orgs[1].account_count = 2;
+    world.repos[3].member_of = &weivel_records_reference;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "member-of-contested", ROOT "/weivel") != NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee"));
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/weivel/library") == NULL);
+    CHECK(find_report(&plan, "member-of-unlisted", NULL) == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_suborg_entry_listing_its_parents_account_is_reported(void) {
+    scenario world;
+    start_world(&world);
+    forebay_suborg.accounts = spisor_accounts;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "suborg-lists-parent-account", ROOT "/spisor/forebay") != NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee"));
+    naula_layout_plan_release(&plan);
+}
+
+static naula_reference evil_url_reference = {sizeof(naula_reference), NULL, "https://evil.example/x.git", NULL, 0};
+
+static void a_member_of_by_an_unknown_url_confirms_nothing(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[5].member_of = &evil_url_reference;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "member-of-unknown", ROOT "/weivel/repos/cccccccccccc") != NULL);
+    CHECK(links_to(&plan, ROOT "/weivel/records", ROOT "/weivel/repos/cccccccccccc"));
+    naula_layout_plan_release(&plan);
 }
 
 static void places_a_held_org_without_its_parent_at_the_root(void) {
@@ -1597,7 +1646,10 @@ int main(void) {
     an_org_holds_an_extra_account_through_a_confirming_repo();
     a_strangers_member_of_confirms_nothing();
     a_member_of_naming_an_org_nobody_holds_is_reported();
-    two_orgs_confirmed_for_one_account_are_refused();
+    two_confirmation_only_claims_hold_neither();
+    a_declaring_repo_wins_over_a_confirmation_only_claim();
+    a_suborg_entry_listing_its_parents_account_is_reported();
+    a_member_of_by_an_unknown_url_confirms_nothing();
     places_a_held_org_without_its_parent_at_the_root();
     generates_one_import_line_per_org_with_rules();
     forebay_suborg_imports_through_its_parents_docs();

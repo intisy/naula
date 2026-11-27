@@ -59,7 +59,8 @@ int layout_reference_names(const naula_reference *reference, const naula_id *id,
  * `rules_repository` is the repo that declares the org: an account any input repo with that id is homed in is held
  * without confirmation, and a `memberOf` names that repo to confirm another account. `not_listing` marks an org laid
  * out under the root because its parent does not accept it; `replaces_entry` one that takes the place of its parent's
- * `suborgs` entry of the same name.
+ * `suborgs` entry of the same name. `set_aside[i]`, once the tree is built, is why the claim on the declaration's
+ * account `i` gave way to another org's, 0 while the claim stands.
  */
 typedef struct layout_org {
     const naula_org_declaration *declaration;
@@ -69,6 +70,7 @@ typedef struct layout_org {
     int is_top;
     int not_listing;
     int replaces_entry;
+    unsigned char *set_aside;
     char *folder;
     char *repos_folder;
 } layout_org;

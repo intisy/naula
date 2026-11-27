@@ -423,33 +423,130 @@ static int is_confirmed(const layout_tree *tree, const layout_org *org, const na
     return 0;
 }
 
+typedef enum layout_claim {
+    LAYOUT_CLAIM_NONE = 0,
+    LAYOUT_CLAIM_CONFIRMED = 1,
+    LAYOUT_CLAIM_DECLARED = 2
+} layout_claim;
+
+typedef enum layout_set_aside {
+    LAYOUT_SET_ASIDE_CONTESTED = 1,
+    LAYOUT_SET_ASIDE_PARENT_ACCOUNT = 2
+} layout_set_aside;
+
+static layout_claim claim_on(const layout_tree *tree, const layout_org *org, const naula_home *account) {
+    if (is_homed_under(tree, org->rules_repository, account)) {
+        return LAYOUT_CLAIM_DECLARED;
+    }
+    return is_confirmed(tree, org, account) ? LAYOUT_CLAIM_CONFIRMED : LAYOUT_CLAIM_NONE;
+}
+
 static int owns_account(const layout_tree *tree, const layout_org *org, const naula_home *account) {
-    return is_homed_under(tree, org->rules_repository, account) || is_confirmed(tree, org, account);
+    return claim_on(tree, org, account) != LAYOUT_CLAIM_NONE;
 }
 
 static int holds_account(const layout_tree *tree, const layout_org *org, const naula_home *home) {
     for (size_t index = 0; index < org->declaration->account_count; index++) {
         const naula_home *account = &org->declaration->accounts[index];
-        if (owns_account(tree, org, account) && same_account(account, home)) {
+        int set_aside = org->set_aside != NULL && org->set_aside[index] != 0;
+        if (!set_aside && owns_account(tree, org, account) && same_account(account, home)) {
             return 1;
         }
     }
     return 0;
 }
 
-static naula_status check_accounts(const layout_tree *tree, naula_refusal *refusal) {
+static int lists_account(const layout_org *org, const naula_home *home) {
+    for (size_t index = 0; index < org->declaration->account_count; index++) {
+        if (same_account(&org->declaration->accounts[index], home)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void set_aside(layout_org *org, size_t account, layout_set_aside why) {
+    if (org->set_aside[account] == 0) {
+        org->set_aside[account] = (unsigned char)why;
+    }
+}
+
+static int is_entry_of_the_same_repo(const layout_org *left, const layout_org *right) {
+    return left->rules_repository != NULL && right->rules_repository != NULL &&
+           layout_same_repository(left->rules_repository, right->rules_repository);
+}
+
+/**
+ * Two claims on one account. A declaring repo homed there beats a confirmation, since a confirmation is the weaker
+ * proof; two confirmations cancel; two declaring repos leave the tree undefined, except an entry listing the account of
+ * the repo that declares it, which gives way to that repo's own org.
+ */
+static naula_status settle_pair(layout_tree *tree, size_t left, size_t left_account, size_t right,
+                                size_t right_account, naula_refusal *refusal) {
+    layout_org *first = &tree->orgs[left];
+    layout_org *second = &tree->orgs[right];
+    const naula_home *home = &first->declaration->accounts[left_account];
+    layout_claim first_claim = claim_on(tree, first, home);
+    layout_claim second_claim = claim_on(tree, second, home);
+    if (first_claim == LAYOUT_CLAIM_DECLARED && second_claim == LAYOUT_CLAIM_DECLARED) {
+        if (is_entry_of_the_same_repo(first, second) && (first->repository == NULL) != (second->repository == NULL)) {
+            layout_org *entry = first->repository == NULL ? first : second;
+            set_aside(entry, entry == first ? left_account : right_account, LAYOUT_SET_ASIDE_PARENT_ACCOUNT);
+            return NAULA_OK;
+        }
+        naula_refuse(refusal, "account-held-twice", ACCOUNT_FIX,
+                     "the account %s on %s is held by both %s and %s through the repos declaring them",
+                     home->account, home->provider, name_of(first), name_of(second));
+        return NAULA_REFUSED;
+    }
+    if (first_claim != LAYOUT_CLAIM_DECLARED) {
+        set_aside(first, left_account, LAYOUT_SET_ASIDE_CONTESTED);
+    }
+    if (second_claim != LAYOUT_CLAIM_DECLARED) {
+        set_aside(second, right_account, LAYOUT_SET_ASIDE_CONTESTED);
+    }
+    return NAULA_OK;
+}
+
+static naula_status settle_with_later_orgs(layout_tree *tree, size_t index, size_t account,
+                                           naula_refusal *refusal) {
+    const naula_home *home = &tree->orgs[index].declaration->accounts[account];
+    for (size_t other = index + 1; other < tree->count; other++) {
+        const layout_org *candidate = &tree->orgs[other];
+        for (size_t listed = 0; listed < candidate->declaration->account_count; listed++) {
+            const naula_home *other_home = &candidate->declaration->accounts[listed];
+            if (!same_account(home, other_home) || !owns_account(tree, candidate, other_home)) {
+                continue;
+            }
+            naula_status status = settle_pair(tree, index, account, other, listed, refusal);
+            if (status != NAULA_OK) {
+                return status;
+            }
+        }
+    }
+    return NAULA_OK;
+}
+
+static naula_status settle_accounts(layout_tree *tree, naula_refusal *refusal) {
     for (size_t index = 0; index < tree->count; index++) {
-        const naula_org_declaration *declaration = tree->orgs[index].declaration;
-        for (size_t account = 0; account < declaration->account_count; account++) {
-            const naula_home *home = &declaration->accounts[account];
-            for (size_t other = index + 1; other < tree->count && owns_account(tree, &tree->orgs[index], home);
-                 other++) {
-                if (holds_account(tree, &tree->orgs[other], home)) {
-                    naula_refuse(refusal, "account-held-twice", ACCOUNT_FIX,
-                                 "the account %s on %s is held by both %s and %s", home->account, home->provider,
-                                 name_of(&tree->orgs[index]), name_of(&tree->orgs[other]));
-                    return NAULA_REFUSED;
-                }
+        size_t count = tree->orgs[index].declaration->account_count;
+        tree->orgs[index].set_aside = count == 0 ? NULL : naula_memory_allocate(count);
+        if (count > 0 && tree->orgs[index].set_aside == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        if (count > 0) {
+            memset(tree->orgs[index].set_aside, 0, count);
+        }
+    }
+    for (size_t index = 0; index < tree->count; index++) {
+        const layout_org *org = &tree->orgs[index];
+        for (size_t account = 0; account < org->declaration->account_count; account++) {
+            if (!owns_account(tree, org, &org->declaration->accounts[account])) {
+                continue;
+            }
+            naula_status status = settle_with_later_orgs(tree, index, account, refusal);
+            if (status != NAULA_OK) {
+                return status;
             }
         }
     }
@@ -461,7 +558,20 @@ static naula_status report_unowned_accounts(const layout_tree *tree, const layou
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < org->declaration->account_count && status == NAULA_OK; index++) {
         const naula_home *account = &org->declaration->accounts[index];
-        if (!owns_account(tree, org, account)) {
+        const char *name = account->account == NULL ? "" : account->account;
+        const char *provider = account->provider == NULL ? "" : account->provider;
+        unsigned why = org->set_aside == NULL ? 0 : org->set_aside[index];
+        if (why == LAYOUT_SET_ASIDE_CONTESTED) {
+            status = layout_report(builder, "member-of-contested", org->folder, NULL,
+                                   "%s holds the account %s on %s only through memberOf, and another org claims it "
+                                   "too, so %s does not hold it",
+                                   name_of(org), name, provider, name_of(org));
+        } else if (why == LAYOUT_SET_ASIDE_PARENT_ACCOUNT) {
+            status = layout_report(builder, "suborg-lists-parent-account", org->folder, NULL,
+                                   "the sub-org %s lists the account %s on %s, which the org declaring it holds, so "
+                                   "the entry's claim is ignored",
+                                   name_of(org), name, provider);
+        } else if (!owns_account(tree, org, account)) {
             status = layout_report(builder, "account-not-owned", org->folder, NULL,
                                    "%s names the account %s on %s, but the repo declaring it is not under that "
                                    "account and no repo of that account confirms it with memberOf, so the claim is "
@@ -558,7 +668,7 @@ naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tre
         status = check_names(tree, refusal);
     }
     if (status == NAULA_OK) {
-        status = check_accounts(tree, refusal);
+        status = settle_accounts(tree, refusal);
     }
     if (status == NAULA_OK) {
         status = report_suborgs_declaring_themselves(tree, builder);
@@ -573,6 +683,7 @@ void layout_tree_release(layout_tree *tree) {
     for (size_t index = 0; index < tree->count; index++) {
         naula_memory_release(tree->orgs[index].folder);
         naula_memory_release(tree->orgs[index].repos_folder);
+        naula_memory_release(tree->orgs[index].set_aside);
     }
     naula_memory_release(tree->orgs);
     naula_memory_release(tree->root);
@@ -593,7 +704,7 @@ const char *layout_tree_confirmation_problem(const layout_tree *tree, const naul
             const layout_org *candidate = &tree->orgs[org];
             if (candidate->rules_repository != NULL &&
                 layout_same_repository(candidate->rules_repository, confirmation->declaring) &&
-                holds_account(tree, candidate, &repo->primary)) {
+                lists_account(candidate, &repo->primary)) {
                 return NULL;
             }
         }
