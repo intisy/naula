@@ -164,7 +164,7 @@ typedef struct removal_frame {
 } removal_frame;
 
 /**
- * The file system and the mount a folder is on. A bind mount shares its file system's device, so only the mount id
+ * The file system and the mount an entry is on. A bind mount shares its file system's device, so only the mount id
  * tells it apart, where Linux has one; elsewhere the device alone does.
  */
 typedef struct mount_identity {
@@ -173,18 +173,21 @@ typedef struct mount_identity {
     int has_mount;
 } mount_identity;
 
-static void mount_identity_of(int folder, const struct stat *found, mount_identity *identity) {
-    identity->device = found->st_dev;
+/** The mount of the entry `name` in `folder`, never through a link, or of `folder` itself when `name` is empty. */
+static void mount_identity_at(int folder, const char *name, dev_t device, mount_identity *identity) {
+    identity->device = device;
     identity->mount = 0;
     identity->has_mount = 0;
 #if defined(__linux__) && defined(STATX_MNT_ID)
+    int flags = AT_SYMLINK_NOFOLLOW | (name[0] == '\0' ? AT_EMPTY_PATH : 0);
     struct statx extended;
-    if (statx(folder, "", AT_EMPTY_PATH, STATX_MNT_ID, &extended) == 0 && (extended.stx_mask & STATX_MNT_ID)) {
+    if (statx(folder, name, flags, STATX_MNT_ID, &extended) == 0 && (extended.stx_mask & STATX_MNT_ID)) {
         identity->mount = extended.stx_mnt_id;
         identity->has_mount = 1;
     }
 #else
     (void)folder;
+    (void)name;
 #endif
 }
 
@@ -213,7 +216,7 @@ static naula_status refuse_mount_inside(removal *removing, unsigned long *error)
  */
 static naula_status check_mount(removal *removing, int folder, const struct stat *found, unsigned long *error) {
     mount_identity identity;
-    mount_identity_of(folder, found, &identity);
+    mount_identity_at(folder, "", found->st_dev, &identity);
     if (removing->depth > 0) {
         return is_other_mount(&removing->clone, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
     }
@@ -222,7 +225,7 @@ static naula_status check_mount(removal *removing, int folder, const struct stat
         return refused(error);
     }
     mount_identity parent;
-    mount_identity_of(removing->parent, &parent_found, &parent);
+    mount_identity_at(removing->parent, "", parent_found.st_dev, &parent);
     removing->clone = identity;
     return is_other_mount(&parent, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
 }
@@ -321,9 +324,20 @@ static naula_status read_snapshot(int folder, listing_snapshot *taken, unsigned 
     return status;
 }
 
+/** Unlinks the entry `name` of `folder`, which is no real folder, unless it is mounted there from elsewhere. */
+static naula_status remove_entry(removal *removing, int folder, const char *name, const struct stat *found,
+                                 unsigned long *error) {
+    mount_identity identity;
+    mount_identity_at(folder, name, found->st_dev, &identity);
+    if (is_other_mount(&removing->clone, &identity)) {
+        return refuse_mount_inside(removing, error);
+    }
+    return unlinkat(folder, name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
+}
+
 /**
  * Removes the entry `name` of `folder` unless it is a real folder, which is handed back opened in `descend`; a file
- * mounted from another file system is refused, never removed.
+ * on another file system or mount, a bind-mounted file included, is refused, never removed.
  */
 static naula_status take_entry(removal *removing, int folder, const char *name, int *descend, char **descend_name,
                                unsigned long *error) {
@@ -331,11 +345,8 @@ static naula_status take_entry(removal *removing, int folder, const char *name, 
     if (fstatat(folder, name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno == ENOENT ? NAULA_OK : refused(error);
     }
-    if (!S_ISDIR(found.st_mode) && found.st_dev != removing->clone.device) {
-        return refuse_mount_inside(removing, error);
-    }
     if (!S_ISDIR(found.st_mode)) {
-        return unlinkat(folder, name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
+        return remove_entry(removing, folder, name, &found, error);
     }
     *descend_name = copy_of(name, strlen(name));
     if (*descend_name == NULL) {

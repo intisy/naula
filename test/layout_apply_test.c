@@ -2507,6 +2507,35 @@ static void a_clone_that_is_itself_a_mount_point_is_never_emptied(void) {
     free(after);
     finish("mount-at");
 }
+
+/** A file bind-mounted from outside shares the clone's device, so only its mount tells it apart from the clone's. */
+static void a_file_bind_mounted_inside_a_clone_is_never_removed(void) {
+    fresh("mount-file");
+    char outside[PATH_SIZE];
+    char bind_arguments[PATH_SIZE * 2];
+    compose(outside, base, "/mount-file/outside.txt", NULL);
+    write_text(outside, "must survive");
+    make_checkout(at("clone"), "clone");
+    write_text(at("clone/target.txt"), "placeholder");
+    snprintf(bind_arguments, sizeof bind_arguments, "--bind '%s'", outside);
+    if (!mount_on(bind_arguments, at("clone/target.txt"))) {
+        printf("a_file_bind_mounted_inside_a_clone_is_never_removed: skipped, mounting needs root and CAP_SYS_ADMIN\n");
+        finish("mount-file");
+        return;
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "mount-inside"));
+    CHECK(file_holds(at("clone/target.txt"), "must survive"));
+    unmount(at("clone/target.txt"));
+    CHECK(file_holds(outside, "must survive"));
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(file_holds(outside, "must survive"));
+    naula_memory_release(journal_file);
+    finish("mount-file");
+}
 #elif defined(_WIN32)
 /**
  * A volume mount point is a reparse point of the junction's own tag, and making one needs an elevated process, so
@@ -2854,6 +2883,7 @@ static const named_test TESTS[] = {
     {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
 #ifdef __linux__
     {"a_clone_that_is_itself_a_mount_point_is_never_emptied", a_clone_that_is_itself_a_mount_point_is_never_emptied},
+    {"a_file_bind_mounted_inside_a_clone_is_never_removed", a_file_bind_mounted_inside_a_clone_is_never_removed},
 #endif
 };
 
