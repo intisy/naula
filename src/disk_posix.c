@@ -139,16 +139,27 @@ static int open_folder_at(int folder, const char *name) {
     return openat(folder, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
 }
 
+/** The names of one listing, each ended by a NUL. */
+typedef struct listing_snapshot {
+    char *names;
+    size_t length;
+    size_t capacity;
+} listing_snapshot;
+
 /**
  * One folder being emptied: its name in the folder below it on the stack, and its identity, so that when its
  * descriptor was closed to stay within OPEN_FOLDER_BUDGET, the one reopened through `..` is proven the same folder.
+ * The snapshot of its names is worked through from `next`; `listed` says one was ever taken, and `refills` counts
+ * those found holding names after the first was worked through.
  */
 typedef struct removal_frame {
     int folder;
     dev_t device;
     ino_t inode;
     char *name;
-    int read_to_end;
+    listing_snapshot listing;
+    size_t next;
+    int listed;
     unsigned refills;
 } removal_frame;
 
@@ -189,15 +200,6 @@ typedef struct removal {
     mount_identity clone;
     disk_removal_refusal reason;
 } removal;
-
-/** A folder once read to its end holds only what came after, so every later find counts toward a refill. */
-static int is_refilled(removal_frame *frame, int read_to_end) {
-    if (frame->read_to_end) {
-        frame->refills++;
-    }
-    frame->read_to_end |= read_to_end;
-    return frame->refills >= DISK_REMOVAL_REFILL_PASSES;
-}
 
 static naula_status refuse_mount_inside(removal *removing, unsigned long *error) {
     removing->reason = DISK_REMOVAL_MOUNT_INSIDE;
@@ -247,12 +249,11 @@ static naula_status push_frame(removal *removing, int folder, char *name, unsign
         return status;
     }
     removal_frame *frame = &removing->frames[removing->depth++];
+    memset(frame, 0, sizeof *frame);
     frame->folder = folder;
     frame->device = found.st_dev;
     frame->inode = found.st_ino;
     frame->name = name;
-    frame->read_to_end = 0;
-    frame->refills = 0;
     if (removing->depth > OPEN_FOLDER_BUDGET) {
         removal_frame *resting = &removing->frames[removing->depth - 1 - OPEN_FOLDER_BUDGET];
         close(resting->folder);
@@ -261,17 +262,19 @@ static naula_status push_frame(removal *removing, int folder, char *name, unsign
     return NAULA_OK;
 }
 
-/** The names of one listing, each ended by a NUL. */
-typedef struct listing_snapshot {
-    char *names;
-    size_t length;
-    size_t capacity;
-} listing_snapshot;
+static void pop_frame(removal *removing) {
+    removal_frame *top = &removing->frames[--removing->depth];
+    if (top->folder >= 0) {
+        close(top->folder);
+    }
+    naula_memory_release(top->name);
+    naula_memory_release(top->listing.names);
+}
 
 static naula_status snapshot_append(listing_snapshot *taken, const char *name) {
     size_t needed = strlen(name) + 1;
     if (taken->length + needed > taken->capacity) {
-        size_t grown = taken->capacity == 0 ? 4096 : taken->capacity * 2;
+        size_t grown = taken->capacity == 0 ? 64 : taken->capacity * 2;
         while (grown < taken->length + needed) {
             grown *= 2;
         }
@@ -348,27 +351,6 @@ static naula_status take_entry(removal *removing, int folder, const char *name, 
     return NAULA_OK;
 }
 
-/**
- * Reads `folder` from its start, removing every entry that is not a real folder, until it meets one to descend into,
- * handed back opened in `descend` with its name. `removed` says whether anything went, so a folder counts as empty
- * only once a whole reading found nothing.
- */
-static naula_status take_listing(removal *removing, int folder, int *descend, char **name, int *removed,
-                                 unsigned long *error) {
-    *descend = -1;
-    *removed = 0;
-    listing_snapshot taken = {NULL, 0, 0};
-    naula_status status = read_snapshot(folder, &taken, error);
-    for (size_t offset = 0; status == NAULA_OK && offset < taken.length && *descend < 0;) {
-        const char *entry = taken.names + offset;
-        *removed = 1;
-        status = take_entry(removing, folder, entry, descend, name, error);
-        offset += strlen(entry) + 1;
-    }
-    naula_memory_release(taken.names);
-    return status;
-}
-
 /** The descriptor of the folder below the top of the stack, reopened through `..` when it was closed. */
 static naula_status parent_of_top(removal *removing, int *parent, unsigned long *error) {
     if (removing->depth == 1) {
@@ -410,35 +392,54 @@ static naula_status remove_top_folder(removal *removing, int *refilled, unsigned
         }
         status = refused(error);
     }
-    close(top->folder);
-    naula_memory_release(top->name);
-    removing->depth--;
+    pop_frame(removing);
     return status;
 }
 
-/** One listing of the top folder: what it holds goes, a folder in it is pushed, and an empty one is removed. */
-static naula_status take_one_pass(removal *removing, unsigned long *error) {
-    removal_frame *top = &removing->frames[removing->depth - 1];
-    int descend = -1;
-    char *child = NULL;
-    int found = 0;
-    naula_status status = take_listing(removing, top->folder, &descend, &child, &found, error);
-    if (status == NAULA_OK && !found) {
-        status = remove_top_folder(removing, &found, error);
+/** A folder found holding names after a snapshot of it was worked through was refilled by another program. */
+static naula_status count_refill(removal *removing, removal_frame *top, unsigned long *error) {
+    if (++top->refills < DISK_REMOVAL_REFILL_PASSES) {
+        return NAULA_OK;
     }
-    if (status != NAULA_OK || !found) {
+    removing->reason = DISK_REMOVAL_REFILLED;
+    *error = ENOTEMPTY;
+    return NAULA_REFUSED;
+}
+
+/** Takes a new snapshot of the top folder once the last is worked through, and removes the folder when it is empty. */
+static naula_status relist_top(removal *removing, unsigned long *error) {
+    removal_frame *top = &removing->frames[removing->depth - 1];
+    int worked_through = top->listed;
+    top->listed = 1;
+    top->listing.length = 0;
+    top->next = 0;
+    naula_status status = read_snapshot(top->folder, &top->listing, error);
+    if (status != NAULA_OK) {
         return status;
     }
-    if (is_refilled(top, descend < 0)) {
-        if (descend >= 0) {
-            close(descend);
-        }
-        naula_memory_release(child);
-        removing->reason = DISK_REMOVAL_REFILLED;
-        *error = ENOTEMPTY;
-        return NAULA_REFUSED;
+    if (top->listing.length > 0) {
+        return worked_through ? count_refill(removing, top, error) : NAULA_OK;
     }
-    return descend >= 0 ? push_frame(removing, descend, child, error) : NAULA_OK;
+    int refilled = 0;
+    status = remove_top_folder(removing, &refilled, error);
+    return status == NAULA_OK && refilled ? count_refill(removing, top, error) : status;
+}
+
+/**
+ * One step of the walk: the top folder's next name goes, or is pushed when it is a real folder, so the folder below
+ * carries on with its own snapshot once that one is removed; a snapshot worked through is followed by a new one.
+ */
+static naula_status take_one_step(removal *removing, unsigned long *error) {
+    removal_frame *top = &removing->frames[removing->depth - 1];
+    if (top->next >= top->listing.length) {
+        return relist_top(removing, error);
+    }
+    const char *name = top->listing.names + top->next;
+    top->next += strlen(name) + 1;
+    int descend = -1;
+    char *child = NULL;
+    naula_status status = take_entry(removing, top->folder, name, &descend, &child, error);
+    return status == NAULA_OK && descend >= 0 ? push_frame(removing, descend, child, error) : status;
 }
 
 /** Empties and removes the folder `name` in `parent`, depth first, on its own stack rather than the call stack. */
@@ -455,14 +456,10 @@ static naula_status remove_tree_at(int parent, const char *name, disk_removal_re
         naula_memory_release(own_name);
     }
     while (status == NAULA_OK && removing.depth > 0) {
-        status = take_one_pass(&removing, error);
+        status = take_one_step(&removing, error);
     }
     while (removing.depth > 0) {
-        removal_frame *frame = &removing.frames[--removing.depth];
-        if (frame->folder >= 0) {
-            close(frame->folder);
-        }
-        naula_memory_release(frame->name);
+        pop_frame(&removing);
     }
     naula_memory_release(removing.frames);
     *reason = removing.reason;

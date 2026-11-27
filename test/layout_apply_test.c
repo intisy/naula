@@ -2213,6 +2213,161 @@ static void a_folder_that_keeps_refilling_stops_the_removal(void) {
     CHECK(stopped);
 }
 
+static long long clock_milliseconds(void) {
+#ifdef _WIN32
+    return (long long)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+#endif
+}
+
+#define SUBFOLDER_WRITERS 4
+#define SUBFOLDER_SECONDS 60
+#define SUBFOLDER_ROUNDS 5
+
+typedef struct subfolder_writer {
+    char folder[PATH_SIZE];
+    int number;
+    volatile int *removal_returned;
+    long made;
+} subfolder_writer;
+
+/** Makes a new subfolder under a name never used before, as fast as it can, until the removal returns or time is up. */
+static void keep_making_subfolders(subfolder_writer *writer) {
+    time_t deadline = time(NULL) + SUBFOLDER_SECONDS;
+    for (long index = 0; !*writer->removal_returned && time(NULL) < deadline; index++) {
+        char path[PATH_SIZE + 64];
+        snprintf(path, sizeof path, "%s/s%d-%08ld", writer->folder, writer->number, index);
+#ifdef _WIN32
+        writer->made += CreateDirectoryA(path, NULL) ? 1 : 0;
+#else
+        writer->made += mkdir(path, 0777) == 0 ? 1 : 0;
+#endif
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI subfolder_thread(LPVOID context) {
+    keep_making_subfolders(context);
+    return 0;
+}
+#else
+static void *subfolder_thread(void *context) {
+    keep_making_subfolders(context);
+    return NULL;
+}
+#endif
+
+static naula_status remove_clone_while_making_subfolders(subfolder_writer *writers, volatile int *removal_returned) {
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+#ifdef _WIN32
+    HANDLE threads[SUBFOLDER_WRITERS];
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        threads[index] = CreateThread(NULL, 0, subfolder_thread, &writers[index], 0, NULL);
+    }
+    naula_status status = apply_plan();
+    *removal_returned = 1;
+    WaitForMultipleObjects(SUBFOLDER_WRITERS, threads, TRUE, INFINITE);
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        CloseHandle(threads[index]);
+    }
+#else
+    pthread_t threads[SUBFOLDER_WRITERS];
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        pthread_create(&threads[index], NULL, subfolder_thread, &writers[index]);
+    }
+    naula_status status = apply_plan();
+    *removal_returned = 1;
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        pthread_join(threads[index], NULL);
+    }
+#endif
+    return status;
+}
+
+/** 1 when the removal stopped as `folder-refills` and its resume finished; every round must return well in time. */
+static int subfolder_round(int round) {
+    fresh("refill-folders");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/refill"));
+    for (int index = 0; index < 50; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "clone/refill/f%03d", index);
+        write_text(at(name), "x");
+    }
+    volatile int removal_returned = 0;
+    subfolder_writer writers[SUBFOLDER_WRITERS];
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        memset(&writers[index], 0, sizeof writers[index]);
+        compose(writers[index].folder, at("clone/refill"), NULL);
+        writers[index].number = index;
+        writers[index].removal_returned = &removal_returned;
+    }
+    long long started = clock_milliseconds();
+    naula_status status = remove_clone_while_making_subfolders(writers, &removal_returned);
+    long long took = clock_milliseconds() - started;
+    long made = 0;
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        made += writers[index].made;
+    }
+    printf("a_folder_refilled_with_new_subfolders_stops_well_before_its_writers: round %d answered %d %s after %lld ms, "
+           "the writers made %ld folders\n",
+           round, (int)status, status == NAULA_OK ? "" : refusal.code, took, made);
+    int stopped = status == NAULA_REFUSED && strcmp(refusal.code, "folder-refills") == 0;
+    CHECK(stopped || status == NAULA_OK);
+    CHECK(took < SUBFOLDER_SECONDS * 1000 / 2);
+    char *journal_file = unfinished_journal();
+    CHECK(stopped == (journal_file != NULL));
+    if (journal_file != NULL) {
+        CHECK(resume(journal_file) == NAULA_OK);
+    }
+    CHECK(kind_at(at("clone")) == 0);
+    naula_memory_release(journal_file);
+    finish("refill-folders");
+    return stopped;
+}
+
+/**
+ * Other programs keep making new subfolders in a folder of the clone. Each is entered and removed, and the folder's
+ * listing is carried on after it rather than read again, so a writer can only refill it between whole listings: the
+ * removal stops as `folder-refills` long before the writers stop, never chasing them.
+ */
+static void a_folder_refilled_with_new_subfolders_stops_well_before_its_writers(void) {
+    int stopped = 0;
+    for (int round = 0; round < SUBFOLDER_ROUNDS && !stopped; round++) {
+        stopped = subfolder_round(round);
+    }
+    CHECK(stopped);
+}
+
+#define WIDE_SUBFOLDERS 20000
+#define WIDE_SECONDS 60
+
+/** Each folder's listing is read once and carried on after each subfolder, so the removal takes time linear in it. */
+static void twenty_thousand_subfolders_are_removed_in_linear_time(void) {
+    fresh("wide");
+    make_checkout(at("clone"), "wide");
+    for (int index = 0; index < WIDE_SUBFOLDERS; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "clone/d%06d", index);
+        make_folder(at(name));
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    long long started = clock_milliseconds();
+    naula_status status = apply_plan();
+    long long took = clock_milliseconds() - started;
+    printf("twenty_thousand_subfolders_are_removed_in_linear_time: %d subfolders removed in %lld ms: %d %s\n",
+           WIDE_SUBFOLDERS, took, (int)status, status == NAULA_OK ? "" : refusal.code);
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(took < WIDE_SECONDS * 1000);
+    finish("wide");
+}
+
 #ifdef __linux__
 static int mount_on(const char *mount_arguments, const char *folder) {
     char command[PATH_SIZE * 3];
@@ -2662,6 +2817,8 @@ static const named_test TESTS[] = {
     {"a_step_into_naulas_files_is_refused_by_their_identity", a_step_into_naulas_files_is_refused_by_their_identity},
     {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
     {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
+    {"a_folder_refilled_with_new_subfolders_stops_well_before_its_writers", a_folder_refilled_with_new_subfolders_stops_well_before_its_writers},
+    {"twenty_thousand_subfolders_are_removed_in_linear_time", twenty_thousand_subfolders_are_removed_in_linear_time},
     {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
 #ifdef __linux__
     {"a_clone_that_is_itself_a_mount_point_is_never_emptied", a_clone_that_is_itself_a_mount_point_is_never_emptied},
