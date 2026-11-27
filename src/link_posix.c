@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "disk.h"
+#include "disk_posix_internal.h"
 #include "naula/memory.h"
 
 #define LINK_TARGET_LIMIT 65536
@@ -62,7 +63,7 @@ naula_status disk_link_make(const char *path, const char *target, unsigned long 
         *error = (unsigned long)errno;
         return NAULA_REFUSED;
     }
-    return NAULA_OK;
+    return disk_sync_parent(path);
 }
 
 naula_status disk_link_remove(const char *path, unsigned long *error) {
@@ -80,5 +81,5 @@ naula_status disk_link_remove(const char *path, unsigned long *error) {
         *error = (unsigned long)errno;
         return NAULA_REFUSED;
     }
-    return NAULA_OK;
+    return disk_sync_parent(path);
 }

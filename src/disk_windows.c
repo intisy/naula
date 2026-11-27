@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <winternl.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -69,51 +70,196 @@ static int is_dot_name(const wchar_t *name) {
     return wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0;
 }
 
-static naula_status remove_tree_wide(const wchar_t *folder, unsigned long *error);
+/**
+ * Every open a removal makes: DELETE to remove the entry by its own handle, the listing right for a folder, and no
+ * FILE_SHARE_DELETE, so no other process can rename an entry naula holds open while it works inside it. The reparse
+ * point flag opens a link itself, never what it points at.
+ */
+#define REMOVAL_ACCESS (DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE)
+#define REMOVAL_SHARE (FILE_SHARE_READ | FILE_SHARE_WRITE)
+#define LISTING_BUFFER_SIZE 65536u
+#define LISTING_PASSES 8
 
-/** A link or other reparse point is removed itself and never entered, whatever it points at. */
-static naula_status remove_entry(const wchar_t *path, DWORD attributes, unsigned long *error) {
-    int is_folder = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-        return (is_folder ? RemoveDirectoryW(path) : DeleteFileW(path)) ? NAULA_OK : refused(error);
-    }
-    if (is_folder) {
-        return remove_tree_wide(path, error);
-    }
-    if (attributes & FILE_ATTRIBUTE_READONLY) {
-        SetFileAttributesW(path, attributes & ~(DWORD)FILE_ATTRIBUTE_READONLY);
-    }
-    return DeleteFileW(path) ? NAULA_OK : refused(error);
+typedef LONG(NTAPI *nt_create_file_function)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+                                             PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+typedef ULONG(NTAPI *nt_status_to_error_function)(LONG);
+
+typedef struct relative_opener {
+    nt_create_file_function create;
+    nt_status_to_error_function to_error;
+} relative_opener;
+
+/** ntdll is mapped into every process, so its two entry points are looked up rather than linked. */
+static int relative_opener_load(relative_opener *opener) {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    opener->create = ntdll == NULL ? NULL : (nt_create_file_function)(void (*)(void))GetProcAddress(ntdll, "NtCreateFile");
+    opener->to_error =
+        ntdll == NULL ? NULL : (nt_status_to_error_function)(void (*)(void))GetProcAddress(ntdll, "RtlNtStatusToDosError");
+    return opener->create != NULL && opener->to_error != NULL;
 }
 
-static naula_status remove_children(const wchar_t *folder, unsigned long *error) {
-    wchar_t *pattern = child_path(folder, L"*");
-    if (pattern == NULL) {
-        return NAULA_OUT_OF_MEMORY;
+/** Opens the entry `name` of the folder `parent` holds open, by that handle, so no path above it is walked again. */
+static naula_status open_relative(const relative_opener *opener, HANDLE parent, const WCHAR *name, DWORD name_bytes,
+                                  HANDLE *opened, unsigned long *error) {
+    UNICODE_STRING relative;
+    relative.Buffer = (PWSTR)name;
+    relative.Length = (USHORT)name_bytes;
+    relative.MaximumLength = (USHORT)name_bytes;
+    OBJECT_ATTRIBUTES attributes;
+    InitializeObjectAttributes(&attributes, &relative, OBJ_CASE_INSENSITIVE, parent, NULL);
+    IO_STATUS_BLOCK io;
+    LONG result = opener->create(opened, REMOVAL_ACCESS, &attributes, &io, NULL, 0, REMOVAL_SHARE, FILE_OPEN,
+                                 FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_SYNCHRONOUS_IO_NONALERT,
+                                 NULL, 0);
+    if (result < 0) {
+        *opened = INVALID_HANDLE_VALUE;
+        *error = opener->to_error(result);
+        return NAULA_REFUSED;
     }
-    WIN32_FIND_DATAW found;
-    HANDLE search = FindFirstFileExW(pattern, FindExInfoBasic, &found, FindExSearchNameMatch, NULL, 0);
-    naula_memory_release(pattern);
-    if (search == INVALID_HANDLE_VALUE) {
-        return GetLastError() == ERROR_FILE_NOT_FOUND ? NAULA_OK : refused(error);
+    return NAULA_OK;
+}
+
+static int is_unsupported_error(DWORD code) {
+    return code == ERROR_INVALID_PARAMETER || code == ERROR_NOT_SUPPORTED || code == ERROR_INVALID_FUNCTION;
+}
+
+static naula_status set_plain_attributes(HANDLE handle, DWORD attributes, unsigned long *error) {
+    FILE_BASIC_INFO basic;
+    memset(&basic, 0, sizeof basic);
+    basic.FileAttributes = attributes & ~(DWORD)(FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY |
+                                                 FILE_ATTRIBUTE_REPARSE_POINT);
+    if (basic.FileAttributes == 0) {
+        basic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
     }
-    naula_status status = NAULA_OK;
-    do {
-        if (is_dot_name(found.cFileName)) {
-            continue;
+    return SetFileInformationByHandle(handle, FileBasicInfo, &basic, sizeof basic) ? NAULA_OK : refused(error);
+}
+
+/**
+ * Removes the entry `handle` holds, by that handle. Read-only is ignored rather than cleared, since a file's
+ * attributes belong to every hard link of it, one outside the clone included.
+ *
+ * @implNote A file system without the extended disposition (FAT, Windows before 10 1709) is removed the old way, and
+ * there a read-only file's attribute is cleared first, which also clears it on its other hard links.
+ */
+static naula_status delete_by_handle(HANDLE handle, DWORD attributes, unsigned long *error) {
+    FILE_DISPOSITION_INFO_EX extended;
+    extended.Flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS |
+                     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE;
+    if (SetFileInformationByHandle(handle, FileDispositionInfoEx, &extended, sizeof extended)) {
+        return NAULA_OK;
+    }
+    DWORD code = GetLastError();
+    if (!is_unsupported_error(code)) {
+        *error = code;
+        return NAULA_REFUSED;
+    }
+    if (attributes & FILE_ATTRIBUTE_READONLY) {
+        naula_status status = set_plain_attributes(handle, attributes, error);
+        if (status != NAULA_OK) {
+            return status;
         }
-        wchar_t *child = child_path(folder, found.cFileName);
-        status = child == NULL ? NAULA_OUT_OF_MEMORY : remove_entry(child, found.dwFileAttributes, error);
-        naula_memory_release(child);
-    } while (status == NAULA_OK && FindNextFileW(search, &found));
-    FindClose(search);
+    }
+    FILE_DISPOSITION_INFO plain;
+    plain.DeleteFile = TRUE;
+    return SetFileInformationByHandle(handle, FileDispositionInfo, &plain, sizeof plain) ? NAULA_OK : refused(error);
+}
+
+static naula_status attributes_of(HANDLE handle, DWORD *attributes, unsigned long *error) {
+    BY_HANDLE_FILE_INFORMATION information;
+    if (!GetFileInformationByHandle(handle, &information)) {
+        return refused(error);
+    }
+    *attributes = information.dwFileAttributes;
+    return NAULA_OK;
+}
+
+static int is_dot_entry(const WCHAR *name, DWORD name_bytes) {
+    return (name_bytes == sizeof(WCHAR) && name[0] == L'.') ||
+           (name_bytes == 2 * sizeof(WCHAR) && name[0] == L'.' && name[1] == L'.');
+}
+
+static naula_status remove_folder_contents(const relative_opener *opener, HANDLE folder, unsigned long *error);
+
+/**
+ * Removes what `handle` holds, judged by the handle itself and never by a listing, which another process may have
+ * made stale: a link or other reparse point is removed itself and never entered.
+ */
+static naula_status remove_opened(const relative_opener *opener, HANDLE handle, unsigned long *error) {
+    DWORD attributes = 0;
+    naula_status status = attributes_of(handle, &attributes, error);
+    int enters = status == NAULA_OK && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                 !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+    if (enters && (attributes & FILE_ATTRIBUTE_READONLY)) {
+        status = set_plain_attributes(handle, attributes, error);
+    }
+    if (status == NAULA_OK && enters) {
+        status = remove_folder_contents(opener, handle, error);
+    }
+    if (status == NAULA_OK) {
+        status = delete_by_handle(handle, attributes, error);
+    }
     return status;
 }
 
-static naula_status remove_tree_wide(const wchar_t *folder, unsigned long *error) {
-    naula_status status = remove_children(folder, error);
-    if (status == NAULA_OK && !RemoveDirectoryW(folder)) {
-        status = refused(error);
+static int is_gone_error(unsigned long code) {
+    return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
+}
+
+static naula_status remove_child(const relative_opener *opener, HANDLE folder, const FILE_ID_BOTH_DIR_INFO *entry,
+                                 unsigned long *error) {
+    HANDLE child = INVALID_HANDLE_VALUE;
+    naula_status status = open_relative(opener, folder, entry->FileName, entry->FileNameLength, &child, error);
+    if (status != NAULA_OK) {
+        return is_gone_error(*error) ? NAULA_OK : status;
+    }
+    status = remove_opened(opener, child, error);
+    CloseHandle(child);
+    return status;
+}
+
+/** One listing of `folder` from its start, removing every entry it returns; `found` counts them. */
+static naula_status remove_listed(const relative_opener *opener, HANDLE folder, unsigned char *buffer,
+                                  size_t *found, unsigned long *error) {
+    *found = 0;
+    FILE_INFO_BY_HANDLE_CLASS query = FileIdBothDirectoryRestartInfo;
+    for (;;) {
+        if (!GetFileInformationByHandleEx(folder, query, buffer, LISTING_BUFFER_SIZE)) {
+            DWORD code = GetLastError();
+            *error = code;
+            return code == ERROR_NO_MORE_FILES ? NAULA_OK : NAULA_REFUSED;
+        }
+        query = FileIdBothDirectoryInfo;
+        for (size_t offset = 0;;) {
+            const FILE_ID_BOTH_DIR_INFO *entry = (const FILE_ID_BOTH_DIR_INFO *)(buffer + offset);
+            if (!is_dot_entry(entry->FileName, entry->FileNameLength)) {
+                (*found)++;
+                naula_status status = remove_child(opener, folder, entry, error);
+                if (status != NAULA_OK) {
+                    return status;
+                }
+            }
+            if (entry->NextEntryOffset == 0) {
+                break;
+            }
+            offset += entry->NextEntryOffset;
+        }
+    }
+}
+
+/** Lists again until a listing finds nothing, since a folder may still change while naula empties it. */
+static naula_status remove_folder_contents(const relative_opener *opener, HANDLE folder, unsigned long *error) {
+    unsigned char *buffer = naula_memory_allocate(LISTING_BUFFER_SIZE);
+    if (buffer == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    naula_status status = NAULA_OK;
+    size_t found = 1;
+    for (int pass = 0; status == NAULA_OK && found > 0 && pass < LISTING_PASSES; pass++) {
+        status = remove_listed(opener, folder, buffer, &found, error);
+    }
+    naula_memory_release(buffer);
+    if (status == NAULA_OK) {
+        *error = 0;
     }
     return status;
 }
@@ -121,20 +267,32 @@ static naula_status remove_tree_wide(const wchar_t *folder, unsigned long *error
 naula_status disk_tree_remove(const char *path, unsigned long *error) {
     wchar_t *wide = NULL;
     *error = 0;
+    relative_opener opener;
+    if (!relative_opener_load(&opener)) {
+        *error = ERROR_PROC_NOT_FOUND;
+        return NAULA_REFUSED;
+    }
     naula_status status = wide_path(path, &wide);
     if (status != NAULA_OK) {
         return status;
     }
-    DWORD attributes = GetFileAttributesW(wide);
-    if (attributes == INVALID_FILE_ATTRIBUTES) {
-        status = refused(error);
-    } else if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+    HANDLE folder = CreateFileW(wide, REMOVAL_ACCESS, REMOVAL_SHARE, NULL, OPEN_EXISTING,
+                                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    naula_memory_release(wide);
+    if (folder == INVALID_HANDLE_VALUE) {
+        return refused(error);
+    }
+    DWORD attributes = 0;
+    status = attributes_of(folder, &attributes, error);
+    if (status == NAULA_OK &&
+        ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) || !(attributes & FILE_ATTRIBUTE_DIRECTORY))) {
         *error = ERROR_DIRECTORY;
         status = NAULA_REFUSED;
-    } else {
-        status = remove_tree_wide(wide, error);
     }
-    naula_memory_release(wide);
+    if (status == NAULA_OK) {
+        status = remove_opened(&opener, folder, error);
+    }
+    CloseHandle(folder);
     return status;
 }
 
