@@ -1438,6 +1438,9 @@ static void removes_only_links_in_the_places_naula_links(void) {
     add_link(&world, ROOT "/spisor/shared/deep/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
     add_link(&world, ROOT "/spisor/archive/old", ROOT "/spisor/repos/111111111111");
     add_link(&world, ROOT "/tools/naula-old", ROOT "/repos/dddddddddddd");
+    add_link(&world, ROOT "/elsewhere/repos/k/x", ROOT "/elsewhere/repos/k/repos/y");
+    add_repo(&world, repo_at(hex_of('3'), "toolbox", "intisy", ROOT "/spisor/platform"));
+    add_link(&world, ROOT "/spisor/platform/thing", ROOT "/spisor/repos/999999999999");
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
@@ -1447,6 +1450,8 @@ static void removes_only_links_in_the_places_naula_links(void) {
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/deep/lib") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/archive/old") != NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/tools/naula-old") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/elsewhere/repos/k/x") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/platform/thing") == NULL);
     naula_layout_plan_release(&plan);
 }
 
