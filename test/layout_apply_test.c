@@ -454,6 +454,26 @@ static void memory_bank_key_matches_the_measured_form(void) {
     check_text(key, "-home-finn-root-org", "posix path");
     naula_memory_bank_key("F:\\Documents", key, 5);
     check_text(key, "", "a key that does not fit is never cut short");
+    naula_memory_bank_key("C:\\Users\\finn\\AppData\\Local\\Temp\\naula_key.probe+x", key, sizeof key);
+    check_text(key, "C--Users-finn-AppData-Local-Temp-naula-key-probe-x", "measured with Claude Code 2.1.332");
+    naula_memory_bank_key("C:\\Users\\finn\\.claude\\verbrauch", key, sizeof key);
+    check_text(key, "C--Users-finn--claude-verbrauch", "measured with Claude Code 2.1.332");
+    naula_memory_bank_key("c:/a_b", key, sizeof key);
+    check_text(key, "c--a-b", "an underscore, and the drive letter keeps its case");
+    naula_memory_bank_key("/a.b", key, sizeof key);
+    check_text(key, "-a-b", "a dot");
+    naula_memory_bank_key("/a+b", key, sizeof key);
+    check_text(key, "-a-b", "a plus");
+    naula_memory_bank_key("/a b", key, sizeof key);
+    check_text(key, "-a-b", "a space");
+    naula_memory_bank_key("/a\xc3\xbc" "b", key, sizeof key);
+    check_text(key, "-a-b", "a two-byte character is one UTF-16 unit");
+    naula_memory_bank_key("/a\xe2\x82\xac" "b", key, sizeof key);
+    check_text(key, "-a-b", "a three-byte character is one UTF-16 unit");
+    naula_memory_bank_key("/a\xf0\x9f\x98\x80" "b", key, sizeof key);
+    check_text(key, "-a--b", "a four-byte character is two UTF-16 units");
+    naula_memory_bank_key("/a\xff" "z", key, sizeof key);
+    check_text(key, "-a-z", "a byte that is not UTF-8");
 }
 
 static void apply_makes_folders_links_and_files(void) {

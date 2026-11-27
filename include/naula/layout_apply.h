@@ -73,9 +73,10 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
 naula_status naula_journal_unfinished(const char *root, char **journal_file, naula_refusal *refusal);
 
 /**
- * Claude Code's memory bank key for a folder: `real_path` with every `:`, `/` and `\` replaced by `-`, as
- * `F:\Documents\GitHub\spisor` is `F--Documents-GitHub-spisor`. A key that does not fit `capacity` leaves `key`
- * empty, never cut short, since a shortened key names another folder's bank.
+ * Claude Code's memory bank key for a folder: `real_path` with every character that is not an ASCII letter or digit
+ * replaced by `-`, one for each UTF-16 unit it takes, as `C:\Users\finn\.claude\verbrauch` is
+ * `C--Users-finn--claude-verbrauch` (measured with Claude Code 2.1.332); the drive letter keeps its case. A key that
+ * does not fit `capacity` leaves `key` empty, never cut short, since a shortened key names another folder's bank.
  */
 void naula_memory_bank_key(const char *real_path, char *key, size_t capacity);
 
