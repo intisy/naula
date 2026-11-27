@@ -637,6 +637,15 @@ static naula_status check_paths(const naula_layout_input *input, naula_refusal *
     return NAULA_OK;
 }
 
+/** A whole drive or `/` as the root would make every folder on it the layout's to move and remove. */
+static int is_filesystem_root(const char *root) {
+    size_t length = strlen(root);
+    while (length > 0 && (root[length - 1] == '/' || root[length - 1] == '\\')) {
+        length--;
+    }
+    return length < layout_filesystem_root_length(root);
+}
+
 static naula_status check_input(const naula_layout_input *input, naula_refusal *refusal) {
     const char *missing = !input_holds_first_shape(input) ? "the input is smaller than its first shape"
                           : input->root == NULL           ? "the input names no root"
@@ -649,7 +658,8 @@ static naula_status check_input(const naula_layout_input *input, naula_refusal *
                               ? "a count is set for a list that is NULL"
                           : !layout_is_clean_absolute(input->root)
                               ? "the root is not an absolute path free of empty, . and .. segments"
-                              : NULL;
+                          : is_filesystem_root(input->root) ? "the root is a whole filesystem, not a folder on one"
+                                                            : NULL;
     if (missing != NULL) {
         naula_refuse(refusal, "layout-input-invalid", INPUT_FIX, "%s", missing);
         return NAULA_REFUSED;

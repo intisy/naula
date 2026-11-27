@@ -99,8 +99,8 @@ naula_status naula_repo_file_parse(const uint8_t *bytes, size_t length, naula_re
  * Writes `file` as format 2: members in the order of the format's table, two-space indent, LF, a trailing newline.
  * Writing what was read changes no byte only for a file already in that canonical form: a number in `access` is
  * written back in its shortest exact form, so `1.0` becomes `1` and a large integer may gain an exponent. Answers
- * NAULA_REFUSED for a struct smaller than its first shape and NAULA_MALFORMED, with no text, for a file the parser
- * would refuse.
+ * NAULA_REFUSED for a struct smaller than its first shape or one setting both `org` and `member_of`, and
+ * NAULA_MALFORMED, with no text, for any other file the parser would refuse.
  */
 naula_status naula_repo_file_write(const naula_repo_file *file, char **json, size_t *length);
 

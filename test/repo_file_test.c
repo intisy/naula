@@ -818,7 +818,7 @@ static void write_refuses_a_declaration_beside_a_member_of(void) {
     declared.member_of = member.member_of;
     char *json = NULL;
     size_t length = 0;
-    CHECK(naula_repo_file_write(&declared, &json, &length) == NAULA_MALFORMED && json == NULL);
+    CHECK(naula_repo_file_write(&declared, &json, &length) == NAULA_REFUSED && json == NULL);
     declared.member_of = NULL;
     naula_repo_file_release(&member);
     naula_repo_file_release(&declared);

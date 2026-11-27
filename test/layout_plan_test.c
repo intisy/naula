@@ -1251,23 +1251,16 @@ static void a_held_repo_outside_the_root_is_left_alone(void) {
     naula_layout_plan_release(&plan);
 }
 
-static void a_filesystem_root_keeps_its_slash(void) {
-    const char *roots[] = {"/", "T:/", "T:\\"};
-    const char *expected[] = {"/", "T:/", "T:/"};
-    const char *repos[] = {"/repos", "T:/repos", "T:/repos"};
+static void a_filesystem_root_is_refused_as_the_root(void) {
+    const char *roots[] = {"/", "T:/", "T:\\", "T://"};
     for (size_t index = 0; index < sizeof roots / sizeof roots[0]; index++) {
         scenario world;
         start_world(&world);
         naula_layout_plan plan;
         naula_refusal refusal;
-        CHECK(plan_with_root(&world, roots[index], &plan, &refusal) == NAULA_OK);
-        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, expected[index]) != NULL);
-        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, repos[index]) != NULL);
-        for (size_t step = 0; step < plan.step_count; step++) {
-            const char *at = plan.steps[step].path;
-            CHECK(at == NULL || (at[0] != '\0' && strstr(at, "//") == NULL));
-        }
-        naula_layout_plan_release(&plan);
+        CHECK(plan_with_root(&world, roots[index], &plan, &refusal) == NAULA_REFUSED);
+        CHECK(check_text(refusal.code, "layout-input-invalid", roots[index]));
+        CHECK(plan.step_count == 0);
     }
 }
 
@@ -1739,7 +1732,7 @@ int main(void) {
     a_stranger_named_like_a_listed_suborg_lands_at_the_root();
     refuses_an_unclean_root_or_current_path();
     a_held_repo_outside_the_root_is_left_alone();
-    a_filesystem_root_keeps_its_slash();
+    a_filesystem_root_is_refused_as_the_root();
     never_removes_or_moves_a_clone_at_a_naula_made_path();
     a_foreign_checkout_in_a_target_folder_blocks_the_repo();
     a_checkout_nested_in_another_is_left_alone();

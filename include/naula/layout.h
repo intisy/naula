@@ -7,8 +7,14 @@
  * is read at the stride of this header's `sizeof`, whatever `size` its elements carry.
  *
  * Every path is absolute (`/`, or a drive letter and a separator) with no empty, `.` or `..` segment and no `:`
- * past the drive, or the input is refused as `layout-input-invalid`. A checkout's `current_path` must name the real
- * folder, never a link to it: the plan cannot see the disk, so the applier is what refuses a link.
+ * past the drive, or the input is refused as `layout-input-invalid`; the root is a folder, never `/` or a whole drive.
+ * A checkout's `current_path` must name the real folder, never a link to it or a path through one: the plan cannot
+ * see the disk, so it leaves alone every checkout at or below an `existing_links` path, and the applier refuses any
+ * step whose path has a link as any component below the root.
+ *
+ * The trust model rests on `naula_layout_repo.primary`: an org holds an account because a repo is homed there, so
+ * `primary` must be the home the provider verified, the account the host answered for that very repository, never
+ * the `homes` text of its repo.json, which anyone can write. Task 15's reader fills it so.
  */
 
 #include <stddef.h>
@@ -24,8 +30,8 @@ extern "C" {
 #endif
 
 /**
- * One repo the root may hold, as its host and its checkout show it. `primary` with `kind` 0, or a `local:` id, is a
- * repo with no home. `current_path` is where its checkout is now, NULL when it is not cloned; a held repo whose
+ * One repo the root may hold, as its host and its checkout show it. `primary` is the provider-verified home (see the
+ * top of this header); with `kind` 0, or a `local:` id, it is a repo with no home. `current_path` is where its checkout is now, NULL when it is not cloned; a held repo whose
  * checkout is outside the root is left alone and reported `path-outside-root`. `clean_and_pushed` says
  * every commit of the checkout is on a home and nothing is uncommitted; only then may an archived clone be removed.
  * `member_of` is the `org.memberOf` of its repo.json, NULL when it states none: it confirms the account of `primary`,
@@ -54,14 +60,17 @@ typedef struct naula_layout_repo {
  * org. `existing_links` are the links found under the root, each `path` pointing at `target`; one whose target sits
  * in a `repos` folder and that the plan does not make again is removed. First shape ends at `existing_link_count`.
  *
- * An org holds an account it names when its declaring repo's primary home sits under it (for a sub-org entry, the repo
- * that lists it), or when a repo whose primary home sits under it names that declaring repo in `member_of`; any other
- * account it names is reported `account-not-owned` and ignored. A `member_of` naming no repo that declares a held org
- * is reported `member-of-unknown`, and one whose org does not name its account `member-of-unlisted`; neither confirms
- * anything. Two orgs holding one account refuse the plan. An org nests under its `parent` only when the parent lists it
- * in `suborgs` or its declaring repo sits under an account the parent holds; otherwise it is laid out under the root
- * and reported `parent-not-listing`. A listed sub-org that also declares itself is nested by the entry and takes its
- * members from its own declaration, reported `suborg-declares-itself`.
+ * An org holds an account it names when any repo with its declaring repo's id is homed there (for a sub-org entry, the
+ * repo that lists it), or when a repo homed there names that declaring repo in `member_of`; any other account it names
+ * is reported `account-not-owned` and ignored. A `member_of` naming no repo that declares a held org is reported
+ * `member-of-unknown`, and one whose org does not name its account `member-of-unlisted`; neither confirms anything.
+ * When two orgs claim one account, a declaring repo homed there beats a confirmation, which is reported
+ * `member-of-contested`; two confirmations hold neither, both reported; a sub-org entry naming the account of the repo
+ * that declares it gives way, reported `suborg-lists-parent-account`; two declaring repos refuse the plan. An org nests
+ * under its `parent` only when its declaring repo is homed in an account the parent holds, or the parent lists its
+ * name and that repo is homed in an account the entry names; otherwise it is laid out under the root and reported
+ * `parent-not-listing`, and the parent's entry stays. A listed sub-org whose declaration the entry accepts is nested by
+ * the entry and takes its members from its own declaration, reported `suborg-declares-itself`.
  */
 /** First shape ends at `target`. */
 typedef struct naula_layout_link {
@@ -105,14 +114,16 @@ typedef enum naula_layout_step_kind {
  * changes nothing:
  * - MAKE_FOLDER `path` makes the folder if it is missing.
  * - MOVE_CHECKOUT moves the checkout at `path` to `target`; the applier refuses when `path` is a link.
- * - REMOVE_LINK removes the link at `path` only while it is a link to `target`, never what it points at.
+ * - REMOVE_LINK removes the link at `path` only while it is a link to `target`, never what it points at. Only a link
+ *   naula could have made is removed: at an org folder's top, in a project folder or in `archive`, pointing directly
+ *   into that org folder's `repos`, and outside every checkout.
  * - REMOVE_CLONE removes the archived checkout at `path`, which is a real folder and never a link: the applier refuses
  *   a link at `path` and never follows a link or other reparse point inside it, removing the link itself instead.
  * - WRITE_FILE gives the file at `path` exactly `content`.
  * - MAKE_LINK makes `path` a link to `target`, replacing only a link.
  * - REPORT names what the layout left alone: `code`, the repo or org at `path`, another one involved at `target` or
  *   NULL, and `content` saying why. `unadopted`, `not-held`, `path-outside-root` and `suborg-declares-itself` are
- *   notes; every other code is a refusal.
+ *   notes; every other code is a refusal, `under-existing-link` among them.
  * First shape ends at `code`.
  */
 typedef struct naula_layout_step {
