@@ -78,9 +78,9 @@ typedef struct naula_apply_options {
  *   through the open handle of the one before it, judged by its own handle, never by a listing or a path, so a link
  *   swapped in anywhere on the way is refused or removed, never followed. On Windows each folder is held against
  *   rename while it is emptied, and read-only is ignored rather than cleared, since a file's attributes belong to all
- *   its hard links. Any depth is removed. A file another process holds stops the run with `folder-held`, and a
- *   folder another program keeps filling, found refilled on 8 listings after its first whole one, with
- *   `folder-refills`; either leaves the journal to be resumed. On POSIX a folder inside the clone with another file
+ *   its hard links. Any depth is removed. A file another process holds against deletion stops the run with
+ *   `folder-held`, and a folder another program keeps filling, found refilled on 8 listings after its first whole
+ *   one, with `folder-refills`; either leaves the journal to be resumed. On POSIX a folder inside the clone with another file
  *   system mounted on it, a bind mount included, is never entered: the run stops with `mount-inside`, to be resumed
  *   once it is unmounted. So does a clone folder that is itself a mount point, before anything is removed. On Windows
  *   a mounted folder is a reparse point, removed itself.

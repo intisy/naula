@@ -187,12 +187,18 @@ static int is_gone_error(unsigned long code) {
     return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
 }
 
-/** The names of one listing, each ended by a NUL. */
+/**
+ * The entries of one listing, each a kind mark, LISTED_FOLDER or LISTED_OTHER, then its name and a NUL. The mark only
+ * chooses how the entry is first opened; what it is, is judged by its own handle.
+ */
 typedef struct listing_snapshot {
-    WCHAR *names;
+    WCHAR *entries;
     size_t length;
     size_t capacity;
 } listing_snapshot;
+
+#define LISTED_FOLDER L'd'
+#define LISTED_OTHER L'f'
 
 /**
  * One folder being emptied: its handle, the snapshot of its entries being worked through from `next`, whether a
@@ -235,24 +241,48 @@ static naula_status push_folder(removal *removing, HANDLE folder) {
 static void pop_folder(removal *removing) {
     removal_folder *top = &removing->folders[--removing->depth];
     CloseHandle(top->handle);
-    naula_memory_release(top->listing.names);
+    naula_memory_release(top->listing.entries);
 }
 
 /**
- * Opens the listed entry and judges it by its own handle, never by the listing, which another process may have made
- * stale. A real folder is handed back in `descend` to be emptied first; anything else, a link or other reparse point
- * included, is removed itself.
+ * Every open a removal makes of something not listed as a folder: DELETE and the attributes only, never the reading
+ * right a folder's listing needs, so a file another program holds open without sharing reads can still go.
  */
-static naula_status take_entry(removal *removing, HANDLE folder, const WCHAR *name, DWORD name_bytes, HANDLE *descend,
-                               unsigned long *error) {
-    HANDLE child = INVALID_HANDLE_VALUE;
-    naula_status status =
-        open_relative(&removing->opener, folder, name, name_bytes, REMOVAL_ACCESS, REMOVAL_SHARE, &child, error);
-    if (status != NAULA_OK) {
-        return is_gone_error(*error) ? NAULA_OK : status;
+#define FILE_REMOVAL_ACCESS (DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE)
+
+/**
+ * Opens the listed entry and reads its attributes by its own handle, never by the listing, which another process may
+ * have made stale: one listed as something else that turns out a real folder is opened again with the folder's rights.
+ */
+static naula_status open_entry(removal *removing, HANDLE folder, int listed_as_folder, const WCHAR *name,
+                               DWORD name_bytes, HANDLE *child, DWORD *attributes, unsigned long *error) {
+    for (int as_folder = listed_as_folder;; as_folder = 1) {
+        naula_status status = open_relative(&removing->opener, folder, name, name_bytes,
+                                            as_folder ? REMOVAL_ACCESS : FILE_REMOVAL_ACCESS, REMOVAL_SHARE, child,
+                                            error);
+        if (status == NAULA_OK) {
+            status = attributes_of(*child, attributes, error);
+        }
+        if (status != NAULA_OK || as_folder || !is_real_folder(*attributes)) {
+            return status;
+        }
+        CloseHandle(*child);
+        *child = INVALID_HANDLE_VALUE;
     }
+}
+
+/**
+ * Takes the listed entry: a real folder is handed back in `descend` to be emptied first; anything else, a link or
+ * other reparse point included, is removed itself.
+ */
+static naula_status take_entry(removal *removing, HANDLE folder, int listed_as_folder, const WCHAR *name,
+                               DWORD name_bytes, HANDLE *descend, unsigned long *error) {
+    HANDLE child = INVALID_HANDLE_VALUE;
     DWORD attributes = 0;
-    status = attributes_of(child, &attributes, error);
+    naula_status status = open_entry(removing, folder, listed_as_folder, name, name_bytes, &child, &attributes, error);
+    if (child == INVALID_HANDLE_VALUE) {
+        return status != NAULA_OK && is_gone_error(*error) ? NAULA_OK : status;
+    }
     if (status == NAULA_OK && is_real_folder(attributes)) {
         status = attributes & FILE_ATTRIBUTE_READONLY ? set_plain_attributes(child, attributes, error) : NAULA_OK;
         if (status == NAULA_OK) {
@@ -266,28 +296,29 @@ static naula_status take_entry(removal *removing, HANDLE folder, const WCHAR *na
     return status;
 }
 
-static naula_status snapshot_append(listing_snapshot *taken, const WCHAR *name, size_t characters) {
-    size_t needed = characters + 1;
+static naula_status snapshot_append(listing_snapshot *taken, WCHAR mark, const WCHAR *name, size_t characters) {
+    size_t needed = characters + 2;
     if (taken->length + needed > taken->capacity) {
         size_t grown = taken->capacity == 0 ? 64 : taken->capacity * 2;
         while (grown < taken->length + needed) {
             grown *= 2;
         }
-        WCHAR *larger = naula_memory_reallocate(taken->names, grown * sizeof *larger);
+        WCHAR *larger = naula_memory_reallocate(taken->entries, grown * sizeof *larger);
         if (larger == NULL) {
             return NAULA_OUT_OF_MEMORY;
         }
-        taken->names = larger;
+        taken->entries = larger;
         taken->capacity = grown;
     }
-    wmemcpy(taken->names + taken->length, name, characters);
-    taken->names[taken->length + characters] = L'\0';
+    taken->entries[taken->length] = mark;
+    wmemcpy(taken->entries + taken->length + 1, name, characters);
+    taken->entries[taken->length + 1 + characters] = L'\0';
     taken->length += needed;
     return NAULA_OK;
 }
 
 /**
- * Every name in `folder`, read before any is acted on: a listing that removes as it reads can be fed new names behind
+ * Every entry in `folder`, read before any is acted on: a listing that removes as it reads can be fed new names behind
  * its cursor for as long as another program writes, so a pass would never end.
  */
 static naula_status read_snapshot(removal *removing, HANDLE folder, listing_snapshot *taken, unsigned long *error) {
@@ -302,7 +333,9 @@ static naula_status read_snapshot(removal *removing, HANDLE folder, listing_snap
         for (size_t offset = 0;;) {
             const FILE_ID_BOTH_DIR_INFO *entry = (const FILE_ID_BOTH_DIR_INFO *)(removing->buffer + offset);
             if (!is_dot_entry(entry->FileName, entry->FileNameLength)) {
-                naula_status status = snapshot_append(taken, entry->FileName, entry->FileNameLength / sizeof(WCHAR));
+                WCHAR mark = entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY ? LISTED_FOLDER : LISTED_OTHER;
+                naula_status status =
+                    snapshot_append(taken, mark, entry->FileName, entry->FileNameLength / sizeof(WCHAR));
                 if (status != NAULA_OK) {
                     return status;
                 }
@@ -370,12 +403,12 @@ static naula_status take_one_step(removal *removing, unsigned long *error) {
     if (top->next >= top->listing.length) {
         return relist_top(removing, error);
     }
-    const WCHAR *name = top->listing.names + top->next;
-    size_t characters = wcslen(name);
-    top->next += characters + 1;
+    const WCHAR *entry = top->listing.entries + top->next;
+    size_t characters = wcslen(entry + 1);
+    top->next += characters + 2;
     HANDLE descend = INVALID_HANDLE_VALUE;
-    naula_status status =
-        take_entry(removing, top->handle, name, (DWORD)(characters * sizeof(WCHAR)), &descend, error);
+    naula_status status = take_entry(removing, top->handle, entry[0] == LISTED_FOLDER, entry + 1,
+                                     (DWORD)(characters * sizeof(WCHAR)), &descend, error);
     if (status != NAULA_OK || descend == INVALID_HANDLE_VALUE) {
         return status;
     }

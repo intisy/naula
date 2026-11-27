@@ -1832,6 +1832,37 @@ static void removing_a_clone_leaves_a_hard_linked_read_only_file_read_only(void)
 #endif
 }
 
+/** Another program reading a file without sharing reads still lets it be deleted, so the removal must not read it. */
+static void a_file_held_without_read_sharing_is_removed(void) {
+#ifdef _WIN32
+    fresh("held-unshared");
+    make_checkout(at("clone"), "clone");
+    write_text(at("clone/held.txt"), "held");
+    HANDLE held = CreateFileA(at("clone/held.txt"), GENERIC_READ, FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(held != INVALID_HANDLE_VALUE);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_status status = apply_plan();
+    if (status != NAULA_OK) {
+        fprintf(stderr, "removing a clone holding a file read without sharing: %s %s\n", refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    if (held != INVALID_HANDLE_VALUE) {
+        CloseHandle(held);
+    }
+    char *journal_file = unfinished_journal();
+    if (journal_file != NULL) {
+        resume(journal_file);
+    }
+    naula_memory_release(journal_file);
+    finish("held-unshared");
+#else
+    printf("a_file_held_without_read_sharing_is_removed: skipped, POSIX has no sharing modes\n");
+#endif
+}
+
 #ifdef _WIN32
 static void refused_as_input(const char *relative) {
     plan_start();
@@ -2819,6 +2850,7 @@ static const named_test TESTS[] = {
     {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
     {"a_folder_refilled_with_new_subfolders_stops_well_before_its_writers", a_folder_refilled_with_new_subfolders_stops_well_before_its_writers},
     {"twenty_thousand_subfolders_are_removed_in_linear_time", twenty_thousand_subfolders_are_removed_in_linear_time},
+    {"a_file_held_without_read_sharing_is_removed", a_file_held_without_read_sharing_is_removed},
     {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
 #ifdef __linux__
     {"a_clone_that_is_itself_a_mount_point_is_never_emptied", a_clone_that_is_itself_a_mount_point_is_never_emptied},
