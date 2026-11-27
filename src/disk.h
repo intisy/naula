@@ -56,12 +56,14 @@ naula_status disk_move(const char *from, const char *to, int *held, unsigned lon
  * removed itself and never entered. The walk keeps its folders on its own stack, never the call stack, so depth is
  * bounded only by memory, and each folder's listing with it, carried on past every subfolder it holds, so the time is
  * linear in the entries. A folder counts as empty only once a whole listing of it finds nothing; one that is found
- * holding entries on DISK_REMOVAL_REFILL_PASSES listings after its first whole one stops the removal. On POSIX a
- * folder or file inside on another file system or mount than the clone's, a bind mount included, is never entered or
- * removed: the removal stops there, and a clone that is itself a mount point stops it before anything is removed. On
- * Linux a bind mount is told apart only by its mount id, from statx or else a file handle; where neither gives one,
- * the removal stops as DISK_REMOVAL_MOUNT_UNVERIFIABLE before it removes what it cannot tell apart. On Windows a
- * mounted folder is a reparse point, removed itself. `reason` says why a refusal came.
+ * holding entries on DISK_REMOVAL_REFILL_PASSES listings after its first whole one stops the removal, and so does one
+ * whose listing holds more entries than the one before it, since a folder refilled faster than it is emptied would
+ * make every listing longer than the last. On POSIX a folder or file inside on another file system or mount than the
+ * clone's, a bind mount included, is never entered or removed: the removal stops there, and a clone that is itself a
+ * mount point stops it before anything is removed. On Linux a bind mount is told apart only by its mount id, from
+ * statx or else a file handle; where neither gives one, the removal stops as DISK_REMOVAL_MOUNT_UNVERIFIABLE before it
+ * removes what it cannot tell apart. On Windows a mounted folder is a reparse point, removed itself. `reason` says why
+ * a refusal came.
  */
 typedef enum disk_removal_refusal {
     DISK_REMOVAL_REFUSED = 0,

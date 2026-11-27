@@ -195,6 +195,7 @@ typedef struct listing_snapshot {
     WCHAR *entries;
     size_t length;
     size_t capacity;
+    size_t count;
 } listing_snapshot;
 
 #define LISTED_FOLDER L'd'
@@ -314,6 +315,7 @@ static naula_status snapshot_append(listing_snapshot *taken, WCHAR mark, const W
     wmemcpy(taken->entries + taken->length + 1, name, characters);
     taken->entries[taken->length + 1 + characters] = L'\0';
     taken->length += needed;
+    taken->count++;
     return NAULA_OK;
 }
 
@@ -365,9 +367,12 @@ static naula_status remove_top_folder(removal *removing, int *refilled, unsigned
     return status;
 }
 
-/** A folder found holding entries after a snapshot of it was worked through was refilled by another program. */
-static naula_status count_refill(removal *removing, removal_folder *top, unsigned long *error) {
-    if (++top->refills < DISK_REMOVAL_REFILL_PASSES) {
+/**
+ * A folder found holding entries after a snapshot of it was worked through was refilled by another program. One
+ * holding more than the snapshot before it is refilled faster than it is emptied, which no number of listings outruns.
+ */
+static naula_status count_refill(removal *removing, removal_folder *top, int outpaced, unsigned long *error) {
+    if (++top->refills < DISK_REMOVAL_REFILL_PASSES && !outpaced) {
         return NAULA_OK;
     }
     removing->reason = DISK_REMOVAL_REFILLED;
@@ -379,19 +384,21 @@ static naula_status count_refill(removal *removing, removal_folder *top, unsigne
 static naula_status relist_top(removal *removing, unsigned long *error) {
     removal_folder *top = &removing->folders[removing->depth - 1];
     int worked_through = top->listed;
+    size_t previous = top->listing.count;
     top->listed = 1;
     top->listing.length = 0;
+    top->listing.count = 0;
     top->next = 0;
     naula_status status = read_snapshot(removing, top->handle, &top->listing, error);
     if (status != NAULA_OK) {
         return status;
     }
     if (top->listing.length > 0) {
-        return worked_through ? count_refill(removing, top, error) : NAULA_OK;
+        return worked_through ? count_refill(removing, top, top->listing.count > previous, error) : NAULA_OK;
     }
     int refilled = 0;
     status = remove_top_folder(removing, &refilled, error);
-    return status == NAULA_OK && refilled ? count_refill(removing, top, error) : status;
+    return status == NAULA_OK && refilled ? count_refill(removing, top, 0, error) : status;
 }
 
 /**

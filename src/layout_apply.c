@@ -684,7 +684,8 @@ static naula_status perform_remove_clone(applier *applying, const naula_layout_s
     }
     if (status == NAULA_REFUSED && reason == DISK_REMOVAL_REFILLED) {
         naula_refuse(applying->refusal, "folder-refills", REFILLS_FIX,
-                     "%s kept filling with new entries while naula removed it, %d listings after it was first emptied",
+                     "%s kept filling with new entries while naula removed it, on up to %d listings after it was "
+                     "first emptied",
                      step->path, DISK_REMOVAL_REFILL_PASSES);
         return NAULA_REFUSED;
     }
