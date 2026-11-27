@@ -81,10 +81,10 @@ typedef struct naula_layout_repo {
  * org at the root by default or refused by its parent never takes the folder of an entry or an accepted org, a project
  * of its parent or a folder naula keeps: it is left out and reported `org-name-taken`; two orgs of equal standing
  * refuse the plan as `name-collides`. An org folder always takes a repo's link path, whatever the org's standing, since
- * a repo's name never decides the tree: the repo gets no link, reported `name-collides`. Two `orgs` from one declaring repo with
- * different declarations refuse the input as `layout-input-invalid`; an identical one is kept once. A listed sub-org
- * whose declaration the entry accepts is nested by the entry and takes its members from its own declaration, reported
- * `suborg-declares-itself`.
+ * a repo's name never decides the tree: the repo gets no link, reported `name-collides`. Two `orgs` from one declaring
+ * repo with different declarations refuse the input as `layout-input-invalid`; an identical one is kept once. A listed
+ * sub-org whose declaration the entry accepts is nested by the entry and takes its members from its own declaration,
+ * reported `suborg-declares-itself`.
  */
 /**
  * A link found under the root. `made_by_naula` is set only from naula's own record of the links it made (task 14's

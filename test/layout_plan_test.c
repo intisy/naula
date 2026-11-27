@@ -1684,6 +1684,21 @@ static void a_link_never_covers_a_checkout_that_stays(void) {
     naula_layout_plan_release(&plan);
 }
 
+static void a_recorded_link_kept_over_a_checkout_still_blocks_folders_below_it(void) {
+    scenario world;
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('5'), "x", "evil", ROOT "/spisor/shared/x"));
+    add_link(&world, ROOT "/spisor/shared", ROOT "/spisor/repos/eeeeeeeeeeee");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/shared") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/shared/library") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void a_recorded_link_at_or_over_a_checkout_is_never_removed(void) {
     scenario world;
     start_world(&world);
@@ -2342,6 +2357,7 @@ int main(void) {
     a_fork_named_like_an_org_never_hands_its_account_to_another();
     a_link_never_covers_a_checkout_that_stays();
     a_recorded_link_at_or_over_a_checkout_is_never_removed();
+    a_recorded_link_kept_over_a_checkout_still_blocks_folders_below_it();
     an_accepted_org_keeps_its_folder_and_the_repo_loses_its_link();
     a_sixty_four_hex_id_collides_on_twelve_hex();
     an_extra_may_name_the_top_org();
