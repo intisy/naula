@@ -59,8 +59,9 @@ static cJSON *planned_line(size_t index, const naula_layout_step *step) {
         return NULL;
     }
     int built = cJSON_AddNumberToObject(line, "step", (double)index) != NULL && add_text(line, "state", "planned") &&
-                cJSON_AddNumberToObject(line, "kind", (double)step->kind) != NULL && add_text(line, "path", step->path) &&
-                add_text(line, "target", step->target) && add_text(line, "content", step->content) &&
+                cJSON_AddNumberToObject(line, "kind", (double)step->kind) != NULL &&
+                add_text(line, "path", step->path) && add_text(line, "target", step->target) &&
+                add_text(line, "content", step->content) &&
                 add_text(line, "code", step->code[0] == '\0' ? NULL : step->code);
     if (!built) {
         cJSON_Delete(line);

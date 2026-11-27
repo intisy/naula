@@ -52,11 +52,12 @@ typedef struct naula_apply_options {
  * resume and every search for an unfinished journal: a name of a journal's form whose sequence naula cannot read as
  * `journal-sequence-invalid`, two journals of one sequence, as a copied journal leaves, as `journal-sequence-duplicate`
  * naming both. A journal of the largest sequence leaves none for the next run, refused as `journal-sequence-exhausted`.
- * A journal named in the form before sequences is not read. The whole plan goes first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
- * goes on. Stops at the first step it refuses. A refusal that found the disk exactly at the step's start ends the
- * journal as `stopped`, so a new plan may be applied; one that came after part of a step's change, an allocation that
- * failed, or a process that died leaves it unfinished, and while any journal of the root is unfinished a new run is
- * refused as `journal-unfinished`: that journal is resumed first.
+ * A journal named in the form before sequences is not read. The whole plan goes first, then a line before each step
+ * (`intended`) and after it (`done`), each flushed to the disk before the step goes on. Stops at the first step it
+ * refuses. A refusal that found the disk exactly at the step's start ends the journal as `stopped`, so a new plan may
+ * be applied; one that came after part of a step's change, an allocation that failed, or a process that died leaves it
+ * unfinished, and while any journal of the root is unfinished a new run is refused as `journal-unfinished`: that
+ * journal is resumed first.
  *
  * The run holds `<root>/.naula-journal/lock`, made in one exclusive create naming its process id, and removes it at
  * the end. A lock another running naula holds refuses as `root-locked`; one whose process is gone, left by a run that
@@ -81,31 +82,34 @@ typedef struct naula_apply_options {
  *   folder another program keeps filling, found refilled on 8 listings after its first whole one, with
  *   `folder-refills`; either leaves the journal to be resumed. On POSIX a folder inside the clone with another file
  *   system mounted on it, a bind mount included, is never entered: the run stops with `mount-inside`, to be resumed
- *   once it is unmounted. So does a clone folder that is itself a mount point, before anything is removed. On Windows a mounted folder is a reparse point, removed itself.
+ *   once it is unmounted. So does a clone folder that is itself a mount point, before anything is removed. On Windows
+ *   a mounted folder is a reparse point, removed itself.
  * - REPORT changes nothing.
  *
  * What it does not guard: each step but REMOVE_CLONE reads the disk and then changes it, so another program that swaps
  * a folder above a step's path for a link, or makes something at a target, between that check and that change is not
- * caught. A move
- * never replaces its target on Windows and on Linux (renameat2 with RENAME_NOREPLACE); elsewhere, or on a Linux file
- * system without it, it checks that the target is missing and then renames, since rename(2) would replace an empty
- * folder there. The lock covers naula against itself only, never another program.
+ * caught. A move never replaces its target on Windows and on Linux (renameat2 with RENAME_NOREPLACE); elsewhere, or on
+ * a Linux file system without it, it checks that the target is missing and then renames, since rename(2) would replace
+ * an empty folder there. The lock covers naula against itself only, never another program.
  */
-naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options, naula_refusal *refusal);
+naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options,
+                                naula_refusal *refusal);
 
 /**
  * Carries on the run `journal_file` records from where it stopped, checking every remaining step against the disk
  * as naula_layout_apply does, and appending to the same journal. The journal must sit directly in
  * `<options->root>/.naula-journal/` and name that root. A journal that finished changes nothing. One that stopped
  * cleanly is refused as `journal-stopped`, since its plan was made for the disk as it stood then: a new plan is made
- * instead. One while the root holds a journal of a larger sequence is refused as `journal-superseded`. It takes the root's lock
- * as naula_layout_apply does.
+ * instead. One while the root holds a journal of a larger sequence is refused as `journal-superseded`. It takes the
+ * root's lock as naula_layout_apply does.
  */
-naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options, naula_refusal *refusal);
+naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options,
+                                  naula_refusal *refusal);
 
 /**
- * The journal of the largest sequence in `<root>/.naula-journal/` that neither finished nor stopped cleanly, NAULA_NOT_FOUND when there
- * is none. A journal whose opening append was cut short, holding part of its plan and no step begun, stopped cleanly.
+ * The journal of the largest sequence in `<root>/.naula-journal/` that neither finished nor stopped cleanly,
+ * NAULA_NOT_FOUND when there is none. A journal whose opening append was cut short, holding part of its plan and no
+ * step begun, stopped cleanly.
  */
 naula_status naula_journal_unfinished(const char *root, char **journal_file, naula_refusal *refusal);
 
