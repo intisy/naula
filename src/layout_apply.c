@@ -81,6 +81,10 @@ static int needs_target(uint32_t kind) {
     return kind == NAULA_MOVE_CHECKOUT || kind == NAULA_MAKE_LINK || kind == NAULA_REMOVE_LINK;
 }
 
+static int is_separator(char character) {
+    return character == '/' || character == '\\';
+}
+
 /** A path below the root that names naula's own files there, which no step may touch. */
 static int names_naula_files(const char *below) {
     size_t length = strcspn(below, "/\\");
@@ -93,9 +97,24 @@ static int names_naula_files(const char *below) {
     return layout_same_name(first, APPLY_JOURNAL_FOLDER) || layout_same_name(first, ".naula.json");
 }
 
+/**
+ * Whether a segment below the root could name another entry than it reads as: Windows drops a trailing dot or space
+ * (`.naula-journal.` opens `.naula-journal`), and `~` is how an 8.3 alias such as `NAULA-~1` is spelled.
+ */
+static int has_aliasing_segment(const char *below) {
+    for (const char *character = below; *character != '\0'; character++) {
+        int ends_segment = character[1] == '\0' || is_separator(character[1]);
+        if (*character == '~' || (ends_segment && (*character == '.' || *character == ' '))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int is_usable_path(const char *root, const char *path) {
     const char *below = path == NULL ? NULL : apply_below(root, path);
-    return below != NULL && layout_is_clean_absolute(path) && !names_naula_files(below);
+    return below != NULL && layout_is_clean_absolute(path) && !has_aliasing_segment(below) &&
+           !names_naula_files(below);
 }
 
 static naula_status refuse_input(naula_refusal *refusal, const char *why, size_t index) {
@@ -163,10 +182,6 @@ static naula_status kind_of(applier *applying, const char *path, disk_kind *kind
     return status == NAULA_REFUSED ? apply_refuse_disk(applying->refusal, "path-unreadable", DISK_FIX, "cannot read",
                                                        path, error)
                                    : status;
-}
-
-static int is_separator(char character) {
-    return character == '/' || character == '\\';
 }
 
 /** Refuses a link, other reparse point or file at any component of `path` between the root and its last one. */
@@ -546,33 +561,35 @@ static naula_status perform_make_link(applier *applying, const naula_layout_step
             return NAULA_REFUSED;
         }
     }
-    return refuse_change(applying, disk_link_make(step->path, step->target, &error), "cannot make the link",
-                         step->path, error);
+    naula_status status = disk_link_make(step->path, step->target, &error);
+    return refuse_change(applying, status, "cannot make the link", step->path, error);
 }
 
+/** The error is read only after the call that sets it has returned, never in the same argument list. */
 static naula_status perform(applier *applying, const naula_layout_step *step, const decision *decided) {
     unsigned long error = 0;
+    naula_status status = NAULA_OK;
     if (!decided->change && !decided->moves_bank) {
         return NAULA_OK;
     }
     switch (step->kind) {
     case NAULA_MAKE_FOLDER:
-        return refuse_change(applying, disk_folder_make(step->path, &error), "cannot make", step->path, error);
+        status = disk_folder_make(step->path, &error);
+        return refuse_change(applying, status, "cannot make", step->path, error);
     case NAULA_WRITE_FILE:
-        return refuse_change(applying,
-                             disk_file_replace(step->path, (const uint8_t *)step->content, strlen(step->content),
-                                               &error),
-                             "cannot write", step->path, error);
+        status = disk_file_replace(step->path, (const uint8_t *)step->content, strlen(step->content), &error);
+        return refuse_change(applying, status, "cannot write", step->path, error);
     case NAULA_MAKE_LINK:
         return perform_make_link(applying, step, decided);
     case NAULA_MOVE_CHECKOUT:
         return perform_move(applying, step, decided);
     case NAULA_REMOVE_LINK:
-        return refuse_change(applying, disk_link_remove(step->path, &error), "cannot remove the link", step->path,
-                             error);
+        status = disk_link_remove(step->path, &error);
+        return refuse_change(applying, status, "cannot remove the link", step->path, error);
     case NAULA_REMOVE_CLONE:
         applying->step_changed = 1;
-        return refuse_change(applying, disk_tree_remove(step->path, &error), "cannot remove", step->path, error);
+        status = disk_tree_remove(step->path, &error);
+        return refuse_change(applying, status, "cannot remove", step->path, error);
     default:
         return NAULA_OK;
     }
@@ -652,10 +669,11 @@ static void release_decision(decision *decided) {
     naula_memory_release(decided->bank_to);
 }
 
+/** A resumed step whose `intended` line was written may already be part done, so a refusal never stops it cleanly. */
 static naula_status run_change(applier *applying, size_t index, const naula_layout_step *step, int resuming) {
     decision decided;
     memset(&decided, 0, sizeof decided);
-    applying->step_changed = 0;
+    applying->step_changed = resuming;
     naula_status status = decide(applying, step, resuming, &decided);
     if (status == NAULA_OK) {
         status = journal_mark(&applying->journal, index, "intended", NULL, decided.previous, applying->refusal);
@@ -845,6 +863,61 @@ static naula_status resume_contents(const char *journal_file, const naula_apply_
     return status;
 }
 
+static int is_newer_name(const char *candidate, const char *best);
+static int is_journal_name(const char *name);
+
+static const char *last_component(const char *path) {
+    const char *name = path;
+    for (const char *character = path; *character != '\0'; character++) {
+        if (is_separator(*character)) {
+            name = character + 1;
+        }
+    }
+    return name;
+}
+
+static naula_status refuse_if_superseded(const char *root, const char *journal_file, naula_refusal *refusal) {
+    char *folder = layout_join(root, APPLY_JOURNAL_FOLDER);
+    if (folder == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    char **names = NULL;
+    size_t count = 0;
+    unsigned long error = 0;
+    naula_status status = disk_names(folder, &names, &count, &error);
+    if (status == NAULA_REFUSED) {
+        status = apply_refuse_disk(refusal, "root-unreadable", DISK_FIX, "cannot list", folder, error);
+    }
+    const char *own = last_component(journal_file);
+    for (size_t index = 0; status == NAULA_OK && index < count; index++) {
+        if (is_journal_name(names[index]) && is_newer_name(names[index], own)) {
+            naula_refuse(refusal, "journal-superseded",
+                         "check the disk by hand, then move the older journal out of .naula-journal and lay the root "
+                         "out again",
+                         "%s is older than the journal %s, so its plan may undo a newer layout", journal_file,
+                         names[index]);
+            status = NAULA_REFUSED;
+        }
+    }
+    disk_names_release(names, count);
+    naula_memory_release(folder);
+    return status;
+}
+
+/**
+ * A journal that stopped cleanly is never resumed: its plan was made for the disk as it stood then, and a new plan
+ * is made instead. Nor is one that a newer journal follows, whose plan has moved the root on since.
+ */
+static naula_status refuse_unresumable(const char *root, const char *journal_file, const journal_contents *contents,
+                                       naula_refusal *refusal) {
+    if (contents->stopped) {
+        naula_refuse(refusal, "journal-stopped", "lay the root out again with a new plan (naula sync does)",
+                     "%s stopped cleanly at a refusal, so it is not resumed", journal_file);
+        return NAULA_REFUSED;
+    }
+    return refuse_if_superseded(root, journal_file, refusal);
+}
+
 naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options,
                                   naula_refusal *refusal) {
     naula_layout_plan empty = {sizeof empty, NULL, 0};
@@ -868,6 +941,9 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
     memset(&contents, 0, sizeof contents);
     if (status == NAULA_OK) {
         status = resume_contents(journal_file, options, &contents, refusal);
+    }
+    if (status == NAULA_OK && !contents.finished) {
+        status = refuse_unresumable(options->root, journal_file, &contents, refusal);
     }
     if (status != NAULA_OK || contents.finished || options->dry_run) {
         if (status == NAULA_OK && options->dry_run) {

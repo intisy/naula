@@ -351,13 +351,10 @@ static naula_status check_written_file(const naula_root_file *file, naula_refusa
     return NAULA_OK;
 }
 
-naula_status naula_root_file_write(const char *root, const naula_root_file *file, naula_refusal *refusal) {
-    naula_status status = check_written_file(file, refusal);
+static naula_status write_root_file(const char *root, const naula_root_file *file, naula_refusal *refusal) {
     char *path = NULL;
-    if (status == NAULA_OK) {
-        status = root_file_path(root, &path, refusal);
-        status = status == NAULA_NOT_FOUND ? NAULA_OK : status;
-    }
+    naula_status status = root_file_path(root, &path, refusal);
+    status = status == NAULA_NOT_FOUND ? NAULA_OK : status;
     cJSON *json = status == NAULA_OK ? root_file_json(file) : NULL;
     char *text = json == NULL ? NULL : cJSON_Print(json);
     if (status == NAULA_OK && text == NULL) {
@@ -378,5 +375,21 @@ naula_status naula_root_file_write(const char *root, const naula_root_file *file
     cJSON_free(text);
     cJSON_Delete(json);
     naula_memory_release(path);
+    return status;
+}
+
+naula_status naula_root_file_write(const char *root, const naula_root_file *file, naula_refusal *refusal) {
+    naula_status status = check_written_file(file, refusal);
+    if (status == NAULA_OK) {
+        status = apply_check_root(root, 1, refusal);
+    }
+    disk_owned_file *lock = NULL;
+    if (status == NAULA_OK) {
+        status = root_lock_take(root, &lock, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = write_root_file(root, file, refusal);
+    }
+    root_lock_release(lock);
     return status;
 }

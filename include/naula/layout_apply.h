@@ -12,7 +12,9 @@
  *
  * Before any change, every step is checked against the disk: no component of its `path` or `target` below the root
  * may be a link or other reparse point, except the link a MAKE_LINK replaces or a REMOVE_LINK removes. A step that
- * finds the disk already as it asks changes nothing, so a plan applied twice changes nothing the second time.
+ * finds the disk already as it asks changes nothing, so a plan applied twice changes nothing the second time. A step
+ * whose `path` or `target` has a segment below the root that ends in a dot or a space, or holds `~`, is refused as
+ * `apply-input-invalid`, since Windows would open another entry than the one it names.
  */
 
 #include <stddef.h>
@@ -64,37 +66,42 @@ typedef struct naula_apply_options {
  * - REMOVE_LINK removes only a link whose target is exactly the recorded one and which the record holds, by one
  *   non-recursive call, never falling back to removing a folder; the record forgets it once it is gone.
  * - REMOVE_CLONE refuses a link at `path` and removes the real folder, never entering a link or other reparse point
- *   inside it: each is removed itself.
+ *   inside it: each is removed itself. Every entry is opened through its folder's open handle and judged by its own
+ *   handle, never by a listing or a path; on Windows each folder is held against rename while it is emptied, and
+ *   read-only is ignored rather than cleared, since a file's attributes belong to all its hard links.
  * - REPORT changes nothing.
  *
- * What it does not guard: each step reads the disk and then changes it, so another program that swaps a folder for a
- * link, or makes something at a target, between that check and that change is not caught. On POSIX a move checks
- * that its target is missing and then renames, since rename(2) would replace an empty folder there; on Windows the
- * move itself refuses an existing target. A REMOVE_CLONE opens each folder without following a link on POSIX, but on
- * Windows a folder swapped for a junction after it is listed and before it is entered is not seen. The lock covers
- * naula against itself only, never another program.
+ * What it does not guard: each step reads the disk and then changes it, so another program that swaps a folder above
+ * a step's path for a link, or makes something at a target, between that check and that change is not caught. A move
+ * never replaces its target on Windows and on Linux (renameat2 with RENAME_NOREPLACE); elsewhere, or on a Linux file
+ * system without it, it checks that the target is missing and then renames, since rename(2) would replace an empty
+ * folder there. The lock covers naula against itself only, never another program.
  */
 naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options, naula_refusal *refusal);
 
 /**
  * Carries on the run `journal_file` records from where it stopped, checking every remaining step against the disk
  * as naula_layout_apply does, and appending to the same journal. The journal must sit directly in
- * `<options->root>/.naula-journal/` and name that root. A journal that finished changes nothing. It takes the root's
- * lock as naula_layout_apply does.
+ * `<options->root>/.naula-journal/` and name that root. A journal that finished changes nothing. One that stopped
+ * cleanly is refused as `journal-stopped`, since its plan was made for the disk as it stood then: a new plan is made
+ * instead. One that a newer journal of the root follows is refused as `journal-superseded`. It takes the root's lock
+ * as naula_layout_apply does.
  */
 naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options, naula_refusal *refusal);
 
 /**
  * The newest journal in `<root>/.naula-journal/` that neither finished nor stopped cleanly, NAULA_NOT_FOUND when there
- * is none. A journal that stopped cleanly may still be resumed by name.
+ * is none. A journal whose opening append was cut short, holding part of its plan and no step begun, stopped cleanly.
  */
 naula_status naula_journal_unfinished(const char *root, char **journal_file, naula_refusal *refusal);
 
 /**
  * Claude Code's memory bank key for a folder: `real_path` with every character that is not an ASCII letter or digit
  * replaced by `-`, one for each UTF-16 unit it takes, as `C:\Users\finn\.claude\verbrauch` is
- * `C--Users-finn--claude-verbrauch` (measured with Claude Code 2.1.332); the drive letter keeps its case. A key that
- * does not fit `capacity` leaves `key` empty, never cut short, since a shortened key names another folder's bank.
+ * `C--Users-finn--claude-verbrauch`; the drive letter keeps its case. Past 200 units the key is its first 200, `-`,
+ * and the base 36 magnitude of a 32-bit hash of the path's UTF-16 units (`h = h * 31 + unit`, signed), as Claude Code
+ * 2.1.332 does (measured). A key that does not fit `capacity` leaves `key` empty, never cut short, since a shortened
+ * key names another folder's bank.
  */
 void naula_memory_bank_key(const char *real_path, char *key, size_t capacity);
 
@@ -111,7 +118,9 @@ typedef struct naula_layout_links {
  * holds the path and the link on disk still points at exactly the recorded target, so a link someone replaced or
  * repointed reads as unrecorded. Another reparse point reads as an unrecorded link with an empty target. A recorded
  * link the disk no longer holds exactly as recorded is first forgotten, under the root's lock and journalled as
- * `forgotten`, so a link someone makes at that path later is never read as naula's.
+ * `forgotten`, so a link someone makes at that path later is never read as naula's. While a journal of the root is
+ * unfinished, a scan that would forget refuses as `journal-unfinished`, since its newer journal would leave the
+ * unfinished one unresumable.
  */
 naula_status naula_layout_links_scan(const char *root, naula_layout_links *links, naula_refusal *refusal);
 void naula_layout_links_release(naula_layout_links *links);
@@ -135,7 +144,10 @@ typedef struct naula_root_file {
 
 /** NAULA_NOT_FOUND when the root has no `.naula.json`. Release with naula_root_file_release. */
 naula_status naula_root_file_read(const char *root, naula_root_file *file, naula_refusal *refusal);
-/** Replaces `<root>/.naula.json` whole, through a temporary beside it. */
+/**
+ * Replaces `<root>/.naula.json` whole, through a temporary beside it, holding the root's lock as naula_layout_apply
+ * does, so it refuses as `root-locked` or `stale-lock` alike.
+ */
 naula_status naula_root_file_write(const char *root, const naula_root_file *file, naula_refusal *refusal);
 void naula_root_file_release(naula_root_file *file);
 

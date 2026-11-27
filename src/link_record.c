@@ -454,6 +454,23 @@ static naula_status forget_entries(const char *root, link_record *record, journa
     return status;
 }
 
+/** Its `forgotten` journal would be newer than an unfinished run's, which could then never be resumed. */
+static naula_status refuse_while_unfinished(const char *root, naula_refusal *refusal) {
+    char *journal_file = NULL;
+    naula_status status = naula_journal_unfinished(root, &journal_file, refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return NAULA_OK;
+    }
+    if (status == NAULA_OK) {
+        naula_refuse(refusal, "journal-unfinished",
+                     "resume it with naula_journal_resume (naula sync does), then scan the root's links again",
+                     "the journal %s records a run that stopped partway, so its links may be mid-step", journal_file);
+        status = NAULA_REFUSED;
+    }
+    naula_memory_release(journal_file);
+    return status;
+}
+
 /**
  * Forgets every recorded link the disk no longer holds exactly as recorded, journalled under the root's lock, so a
  * link someone makes there later is never read as naula's.
@@ -474,6 +491,9 @@ static naula_status forget_vanished(const char *root, link_record *record, naula
     disk_owned_file *lock = NULL;
     naula_status status = root_lock_take(root, &lock, refusal);
     journal journalling = {NULL, NULL};
+    if (status == NAULA_OK) {
+        status = refuse_while_unfinished(root, refusal);
+    }
     if (status == NAULA_OK) {
         status = forget_entries(root, record, &journalling, refusal);
     }

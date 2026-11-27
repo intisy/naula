@@ -73,9 +73,13 @@ typedef struct journal_contents {
     int finished;
     int stopped;
     int ends_mid_line;
+    int progressed;
 } journal_contents;
 
-/** Reads a journal back. A last line cut short by a crash is ignored; any other malformed line refuses. */
+/**
+ * Reads a journal back. A last line cut short by a crash is ignored; any other malformed line refuses. One whose
+ * opening append was cut short, its plan incomplete and no step begun, reads as stopped with an empty plan.
+ */
 naula_status journal_load(const char *path, journal_contents *contents, naula_refusal *refusal);
 /** Opens an existing journal to append to, first ending a line a crash cut short. */
 naula_status journal_reopen(const char *path, int ends_mid_line, journal *journal, naula_refusal *refusal);

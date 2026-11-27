@@ -239,14 +239,20 @@ naula_status journal_reopen(const char *path, int ends_mid_line, journal *journa
     return status;
 }
 
-void journal_contents_release(journal_contents *contents) {
-    naula_memory_release(contents->root);
+static void drop_plan(journal_contents *contents) {
     for (size_t index = 0; contents->plan.steps != NULL && index < contents->plan.step_count; index++) {
         naula_memory_release(contents->plan.steps[index].path);
         naula_memory_release(contents->plan.steps[index].target);
         naula_memory_release(contents->plan.steps[index].content);
     }
     naula_memory_release(contents->plan.steps);
+    contents->plan.steps = NULL;
+    contents->plan.step_count = 0;
+}
+
+void journal_contents_release(journal_contents *contents) {
+    naula_memory_release(contents->root);
+    drop_plan(contents);
     naula_memory_release(contents->progress);
     memset(contents, 0, sizeof *contents);
 }
@@ -337,6 +343,9 @@ static naula_status read_line(const cJSON *line, const char *path, journal_conte
     if (!cJSON_IsObject(line) || !cJSON_IsString(state)) {
         return refuse_journal(refusal, path, "holds a line that is not a step's state");
     }
+    if (strcmp(state->valuestring, "planned") != 0) {
+        contents->progressed = 1;
+    }
     if (strcmp(state->valuestring, "finished") == 0) {
         contents->finished = 1;
         return NAULA_OK;
@@ -397,7 +406,12 @@ static naula_status read_lines(const uint8_t *bytes, size_t length, const char *
     }
     for (size_t index = 0; status == NAULA_OK && index < contents->plan.step_count; index++) {
         if (contents->plan.steps[index].size == 0) {
-            return refuse_journal(refusal, path, "does not plan every step it counts");
+            if (contents->progressed) {
+                return refuse_journal(refusal, path, "does not plan every step it counts");
+            }
+            drop_plan(contents);
+            contents->stopped = 1;
+            return NAULA_OK;
         }
     }
     return status;
