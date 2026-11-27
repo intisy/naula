@@ -1982,6 +1982,58 @@ static void no_link_is_removed_through_an_unrecorded_link(void) {
     naula_layout_plan_release(&plan);
 }
 
+static void a_held_org_named_like_a_top_project_or_kept_folder_is_left_out(void) {
+    const char *names[] = {"tools", "Tools", "archive"};
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        scenario world;
+        start_world(&world);
+        world.repos[4].member_of = &spisor_docs_reference;
+        world.orgs[world.org_count] =
+            declaration(names[index], &intisy_docs_reference, only_stranger_account, "RULES.md");
+        world.org_repositories[world.org_count++] = git_id(hex_of('3'));
+        add_repo(&world, repo_at(hex_of('3'), "records", "stranger", NULL));
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        char folder[64];
+        snprintf(folder, sizeof folder, "%s/%s", ROOT, names[index]);
+        CHECK(find_report(&plan, "org-name-taken", folder) != NULL);
+        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/tools/repos") == NULL);
+        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/archive/repos") == NULL);
+        CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/tools/CLAUDE.md") == NULL);
+        CHECK(links_to(&plan, ROOT "/tools/naula", ROOT "/repos/dddddddddddd"));
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static naula_home deep_entry_accounts[] = {{sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "deep", NULL, NULL}};
+static naula_org_declaration deep_entry;
+static naula_reference left_out_reference = {sizeof(naula_reference), "git:3333333333333333333333333333333333333333",
+                                             NULL, NULL, 0};
+
+static void a_member_of_naming_a_left_out_org_says_it_was_left_out(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    lab_entry = declaration("lab", NULL, lab_entry_accounts, NULL);
+    deep_entry = declaration("deeper", NULL, deep_entry_accounts, NULL);
+    world.top.suborgs = &lab_entry;
+    world.top.suborg_count = 1;
+    world.orgs[world.org_count] = declaration("lab", &intisy_docs_reference, only_stranger_account, "RULES.md");
+    world.orgs[world.org_count].suborgs = &deep_entry;
+    world.orgs[world.org_count].suborg_count = 1;
+    world.org_repositories[world.org_count++] = git_id(hex_of('3'));
+    add_repo(&world, repo_at(hex_of('3'), "records", "stranger", NULL));
+    add_repo(&world, repo_at(hex_of('4'), "x", "deep", NULL))->member_of = &left_out_reference;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "member-of-unlisted", NULL) == NULL);
+    const naula_layout_step *report = find_report(&plan, "org-name-taken", "x");
+    CHECK(report != NULL && strstr(report->content, "memberOf") != NULL && strstr(report->content, "left out") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void survives_every_allocation_failure(void) {
     scenario world;
     start_world(&world);
@@ -2094,6 +2146,8 @@ int main(void) {
     a_checkout_folder_reached_through_an_unrecorded_link_is_left_alone();
     no_rules_file_is_written_through_an_unrecorded_link();
     no_link_is_removed_through_an_unrecorded_link();
+    a_held_org_named_like_a_top_project_or_kept_folder_is_left_out();
+    a_member_of_naming_a_left_out_org_says_it_was_left_out();
     survives_every_allocation_failure();
     return check_summary("layout_plan_test");
 }

@@ -620,8 +620,9 @@ static naula_status report_confirmation(const layout_tree *tree, const layout_pl
     if (problem == NULL) {
         return NAULA_OK;
     }
-    const char *why = strcmp(problem, "member-of-unknown") == 0
-                          ? "names no repo declaring an org this root holds"
+    const char *why = strcmp(problem, "member-of-unknown") == 0 ? "names no repo declaring an org this root holds"
+                      : strcmp(problem, "org-name-taken") == 0
+                          ? "names an org left out because something accepted owns its folder"
                           : "names an org that does not list the account of its primary home";
     return layout_report(builder, problem, layout_placement_reported_at(placement), NULL,
                          "the memberOf of %s %s, so it confirms nothing", layout_placement_name(placement), why);

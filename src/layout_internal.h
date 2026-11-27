@@ -84,10 +84,15 @@ typedef struct layout_confirmation {
     const naula_id *declaring;
 } layout_confirmation;
 
-/** An org left out because an accepted org took its folder, reported against the folder of `winner`. */
+/**
+ * An org left out because something accepted owns its folder: `owner` says what, and the report names the folder it
+ * would have taken under `parent`. `repository` is its declaring repo, so a `memberOf` naming it is told apart.
+ */
 typedef struct layout_left_out {
     const naula_org_declaration *declaration;
-    const naula_org_declaration *winner;
+    const naula_org_declaration *parent;
+    const naula_id *repository;
+    const char *owner;
 } layout_left_out;
 
 typedef struct layout_tree {
@@ -112,7 +117,10 @@ size_t layout_tree_named(const layout_tree *tree, const char *name, int *ambiguo
 /** The deepest org whose folder holds `path`, the top org when none does. */
 size_t layout_tree_enclosing(const layout_tree *tree, const char *path);
 int layout_tree_is_folder(const layout_tree *tree, const char *path);
-/** `member-of-unknown` or `member-of-unlisted` when `repo`'s `memberOf` confirms nothing, NULL otherwise. */
+/**
+ * `member-of-unknown`, `member-of-unlisted`, or `org-name-taken` for an org left out, when `repo`'s `memberOf` confirms
+ * nothing; NULL otherwise.
+ */
 const char *layout_tree_confirmation_problem(const layout_tree *tree, const naula_layout_repo *repo);
 int layout_org_has_project(const layout_org *org, const char *name);
 

@@ -368,13 +368,25 @@ static int takes_the_folder_of(const layout_org *winner, const layout_org *loser
            loser->declaration->name != NULL && layout_same_name(winner->declaration->name, loser->declaration->name);
 }
 
-static size_t folder_taker(const layout_tree *tree, size_t index) {
+/** What accepted already owns the folder the org at `index` would take, NULL when nothing does or it is accepted. */
+static const char *folder_owner(const layout_tree *tree, size_t index) {
+    const layout_org *org = &tree->orgs[index];
+    const char *name = org->declaration->name;
+    if (org->accepted || name == NULL) {
+        return NULL;
+    }
+    if (layout_is_reserved(name)) {
+        return "a folder naula keeps";
+    }
+    if (layout_org_has_project(&tree->orgs[org->parent], name)) {
+        return "a project of its parent";
+    }
     for (size_t other = 1; other < tree->count; other++) {
-        if (other != index && takes_the_folder_of(&tree->orgs[other], &tree->orgs[index])) {
-            return other;
+        if (other != index && takes_the_folder_of(&tree->orgs[other], org)) {
+            return "an org its parent accepted";
         }
     }
-    return LAYOUT_NONE;
+    return NULL;
 }
 
 /** Marks `index` and every `suborgs` entry beneath it, whose rules come from its repo, as leaving the tree. */
@@ -417,30 +429,33 @@ static void remove_leaving(layout_tree *tree, const unsigned char *leaving, size
     tree->count = kept;
 }
 
-static naula_status record_left_out(layout_tree *tree, const layout_org *org, const layout_org *winner) {
+static naula_status record_left_out(layout_tree *tree, const layout_org *org, const char *owner) {
     layout_left_out *grown =
         naula_memory_reallocate(tree->left_out, (tree->left_out_count + 1) * sizeof *tree->left_out);
     if (grown == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
     tree->left_out = grown;
-    tree->left_out[tree->left_out_count].declaration = org->declaration;
-    tree->left_out[tree->left_out_count].winner = winner->declaration;
-    tree->left_out_count++;
+    layout_left_out *left_out = &tree->left_out[tree->left_out_count++];
+    left_out->declaration = org->declaration;
+    left_out->parent = tree->orgs[org->parent].declaration;
+    left_out->repository = org->repository;
+    left_out->owner = owner;
     return NAULA_OK;
 }
 
 /**
- * An org at the root by default, or refused by its parent, never takes the folder of an org its parent accepted: it is
- * left out, so a held org's name alone can neither capture nor block an accepted org's folder.
+ * An org at the root by default, or refused by its parent, never takes the folder of an org its parent accepted, of a
+ * project of its parent or of a folder naula keeps: it is left out, so a held org's name alone can neither capture nor
+ * block an accepted folder.
  */
 static naula_status leave_out_name_takers(layout_tree *tree) {
     for (size_t index = 1; index < tree->count; index++) {
-        size_t winner = folder_taker(tree, index);
-        if (winner == LAYOUT_NONE) {
+        const char *owner = folder_owner(tree, index);
+        if (owner == NULL) {
             continue;
         }
-        naula_status status = record_left_out(tree, &tree->orgs[index], &tree->orgs[winner]);
+        naula_status status = record_left_out(tree, &tree->orgs[index], owner);
         unsigned char *leaving = status == NAULA_OK ? naula_memory_allocate(tree->count) : NULL;
         size_t *new_index = leaving == NULL ? NULL : naula_memory_allocate(tree->count * sizeof *new_index);
         if (new_index == NULL) {
@@ -461,15 +476,20 @@ static naula_status report_left_out(const layout_tree *tree, layout_builder *bui
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < tree->left_out_count && status == NAULA_OK; index++) {
         const layout_left_out *left_out = &tree->left_out[index];
-        const char *folder = NULL;
+        const char *name = left_out->declaration->name;
+        const char *parent_folder = NULL;
         for (size_t org = 0; org < tree->count; org++) {
-            if (tree->orgs[org].declaration == left_out->winner) {
-                folder = tree->orgs[org].folder;
+            if (tree->orgs[org].declaration == left_out->parent) {
+                parent_folder = tree->orgs[org].folder;
             }
         }
-        const char *name = left_out->declaration->name == NULL ? "(unnamed)" : left_out->declaration->name;
+        char *folder = parent_folder == NULL ? NULL : layout_join(parent_folder, name);
+        if (parent_folder != NULL && folder == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
         status = layout_report(builder, "org-name-taken", folder == NULL ? name : folder, NULL,
-                               "%s would take the folder of an org its parent accepted, so it is left out", name);
+                               "%s would take the folder of %s, so it is left out", name, left_out->owner);
+        naula_memory_release(folder);
     }
     return status;
 }
@@ -899,6 +919,12 @@ const char *layout_tree_confirmation_problem(const layout_tree *tree, const naul
                 layout_same_repository(candidate->rules_repository, confirmation->declaring) &&
                 lists_account(candidate, &repo->primary)) {
                 return NULL;
+            }
+        }
+        for (size_t left_out = 0; left_out < tree->left_out_count; left_out++) {
+            const naula_id *repository = tree->left_out[left_out].repository;
+            if (repository != NULL && layout_same_repository(repository, confirmation->declaring)) {
+                return "org-name-taken";
             }
         }
         return "member-of-unlisted";

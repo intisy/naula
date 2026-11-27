@@ -69,17 +69,18 @@ typedef struct naula_layout_repo {
  * An org holds an account it names when any repo with its declaring repo's id is homed there (for a sub-org entry, the
  * repo that lists it), or when a repo homed there names that declaring repo in `member_of`; any other account it names
  * is reported `account-not-owned` and ignored. A `member_of` naming no repo that declares a held org is reported
- * `member-of-unknown`, and one whose org does not name its account `member-of-unlisted`; neither confirms anything.
+ * `member-of-unknown`, one whose org does not name its account `member-of-unlisted`, and one naming an org left out
+ * `org-name-taken`; none confirms anything.
  * When two orgs claim one account, a declaring repo homed there beats a confirmation, which is reported
  * `member-of-contested`; two confirmations hold neither, both reported; a sub-org entry naming the account of the repo
  * that declares it gives way, reported `suborg-lists-parent-account`; two declaring repos refuse the plan. An org nests
  * under its `parent` only when its declaring repo is homed in an account the parent's own declaring repo is homed in
  * (a confirmation never counts here), or the parent lists its name and that repo is homed in an account the entry
  * names; otherwise it is laid out under the root and reported `parent-not-listing`, and the parent's entry stays. An
- * org at the root by default or refused by its parent never takes the folder of the top org's, an entry's or an
- * accepted org's: it is left out and reported `org-name-taken`; two orgs of equal standing refuse the plan as
- * `name-collides`. Two `orgs` from one declaring repo with different declarations refuse the input as
- * `layout-input-invalid`; an identical one is kept once. A listed sub-org whose declaration the entry accepts is nested by
+ * org at the root by default or refused by its parent never takes the folder of an entry or an accepted org, a project
+ * of its parent or a folder naula keeps: it is left out and reported `org-name-taken`; two orgs of equal standing
+ * refuse the plan as `name-collides`. Two `orgs` from one declaring repo with different declarations refuse the input
+ * as `layout-input-invalid`; an identical one is kept once. A listed sub-org whose declaration the entry accepts is nested by
  * the entry and takes its members from its own declaration, reported `suborg-declares-itself`.
  */
 /**
