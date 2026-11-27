@@ -17,7 +17,7 @@
 #endif
 
 static const char *const VALID_FIXTURES[] = {"valid",         "valid-fork",        "valid-local",   "valid-org",
-                                             "valid-top-org", "org-without-rules", "url-dependency"};
+                                             "valid-top-org", "org-without-rules", "url-dependency", "valid-member-of"};
 #define VALID_FIXTURE_COUNT (sizeof VALID_FIXTURES / sizeof VALID_FIXTURES[0])
 
 typedef struct file_bytes {
@@ -161,6 +161,21 @@ static void the_top_org_fixture_holds_orgs(void) {
     naula_repo_file_release(&file);
 }
 
+static void the_member_of_fixture_confirms_an_org(void) {
+    naula_repo_file file;
+    naula_refusal refusal;
+    if (parse_fixture("valid-member-of", &file, &refusal) != NAULA_OK) {
+        check_failures++;
+        return;
+    }
+    CHECK(file.org == NULL && file.member_of != NULL);
+    if (file.member_of != NULL) {
+        check_text(file.member_of->id, "git:5a0c1e2f3b4d5e6f708192a3b4c5d6e7f8091a2b", "memberOf id");
+        CHECK(file.member_of->at_count == 1 && file.member_of->at[0].number == 1000000000u);
+    }
+    naula_repo_file_release(&file);
+}
+
 static void a_local_repo_needs_no_home(void) {
     naula_repo_file file;
     naula_refusal refusal;
@@ -212,7 +227,8 @@ static void expect_refused(naula_status status, const naula_repo_file *file, con
         check_failures++;
     }
     CHECK(refusal->fix != NULL && refusal->fix[0] != '\0');
-    CHECK(file->name == NULL && file->homes == NULL && file->dependencies == NULL && file->org == NULL);
+    CHECK(file->name == NULL && file->homes == NULL && file->dependencies == NULL && file->org == NULL &&
+          file->member_of == NULL);
 }
 
 static void refused_fixtures_name_the_member(void) {
@@ -223,7 +239,9 @@ static void refused_fixtures_name_the_member(void) {
                  {"forge-id", "dependencies[0].id"},
                  {"string-home", "homes[0]"},
                  {"place-present", "\"place\""},
-                 {"claims-present", "\"claims\""}};
+                 {"claims-present", "\"claims\""},
+                 {"member-of-beside-members", "org: \"name\""},
+                 {"member-of-local", "org.memberOf.id"}};
     for (size_t index = 0; index < sizeof cases / sizeof cases[0]; index++) {
         naula_repo_file file;
         naula_refusal refusal;
@@ -548,6 +566,13 @@ static int same_org(const naula_org_declaration *left, const naula_org_declarati
     return 1;
 }
 
+static int same_member_of(const naula_reference *left, const naula_reference *right) {
+    if (left == NULL || right == NULL) {
+        return left == right;
+    }
+    return same_reference(left, right);
+}
+
 static int same_dependency(const naula_dependency *left, const naula_dependency *right) {
     return same_reference(&left->reference, &right->reference) && same_text(left->import_name, right->import_name) &&
            same_text(left->commit, right->commit) && same_text(left->path, right->path);
@@ -572,7 +597,7 @@ static int same_file(const naula_repo_file *left, const naula_repo_file *right) 
         !same_text(left->id, right->id) || !same_metadata(&left->metadata, &right->metadata) ||
         !same_text(left->registry_npm, right->registry_npm) || !same_text(left->registry_maven, right->registry_maven) ||
         left->dependency_count != right->dependency_count || !same_org(left->org, right->org) ||
-        !same_json(left->access, right->access)) {
+        !same_member_of(left->member_of, right->member_of) || !same_json(left->access, right->access)) {
         return 0;
     }
     for (size_t index = 0; index < left->dependency_count; index++) {
@@ -765,6 +790,40 @@ static void out_of_memory_is_answered_at_every_allocation(void) {
     }
 }
 
+#define MEMBER_OF_HEAD FILE_HEAD GITHUB_HOME ", \"org\": { \"memberOf\": "
+
+static void a_member_of_out_of_shape_is_refused(void) {
+    expect_text_refused(MEMBER_OF_HEAD "{ \"id\": \"git:" HEX40 "/docs\", \"at\": [ \"github:1\" ] } } }",
+                        "org.memberOf.id", "a memberOf with a segment");
+    expect_text_refused(MEMBER_OF_HEAD "{ \"id\": " GIT_ID " } } }", "org.memberOf.at", "a memberOf with no at");
+    expect_text_refused(MEMBER_OF_HEAD "\"git:" HEX40 "\" } }", "org.memberOf", "a memberOf that is text");
+    expect_text_refused(MEMBER_OF_HEAD "{ \"id\": " GIT_ID ", \"at\": [ \"github:1\" ] }, \"accounts\": [] } }",
+                        "org: \"accounts\"", "a memberOf beside accounts");
+    expect_text_accepted(MEMBER_OF_HEAD "{ \"url\": \"https://github.com/intisy/docs\" } } }", "a memberOf by url");
+}
+
+static void write_refuses_a_declaration_beside_a_member_of(void) {
+    naula_repo_file declared;
+    naula_repo_file member;
+    naula_refusal refusal;
+    if (parse_fixture("valid-org", &declared, &refusal) != NAULA_OK) {
+        check_failures++;
+        return;
+    }
+    if (parse_fixture("valid-member-of", &member, &refusal) != NAULA_OK) {
+        check_failures++;
+        naula_repo_file_release(&declared);
+        return;
+    }
+    declared.member_of = member.member_of;
+    char *json = NULL;
+    size_t length = 0;
+    CHECK(naula_repo_file_write(&declared, &json, &length) == NAULA_MALFORMED && json == NULL);
+    declared.member_of = NULL;
+    naula_repo_file_release(&member);
+    naula_repo_file_release(&declared);
+}
+
 int main(void) {
     naula_json_use_allocator();
     every_valid_fixture_parses();
@@ -772,6 +831,7 @@ int main(void) {
     the_fork_fixture_states_its_own_id();
     the_org_fixture_reads_its_declaration();
     the_top_org_fixture_holds_orgs();
+    the_member_of_fixture_confirms_an_org();
     a_local_repo_needs_no_home();
     org_without_rules_parses_with_rules_null();
     url_dependency_parses_with_url_set();
@@ -795,6 +855,8 @@ int main(void) {
     a_url_out_of_shape_is_named_with_the_place_fix();
     write_refuses_a_struct_smaller_than_its_first_shape();
     format_one_reads_a_forge_id_from_the_left();
+    a_member_of_out_of_shape_is_refused();
+    write_refuses_a_declaration_beside_a_member_of();
     out_of_memory_is_answered_at_every_allocation();
     return check_summary("repo_file_test");
 }

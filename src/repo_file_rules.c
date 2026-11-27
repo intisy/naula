@@ -38,6 +38,7 @@
 #define SETTINGS REPO_FILE_SETTINGS
 #define REGISTRIES REPO_FILE_REGISTRIES
 #define ORG_REFERENCE REPO_FILE_ORG_REFERENCE
+#define ORG_MEMBERSHIP REPO_FILE_ORG_MEMBERSHIP
 #define SUBORG REPO_FILE_SUBORG
 #define DEFINITION "/definitions/"
 
@@ -102,7 +103,9 @@ const repo_file_rule REPO_FILE_RULES[] = {
     MEMBER_OF(DEPENDENCY "/properties/path", "relativePath"),
     REFERENCE(DEPENDENCY "/allOf/0", "idOrUrl"),
 
-    MEMBER(ORG),
+    MEMBER("/properties/org"),
+    REFERENCE("/properties/org/oneOf/0", "org"),
+    REFERENCE("/properties/org/oneOf/1", "orgMembership"),
     VALUE(ORG "/type", "object"),
     VALUE(ORG "/additionalProperties", "false"),
     REQUIRED(ORG "/required/name"),
@@ -121,6 +124,11 @@ const repo_file_rule REPO_FILE_RULES[] = {
     VALUE(ORG "/then/type", "object"),
     MEMBER(ORG "/then/properties/hold"),
     VALUE(ORG "/then/properties/hold/not", "{}"),
+
+    VALUE(ORG_MEMBERSHIP "/type", "object"),
+    VALUE(ORG_MEMBERSHIP "/additionalProperties", "false"),
+    REQUIRED(ORG_MEMBERSHIP "/required/memberOf"),
+    MEMBER_OF(ORG_MEMBERSHIP "/properties/memberOf", "orgReference"),
 
     MEMBER("/properties/access"),
 

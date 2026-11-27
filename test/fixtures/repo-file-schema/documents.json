@@ -1971,5 +1971,211 @@
     "name": "a NUL in a local id",
     "accepted": false,
     "text": "{\"format\": 2, \"name\": \"a\", \"importName\": \"a\", \"id\": \"local:a\\u0000b\"}"
+  },
+  {
+    "name": "an org confirmed by memberOf",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "id": "git:0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39",
+          "at": [
+            "github:1"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "a memberOf by url",
+    "accepted": true,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "url": "https://github.com/intisy/docs"
+        }
+      }
+    }
+  },
+  {
+    "name": "a memberOf beside a name",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "id": "git:0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39",
+          "at": [
+            "github:1"
+          ]
+        },
+        "name": "intisy"
+      }
+    }
+  },
+  {
+    "name": "a memberOf beside accounts",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "id": "git:0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39",
+          "at": [
+            "github:1"
+          ]
+        },
+        "accounts": []
+      }
+    }
+  },
+  {
+    "name": "a local memberOf",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "id": "local:docs"
+        }
+      }
+    }
+  },
+  {
+    "name": "a memberOf naming a part",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "id": "git:0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39/docs",
+          "at": [
+            "github:1"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "a memberOf with no at",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {
+          "id": "git:0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39"
+        }
+      }
+    }
+  },
+  {
+    "name": "a memberOf naming neither id nor url",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": {}
+      }
+    }
+  },
+  {
+    "name": "a memberOf as text",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {
+        "memberOf": "git:0d62d7fd7ac5127a0ad5613bd9fa3643acb3cb39"
+      }
+    }
+  },
+  {
+    "name": "an empty org",
+    "accepted": false,
+    "document": {
+      "format": 2,
+      "name": "a",
+      "importName": "a",
+      "homes": [
+        {
+          "provider": "github",
+          "account": "x"
+        }
+      ],
+      "org": {}
+    }
   }
 ]

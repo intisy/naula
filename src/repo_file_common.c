@@ -426,7 +426,7 @@ void repo_file_start(naula_repo_file *file) {
 }
 
 int repo_file_size_holds_first_shape(const naula_repo_file *file) {
-    return file->size >= offsetof(naula_repo_file, access) + sizeof file->access;
+    return file->size >= offsetof(naula_repo_file, member_of) + sizeof file->member_of;
 }
 
 void naula_repo_file_release(naula_repo_file *file) {
@@ -449,6 +449,10 @@ void naula_repo_file_release(naula_repo_file *file) {
     naula_memory_release(file->dependencies);
     repo_file_release_org(file->org);
     cJSON_Delete(file->access);
+    if (file->member_of != NULL) {
+        repo_file_release_reference(file->member_of);
+        naula_memory_release(file->member_of);
+    }
     repo_file_start(file);
 }
 

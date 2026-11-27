@@ -62,6 +62,9 @@ naula_status repo_file_read_projects(const cJSON *projects, const member_path *p
                                      naula_refusal *refusal);
 naula_status repo_file_read_org(const cJSON *json, const member_path *path, const char *suborg_name,
                                 naula_org_declaration *org, naula_refusal *refusal);
+/** `{ "memberOf": <reference> }`, the reference shaped as an org's `parent`. */
+naula_status repo_file_read_membership(const cJSON *json, const member_path *path, naula_reference *reference,
+                                       naula_refusal *refusal);
 naula_status repo_file_read_reference(const cJSON *object, const member_path *path, naula_reference *reference,
                                       naula_refusal *refusal);
 

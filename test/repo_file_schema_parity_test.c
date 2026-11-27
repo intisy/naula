@@ -35,6 +35,7 @@ static const fixture_verdict FIXTURE_VERDICTS[] = {
     {"valid", 1},          {"valid-fork", 1},     {"valid-local", 1},    {"valid-org", 1},
     {"valid-top-org", 1},  {"org-without-rules", 1}, {"url-dependency", 1}, {"missing-homes", 0},
     {"forge-id", 0},       {"string-home", 0},    {"place-present", 0},  {"claims-present", 0},
+    {"valid-member-of", 1}, {"member-of-beside-members", 0}, {"member-of-local", 0},
 };
 
 typedef struct walk {

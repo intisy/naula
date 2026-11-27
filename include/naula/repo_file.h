@@ -21,8 +21,9 @@ extern "C" {
 
 /**
  * Another repo: an `id` with the places `at` to start looking, or a `url` alone. A `url` is accepted everywhere a
- * reference is, `parent` and `hold` included, since naming a repo by url is warned and never an error; a `local:` id
- * and an id with segments are refused in `parent` and `hold`, which name a whole rules repo that a home must confirm. In a file read by
+ * reference is, `parent`, `hold` and `memberOf` included, since naming a repo by url is warned and never an error; a
+ * `local:` id and an id with segments are refused in `parent`, `hold` and `memberOf`, which name a whole rules repo
+ * that a home must confirm. In a file read by
  * naula_repo_file_parse_format_one, `id` is the format 1 text verbatim, segments included, and `at` its forge number.
  * First shape ends at `at_count`.
  */
@@ -65,8 +66,10 @@ typedef struct naula_org_declaration {
 
 /**
  * `format` is the format the bytes were in; the writer always writes 2. `id` is set only for a fork taking its own
- * identity or a repo that is `local:`. `access` is kept opaque so a rewrite never drops it. First shape ends at
- * `access`.
+ * identity or a repo that is `local:`. `access` is kept opaque so a rewrite never drops it. `org` is written in one of
+ * two shapes: a declaration, read into `org`, or `{ "memberOf": <reference> }`, read into `member_of`, by which a repo
+ * confirms that its account belongs to the org its reference's repo declares; at most one of the two is set. First
+ * shape ends at `member_of`.
  */
 typedef struct naula_repo_file {
     uint32_t size;
@@ -83,6 +86,7 @@ typedef struct naula_repo_file {
     size_t dependency_count;
     naula_org_declaration *org;
     cJSON *access;
+    naula_reference *member_of;
 } naula_repo_file;
 
 /**

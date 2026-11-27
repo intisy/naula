@@ -337,6 +337,16 @@ naula_status repo_file_read_org(const cJSON *json, const member_path *path, cons
     return status;
 }
 
+naula_status repo_file_read_membership(const cJSON *json, const member_path *path, naula_reference *reference,
+                                       naula_refusal *refusal) {
+    naula_status status = repo_file_check_schema_members(json, path, REPO_FILE_ORG_MEMBERSHIP, refusal);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    member_path child = member_path_child(path, "memberOf");
+    return read_reference_object(cJSON_GetObjectItemCaseSensitive(json, "memberOf"), &child, reference, refusal);
+}
+
 int repo_file_is_reference_id(const char *text) {
     return naula_id_is_valid(text, strlen(text));
 }
