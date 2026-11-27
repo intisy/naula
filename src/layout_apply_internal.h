@@ -54,6 +54,15 @@ typedef struct journal {
     char *path;
 } journal;
 
+#define JOURNAL_SEQUENCE_WIDTH 10
+#define JOURNAL_SEQUENCE_DIGITS_LIMIT 19
+
+/**
+ * The sequence a journal's name `<sequence>-<UTC yyyymmddThhmmssZ>.jsonl` carries, at least 10 digits; 0 when `name`
+ * is no journal's. Journals are ordered by it and never by the time, which a clock set back would reorder.
+ */
+int journal_name_sequence(const char *name, unsigned long long *sequence);
+
 /** Creates a new journal for `plan` at `root`, holding the root and every step before any step runs. */
 naula_status journal_start(const char *root, const naula_layout_plan *plan, journal *journal, naula_refusal *refusal);
 /** Appends one progress line for `step`; `code` and `previous` are written only when set. */

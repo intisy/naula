@@ -44,8 +44,9 @@ typedef struct naula_apply_options {
 } naula_apply_options;
 
 /**
- * Applies `plan` in its order, journalled in `<root>/.naula-journal/<UTC yyyymmddThhmmssZ>.jsonl`: the whole plan
- * first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
+ * Applies `plan` in its order, journalled in `<root>/.naula-journal/<sequence>-<UTC yyyymmddThhmmssZ>.jsonl`, the
+ * sequence ten digits or more, one past the largest there: journals are ordered by it, never by the clock, which can
+ * be set back; the time is only information. The whole plan goes first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
  * goes on. Stops at the first step it refuses. A refusal that found the disk exactly at the step's start ends the
  * journal as `stopped`, so a new plan may be applied; one that came after part of a step's change, an allocation that
  * failed, or a process that died leaves it unfinished, and while any journal of the root is unfinished a new run is
@@ -84,13 +85,13 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
  * as naula_layout_apply does, and appending to the same journal. The journal must sit directly in
  * `<options->root>/.naula-journal/` and name that root. A journal that finished changes nothing. One that stopped
  * cleanly is refused as `journal-stopped`, since its plan was made for the disk as it stood then: a new plan is made
- * instead. One that a newer journal of the root follows is refused as `journal-superseded`. It takes the root's lock
+ * instead. One while the root holds a journal of a larger sequence is refused as `journal-superseded`. It takes the root's lock
  * as naula_layout_apply does.
  */
 naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options, naula_refusal *refusal);
 
 /**
- * The newest journal in `<root>/.naula-journal/` that neither finished nor stopped cleanly, NAULA_NOT_FOUND when there
+ * The journal of the largest sequence in `<root>/.naula-journal/` that neither finished nor stopped cleanly, NAULA_NOT_FOUND when there
  * is none. A journal whose opening append was cut short, holding part of its plan and no step begun, stopped cleanly.
  */
 naula_status naula_journal_unfinished(const char *root, char **journal_file, naula_refusal *refusal);

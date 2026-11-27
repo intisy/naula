@@ -812,6 +812,9 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
     return status;
 }
 
+static int is_newer_name(const char *candidate, const char *best);
+static int is_journal_name(const char *name);
+
 static naula_status refuse_journal_place(naula_refusal *refusal, const char *journal_file) {
     naula_refuse(refusal, "journal-elsewhere", "resume a journal naula wrote in the root's own .naula-journal folder",
                  "%s is not a journal directly in the root's .naula-journal folder", journal_file);
@@ -827,7 +830,7 @@ static naula_status check_journal_place(const char *root, const char *journal_fi
     }
     const char *name = below + folder_length + 1;
     size_t length = strlen(name);
-    if (strcspn(name, "/\\") != length || length < 7 || strcmp(name + length - 6, ".jsonl") != 0) {
+    if (strcspn(name, "/\\") != length || !is_journal_name(name)) {
         return refuse_journal_place(refusal, journal_file);
     }
     disk_kind kind = DISK_MISSING;
@@ -862,9 +865,6 @@ static naula_status resume_contents(const char *journal_file, const naula_apply_
     }
     return status;
 }
-
-static int is_newer_name(const char *candidate, const char *best);
-static int is_journal_name(const char *name);
 
 static const char *last_component(const char *path) {
     const char *name = path;
@@ -965,20 +965,18 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
     return status;
 }
 
-/** Orders journal names by their stamp, then by the number a second journal in the same second carries. */
+/** Whether `candidate` carries a larger sequence than `best`; both must be journal names. */
 static int is_newer_name(const char *candidate, const char *best) {
-    int order = strncmp(candidate, best, 16);
-    if (order != 0) {
-        return order > 0;
-    }
-    long candidate_number = candidate[16] == '-' ? strtol(candidate + 17, NULL, 10) : 0;
-    long best_number = best[16] == '-' ? strtol(best + 17, NULL, 10) : 0;
-    return candidate_number > best_number;
+    unsigned long long candidate_sequence = 0;
+    unsigned long long best_sequence = 0;
+    journal_name_sequence(candidate, &candidate_sequence);
+    journal_name_sequence(best, &best_sequence);
+    return candidate_sequence > best_sequence;
 }
 
 static int is_journal_name(const char *name) {
-    size_t length = strlen(name);
-    return length >= 22 && strcmp(name + length - 6, ".jsonl") == 0;
+    unsigned long long sequence = 0;
+    return journal_name_sequence(name, &sequence);
 }
 
 static naula_status unfinished_among(const char *folder, char **names, size_t count, char **journal_file,

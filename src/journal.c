@@ -62,16 +62,63 @@ static cJSON *planned_line(size_t index, const naula_layout_step *step) {
     return line;
 }
 
+static int is_digit(char character) {
+    return character >= '0' && character <= '9';
+}
+
+int journal_name_sequence(const char *name, unsigned long long *sequence) {
+    size_t digits = 0;
+    unsigned long long value = 0;
+    while (is_digit(name[digits]) && digits < JOURNAL_SEQUENCE_DIGITS_LIMIT) {
+        value = value * 10u + (unsigned long long)(name[digits] - '0');
+        digits++;
+    }
+    const char *stamp = name + digits + 1;
+    if (digits < JOURNAL_SEQUENCE_WIDTH || name[digits] != '-' || strlen(stamp) != 16 + 6 ||
+        strcmp(stamp + 16, ".jsonl") != 0 || stamp[8] != 'T' || stamp[15] != 'Z') {
+        return 0;
+    }
+    for (size_t index = 0; index < 15; index++) {
+        if (index != 8 && !is_digit(stamp[index])) {
+            return 0;
+        }
+    }
+    *sequence = value;
+    return 1;
+}
+
+static naula_status largest_sequence(const char *folder, unsigned long long *largest, naula_refusal *refusal) {
+    char **names = NULL;
+    size_t count = 0;
+    unsigned long error = 0;
+    *largest = 0;
+    naula_status status = disk_names(folder, &names, &count, &error);
+    if (status == NAULA_REFUSED) {
+        return apply_refuse_disk(refusal, "journal-unwritable", JOURNAL_FIX, "cannot list", folder, error);
+    }
+    for (size_t index = 0; status == NAULA_OK && index < count; index++) {
+        unsigned long long sequence = 0;
+        if (journal_name_sequence(names[index], &sequence) && sequence > *largest) {
+            *largest = sequence;
+        }
+    }
+    disk_names_release(names, count);
+    return status;
+}
+
+/** Named by a sequence one past the largest in the folder; the time in the name is only information. */
 static naula_status open_new(const char *folder, journal *journal, naula_refusal *refusal) {
     char stamp[17];
     disk_utc_stamp(stamp);
-    for (int attempt = 0; attempt < JOURNAL_NAME_ATTEMPTS; attempt++) {
-        char name[40];
-        if (attempt == 0) {
-            snprintf(name, sizeof name, "%s.jsonl", stamp);
-        } else {
-            snprintf(name, sizeof name, "%s-%d.jsonl", stamp, attempt);
-        }
+    unsigned long long largest = 0;
+    naula_status listed = largest_sequence(folder, &largest, refusal);
+    if (listed != NAULA_OK) {
+        return listed;
+    }
+    for (int attempt = 1; attempt <= JOURNAL_NAME_ATTEMPTS; attempt++) {
+        char name[64];
+        snprintf(name, sizeof name, "%0*llu-%s.jsonl", JOURNAL_SEQUENCE_WIDTH, largest + (unsigned long long)attempt,
+                 stamp);
         char *path = layout_join(folder, name);
         if (path == NULL) {
             return NAULA_OUT_OF_MEMORY;
