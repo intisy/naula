@@ -202,10 +202,23 @@ static naula_status read_dependencies(const cJSON *object, naula_repo_file *file
     return NAULA_OK;
 }
 
+static naula_status read_membership(const cJSON *org, naula_repo_file *file, naula_refusal *refusal) {
+    file->member_of = repo_file_allocate_array(1, sizeof *file->member_of);
+    if (file->member_of == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    member_path root = member_path_root();
+    member_path path = member_path_child(&root, "org");
+    return repo_file_read_membership(org, &path, file->member_of, refusal);
+}
+
 static naula_status read_org_member(const cJSON *object, naula_repo_file *file, naula_refusal *refusal) {
     const cJSON *org = cJSON_GetObjectItemCaseSensitive(object, "org");
     if (org == NULL) {
         return NAULA_OK;
+    }
+    if (cJSON_GetObjectItemCaseSensitive(org, "memberOf") != NULL) {
+        return read_membership(org, file, refusal);
     }
     file->org = repo_file_new_org();
     if (file->org == NULL) {

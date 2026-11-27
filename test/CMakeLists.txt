@@ -117,3 +117,6 @@ target_compile_definitions(resolve_test PRIVATE NAULA_TEST_SCRATCH="${CMAKE_CURR
 if(WIN32)
     target_link_libraries(resolve_test PRIVATE ws2_32)
 endif()
+
+naula_test(layout_plan_test)
+target_link_libraries(layout_plan_test PRIVATE naula naula_allocator_counting)

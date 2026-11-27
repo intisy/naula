@@ -1,0 +1,16 @@
+{
+  "format": 2,
+  "name": "old-tool",
+  "importName": "old-tool",
+  "homes": [
+    {
+      "provider": "github",
+      "account": "intisy-archive"
+    }
+  ],
+  "org": {
+    "memberOf": {
+      "id": "local:docs"
+    }
+  }
+}

@@ -70,7 +70,8 @@ extern const size_t REPO_FILE_RULE_COUNT;
 #define REPO_FILE_SETTINGS "/properties/settings"
 #define REPO_FILE_REGISTRIES "/properties/registries"
 #define REPO_FILE_DEPENDENCY "/properties/dependencies/items"
-#define REPO_FILE_ORG "/properties/org"
+#define REPO_FILE_ORG "/definitions/org"
+#define REPO_FILE_ORG_MEMBERSHIP "/definitions/orgMembership"
 #define REPO_FILE_ORG_REFERENCE "/definitions/orgReference"
 #define REPO_FILE_SUBORG "/definitions/suborg"
 

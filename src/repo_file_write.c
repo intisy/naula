@@ -346,6 +346,13 @@ static void write_org(text_builder *builder, int level, const naula_org_declarat
     close_container(&object);
 }
 
+static void write_membership(text_builder *builder, int level, const naula_reference *member_of) {
+    container object = open_container(builder, level, '{');
+    next_key(&object, "memberOf");
+    write_reference(builder, level + 1, member_of);
+    close_container(&object);
+}
+
 static void write_file(text_builder *builder, const naula_repo_file *file) {
     container object = open_container(builder, 0, '{');
     next_key(&object, "format");
@@ -360,6 +367,10 @@ static void write_file(text_builder *builder, const naula_repo_file *file) {
     if (file->org != NULL) {
         next_key(&object, "org");
         write_org(builder, 1, file->org, 0);
+    }
+    if (file->member_of != NULL) {
+        next_key(&object, "org");
+        write_membership(builder, 1, file->member_of);
     }
     if (file->access != NULL) {
         next_key(&object, "access");
@@ -388,7 +399,7 @@ static naula_status check_written(const text_builder *builder) {
 naula_status naula_repo_file_write(const naula_repo_file *file, char **json, size_t *length) {
     *json = NULL;
     *length = 0;
-    if (!repo_file_size_holds_first_shape(file)) {
+    if (!repo_file_size_holds_first_shape(file) || (file->org != NULL && file->member_of != NULL)) {
         return NAULA_REFUSED;
     }
     text_builder builder = {NULL, 0, 0, 0};

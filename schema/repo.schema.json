@@ -61,25 +61,8 @@
       }
     },
     "org": {
-      "description": "Only in the repo that holds an org's rules.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name"],
-      "properties": {
-        "name": { "$ref": "#/definitions/importName" },
-        "parent": { "$ref": "#/definitions/orgReference" },
-        "accounts": { "$ref": "#/definitions/accounts" },
-        "rules": { "$ref": "#/definitions/relativePath" },
-        "projects": { "$ref": "#/definitions/projects" },
-        "suborgs": { "$ref": "#/definitions/suborgs" },
-        "hold": {
-          "description": "Only in the top org, which has no parent.",
-          "type": "array",
-          "items": { "$ref": "#/definitions/orgReference" }
-        }
-      },
-      "if": { "type": "object", "required": ["parent"], "properties": { "parent": {} } },
-      "then": { "type": "object", "properties": { "hold": { "not": {} } } }
+      "description": "In the repo that holds an org's rules, the org's declaration; in a repo of another account the org holds, that account's confirmation.",
+      "oneOf": [{ "$ref": "#/definitions/org" }, { "$ref": "#/definitions/orgMembership" }]
     },
     "access": {
       "description": "Kept as written; its own spec defines it."
@@ -233,6 +216,36 @@
         "at": { "$ref": "#/definitions/at" }
       },
       "allOf": [{ "$ref": "#/definitions/idOrUrl" }]
+    },
+    "org": {
+      "description": "An org's declaration, only in the repo that holds its rules.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/definitions/importName" },
+        "parent": { "$ref": "#/definitions/orgReference" },
+        "accounts": { "$ref": "#/definitions/accounts" },
+        "rules": { "$ref": "#/definitions/relativePath" },
+        "projects": { "$ref": "#/definitions/projects" },
+        "suborgs": { "$ref": "#/definitions/suborgs" },
+        "hold": {
+          "description": "Only in the top org, which has no parent.",
+          "type": "array",
+          "items": { "$ref": "#/definitions/orgReference" }
+        }
+      },
+      "if": { "type": "object", "required": ["parent"], "properties": { "parent": {} } },
+      "then": { "type": "object", "properties": { "hold": { "not": {} } } }
+    },
+    "orgMembership": {
+      "description": "Confirms that the account this repo's primary home sits in belongs to the org the referenced repo declares; such a repo declares no org of its own.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memberOf"],
+      "properties": {
+        "memberOf": { "$ref": "#/definitions/orgReference" }
+      }
     },
     "accounts": {
       "type": "array",
