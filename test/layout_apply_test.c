@@ -2213,6 +2213,106 @@ static void a_folder_that_keeps_refilling_stops_the_removal(void) {
     CHECK(stopped);
 }
 
+#ifdef __linux__
+static int mount_on(const char *mount_arguments, const char *folder) {
+    char command[PATH_SIZE * 3];
+    snprintf(command, sizeof command, "mount %s '%s' 2>/dev/null", mount_arguments, folder);
+    return system(command) == 0;
+}
+
+static void unmount(const char *folder) {
+    char command[PATH_SIZE * 2];
+    snprintf(command, sizeof command, "umount -l '%s' 2>/dev/null", folder);
+    if (system(command) != 0) {
+        fprintf(stderr, "cannot unmount %s\n", folder);
+        check_failures++;
+    }
+}
+
+/** A bind mount shares its file system's device, so only its mount tells it apart; tmpfs is another device as well. */
+static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
+    fresh("mount");
+    char outside[PATH_SIZE];
+    char keep[PATH_SIZE];
+    char bind_arguments[PATH_SIZE * 2];
+    compose(outside, base, "/mount/outside", NULL);
+    compose(keep, outside, "/keep.txt", NULL);
+    make_folder(outside);
+    write_text(keep, "must survive");
+    char *before = snapshot("mount/outside");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/mnt"));
+    snprintf(bind_arguments, sizeof bind_arguments, "--bind '%s'", outside);
+    if (!mount_on(bind_arguments, at("clone/mnt"))) {
+        printf("a_file_system_mounted_inside_a_clone_is_never_entered: skipped, mounting needs root and "
+               "CAP_SYS_ADMIN\n");
+        free(before);
+        finish("mount");
+        return;
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "mount-inside"));
+    unmount(at("clone/mnt"));
+    char *after = snapshot("mount/outside");
+    CHECK(strcmp(before, after) == 0);
+    CHECK(file_holds(keep, "must survive"));
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    if (mount_on("-t tmpfs tmpfs", at("clone/mnt"))) {
+        write_text(at("clone/mnt/on-tmpfs.txt"), "tmpfs");
+        CHECK(journal_file != NULL && refused_with(resume(journal_file), "mount-inside"));
+        CHECK(file_holds(at("clone/mnt/on-tmpfs.txt"), "tmpfs"));
+        unmount(at("clone/mnt"));
+    }
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(file_holds(keep, "must survive"));
+    naula_memory_release(journal_file);
+    free(before);
+    free(after);
+    finish("mount");
+}
+#elif defined(_WIN32)
+/**
+ * A volume mount point is a reparse point of the junction's own tag, and making one needs an elevated process, so
+ * the junction stands in for it: it is removed itself and never entered.
+ */
+static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
+    fresh("mount");
+    char outside[PATH_SIZE];
+    compose(outside, base, "/mount/outside", NULL);
+    make_folder(outside);
+    char keep[PATH_SIZE];
+    compose(keep, outside, "/keep.txt", NULL);
+    write_text(keep, "must survive");
+    char *before = snapshot("mount/outside");
+    make_checkout(at("clone"), "clone");
+    make_link(at("clone/mnt"), outside);
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA(at("clone/mnt"), &entry);
+    CHECK(search != INVALID_HANDLE_VALUE);
+    if (search != INVALID_HANDLE_VALUE) {
+        CHECK((entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+        CHECK(entry.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
+        FindClose(search);
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    char *after = snapshot("mount/outside");
+    CHECK(strcmp(before, after) == 0);
+    free(before);
+    free(after);
+    finish("mount");
+}
+#else
+static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
+    printf("a_file_system_mounted_inside_a_clone_is_never_entered: skipped, mounting needs an elevated process here\n");
+}
+#endif
+
 /** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
 static void lay_out_an_outside_org(const char *outside) {
     char path[PATH_SIZE];
@@ -2514,6 +2614,7 @@ static const named_test TESTS[] = {
     {"a_step_into_naulas_files_is_refused_by_their_identity", a_step_into_naulas_files_is_refused_by_their_identity},
     {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
     {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
+    {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

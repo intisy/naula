@@ -152,11 +152,41 @@ typedef struct removal_frame {
     unsigned refills;
 } removal_frame;
 
+/**
+ * The file system and the mount a folder is on. A bind mount shares its file system's device, so only the mount id
+ * tells it apart, where Linux has one; elsewhere the device alone does.
+ */
+typedef struct mount_identity {
+    dev_t device;
+    uint64_t mount;
+    int has_mount;
+} mount_identity;
+
+static void mount_identity_of(int folder, const struct stat *found, mount_identity *identity) {
+    identity->device = found->st_dev;
+    identity->mount = 0;
+    identity->has_mount = 0;
+#if defined(__linux__) && defined(STATX_MNT_ID)
+    struct statx extended;
+    if (statx(folder, "", AT_EMPTY_PATH, STATX_MNT_ID, &extended) == 0 && (extended.stx_mask & STATX_MNT_ID)) {
+        identity->mount = extended.stx_mnt_id;
+        identity->has_mount = 1;
+    }
+#else
+    (void)folder;
+#endif
+}
+
+static int is_other_mount(const mount_identity *clone, const mount_identity *found) {
+    return found->device != clone->device || (clone->has_mount && found->has_mount && found->mount != clone->mount);
+}
+
 typedef struct removal {
     int parent;
     removal_frame *frames;
     size_t depth;
     size_t capacity;
+    mount_identity clone;
     disk_removal_refusal reason;
 } removal;
 
@@ -169,10 +199,30 @@ static int is_refilled(removal_frame *frame, int read_to_end) {
     return frame->refills >= DISK_REMOVAL_REFILL_PASSES;
 }
 
+static naula_status refuse_mount_inside(removal *removing, unsigned long *error) {
+    removing->reason = DISK_REMOVAL_MOUNT_INSIDE;
+    *error = EXDEV;
+    return NAULA_REFUSED;
+}
+
+/** The clone's own mount is recorded; a folder below it on any other is refused before anything in it is touched. */
+static naula_status check_mount(removal *removing, int folder, const struct stat *found, unsigned long *error) {
+    mount_identity identity;
+    mount_identity_of(folder, found, &identity);
+    if (removing->depth == 0) {
+        removing->clone = identity;
+        return NAULA_OK;
+    }
+    return is_other_mount(&removing->clone, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
+}
+
 /** Takes ownership of `folder` and `name`, closing and releasing both when it cannot push them. */
 static naula_status push_frame(removal *removing, int folder, char *name, unsigned long *error) {
     struct stat found;
-    naula_status status = fstat(folder, &found) == 0 ? let_owner_empty(folder, error) : refused(error);
+    naula_status status = fstat(folder, &found) == 0 ? check_mount(removing, folder, &found, error) : refused(error);
+    if (status == NAULA_OK) {
+        status = let_owner_empty(folder, error);
+    }
     if (status == NAULA_OK && removing->depth == removing->capacity) {
         size_t grown = removing->capacity == 0 ? 64 : removing->capacity * 2;
         removal_frame *larger = naula_memory_reallocate(removing->frames, grown * sizeof *larger);
@@ -259,11 +309,18 @@ static naula_status read_snapshot(int folder, listing_snapshot *taken, unsigned 
     return status;
 }
 
-/** Removes the entry `name` of `folder` unless it is a real folder, which is handed back opened in `descend`. */
-static naula_status take_entry(int folder, const char *name, int *descend, char **descend_name, unsigned long *error) {
+/**
+ * Removes the entry `name` of `folder` unless it is a real folder, which is handed back opened in `descend`; a file
+ * mounted from another file system is refused, never removed.
+ */
+static naula_status take_entry(removal *removing, int folder, const char *name, int *descend, char **descend_name,
+                               unsigned long *error) {
     struct stat found;
     if (fstatat(folder, name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno == ENOENT ? NAULA_OK : refused(error);
+    }
+    if (!S_ISDIR(found.st_mode) && found.st_dev != removing->clone.device) {
+        return refuse_mount_inside(removing, error);
     }
     if (!S_ISDIR(found.st_mode)) {
         return unlinkat(folder, name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
@@ -287,7 +344,8 @@ static naula_status take_entry(int folder, const char *name, int *descend, char 
  * handed back opened in `descend` with its name. `removed` says whether anything went, so a folder counts as empty
  * only once a whole reading found nothing.
  */
-static naula_status take_listing(int folder, int *descend, char **name, int *removed, unsigned long *error) {
+static naula_status take_listing(removal *removing, int folder, int *descend, char **name, int *removed,
+                                 unsigned long *error) {
     *descend = -1;
     *removed = 0;
     listing_snapshot taken = {NULL, 0, 0};
@@ -295,7 +353,7 @@ static naula_status take_listing(int folder, int *descend, char **name, int *rem
     for (size_t offset = 0; status == NAULA_OK && offset < taken.length && *descend < 0;) {
         const char *entry = taken.names + offset;
         *removed = 1;
-        status = take_entry(folder, entry, descend, name, error);
+        status = take_entry(removing, folder, entry, descend, name, error);
         offset += strlen(entry) + 1;
     }
     naula_memory_release(taken.names);
@@ -355,7 +413,7 @@ static naula_status take_one_pass(removal *removing, unsigned long *error) {
     int descend = -1;
     char *child = NULL;
     int found = 0;
-    naula_status status = take_listing(top->folder, &descend, &child, &found, error);
+    naula_status status = take_listing(removing, top->folder, &descend, &child, &found, error);
     if (status == NAULA_OK && !found) {
         status = remove_top_folder(removing, &found, error);
     }
