@@ -14,7 +14,9 @@
  * may be a link or other reparse point, except the link a MAKE_LINK replaces or a REMOVE_LINK removes. A step that
  * finds the disk already as it asks changes nothing, so a plan applied twice changes nothing the second time. A step
  * whose `path` or `target` names `.naula-journal` or `.naula.json` is refused as `apply-input-invalid`, on Windows
- * also by a name Windows opens as one of them: with a trailing dot or space, or as an 8.3 alias such as `NAULA-~1`.
+ * also by a name Windows opens as one of them: with a trailing dot or space, or as an 8.3 alias such as `NAULA-~1`;
+ * and on every platform by any first component below the root that the disk opens as one of them, compared by file
+ * identity without following a link, so an alias no rule on names knows is refused as well.
  */
 
 #include <stddef.h>
