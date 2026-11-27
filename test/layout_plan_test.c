@@ -98,11 +98,20 @@ static naula_layout_repo repo_at(const char *hex, const char *name, const char *
     return repo;
 }
 
-static void add_link(scenario *world, const char *path, const char *target) {
+static void add_link_made(scenario *world, const char *path, const char *target, int made_by_naula) {
     naula_layout_link *link = &world->links[world->link_count++];
     link->size = sizeof *link;
     link->path = (char *)path;
     link->target = (char *)target;
+    link->made_by_naula = made_by_naula;
+}
+
+static void add_link(scenario *world, const char *path, const char *target) {
+    add_link_made(world, path, target, 1);
+}
+
+static void add_foreign_link(scenario *world, const char *path, const char *target) {
+    add_link_made(world, path, target, 0);
 }
 
 static naula_layout_repo *add_repo(scenario *world, naula_layout_repo repo) {
@@ -739,6 +748,7 @@ static void plan_keeps_an_archived_clone_with_unpushed_commits(void) {
     naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/old/backend"));
     old->archived = 1;
     old->clean_and_pushed = 0;
+    add_link(&world, ROOT "/spisor/backend", ROOT "/old/backend");
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
@@ -763,12 +773,15 @@ static void plan_removes_a_clean_pushed_archived_clone(void) {
     old->clean_and_pushed = 1;
     naula_layout_repo *never_cloned = add_repo(&world, repo_at(hex_of('2'), "argocd", "spisor", NULL));
     never_cloned->archived = 1;
+    add_link(&world, ROOT "/spisor/archive/backend", ROOT "/spisor/repos/111111111111");
+    add_foreign_link(&world, ROOT "/spisor/backend", ROOT "/spisor/repos/111111111111");
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
     CHECK(find_step(&plan, NAULA_REMOVE_CLONE, ROOT "/spisor/repos/111111111111") != NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/archive/backend") != NULL);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/archive/backend") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/backend") == NULL);
     CHECK(step_index(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/archive/backend") <
           step_index(&plan, NAULA_REMOVE_CLONE, ROOT "/spisor/repos/111111111111"));
     for (size_t index = 0; index < plan.step_count; index++) {
@@ -1432,7 +1445,7 @@ static void removes_only_links_in_the_places_naula_links(void) {
     scenario world;
     start_world(&world);
     world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
-    add_link(&world, ROOT "/views/naula", ROOT "/repos/dddddddddddd");
+    add_foreign_link(&world, ROOT "/views/naula", ROOT "/repos/dddddddddddd");
     add_link(&world, ROOT "/repos/aaaaaaaaaaaa/siblings/naula", ROOT "/repos/dddddddddddd");
     add_link(&world, ROOT "/some/repos/x", ROOT "/some/repos/x2");
     add_link(&world, ROOT "/spisor/shared/deep/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
@@ -1447,7 +1460,7 @@ static void removes_only_links_in_the_places_naula_links(void) {
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/views/naula") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/views/naula") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/forebay/lib") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/odd") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/upper") == NULL);
@@ -1459,6 +1472,38 @@ static void removes_only_links_in_the_places_naula_links(void) {
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/elsewhere/repos/k/x") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/platform/thing") == NULL);
     naula_layout_plan_release(&plan);
+}
+
+static void removes_only_links_naula_recorded_making(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/views/naula", ROOT "/repos/dddddddddddd");
+    add_foreign_link(&world, ROOT "/spisor/old/library", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_foreign_link(&world, ROOT "/spisor/docs-old", ROOT "/spisor/repos/bbbbbbbbbbbb");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/views/naula") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/old/library") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/docs-old") == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_foreign_link_where_naula_links_is_reported_and_left(void) {
+    const char *targets[] = {ROOT "/spisor/repos/eeeeeeeeeeee", "T:/somewhere/else"};
+    for (size_t index = 0; index < 2; index++) {
+        scenario world;
+        start_world(&world);
+        add_foreign_link(&world, ROOT "/spisor/shared/library", targets[index]);
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library") == NULL);
+        CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/library") == NULL);
+        CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/shared/library") != NULL);
+        CHECK(links_to(&plan, ROOT "/spisor/docs", ROOT "/spisor/repos/bbbbbbbbbbbb"));
+        naula_layout_plan_release(&plan);
+    }
 }
 
 static void leaves_links_naula_did_not_make(void) {
@@ -1645,6 +1690,12 @@ static void refuses_input_smaller_than_its_first_shape(void) {
     input = input_of(&world);
     CHECK(naula_layout_plan_make(&input, &plan, &refusal) == NAULA_REFUSED);
     CHECK(check_text(refusal.code, "layout-input-invalid", "short memberOf"));
+    start_world(&world);
+    add_link(&world, ROOT "/spisor/old", ROOT "/spisor/repos/eeeeeeeeeeee");
+    world.links[0].size = (uint32_t)offsetof(naula_layout_link, made_by_naula);
+    input = input_of(&world);
+    CHECK(naula_layout_plan_make(&input, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "layout-input-invalid", "short link"));
 }
 
 static void refuses_an_id_that_could_name_a_path(void) {
@@ -1884,6 +1935,8 @@ int main(void) {
     removes_the_links_of_a_dropped_org();
     removes_the_links_of_a_renamed_org();
     leaves_links_naula_did_not_make();
+    removes_only_links_naula_recorded_making();
+    a_foreign_link_where_naula_links_is_reported_and_left();
     a_checkout_reached_through_an_existing_link_is_left_alone();
     removes_only_links_in_the_places_naula_links();
     a_current_path_differing_only_in_case_is_in_place();

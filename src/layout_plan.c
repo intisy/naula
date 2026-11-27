@@ -292,7 +292,24 @@ static naula_status emit_rules_files(const layout_tree *tree, const layout_place
     return status;
 }
 
-static naula_status emit_link(const layout_tree *tree, const layout_placement *placement, layout_builder *builder) {
+static const naula_layout_link *existing_link_at(const naula_layout_input *input, const char *path, int made_by_naula) {
+    for (size_t index = 0; index < input->existing_link_count; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        if ((link->made_by_naula != 0) == made_by_naula && layout_path_equal(link->path, path)) {
+            return link;
+        }
+    }
+    return NULL;
+}
+
+static naula_status emit_link(const naula_layout_input *input, const layout_tree *tree,
+                              const layout_placement *placement, layout_builder *builder) {
+    const naula_layout_link *foreign = existing_link_at(input, placement->link, 0);
+    if (foreign != NULL) {
+        return layout_report(builder, "path-occupied", placement->link, foreign->target,
+                             "%s gets no link: a link naula has no record of making sits where its link goes",
+                             layout_placement_name(placement));
+    }
     char *parent = naula_memory_duplicate_text(placement->link);
     if (parent == NULL) {
         return NAULA_OUT_OF_MEMORY;
@@ -308,11 +325,12 @@ static naula_status emit_link(const layout_tree *tree, const layout_placement *p
                               : status;
 }
 
-static naula_status emit_removals(const layout_placement *placement, layout_builder *builder) {
+static naula_status emit_removals(const naula_layout_input *input, const layout_placement *placement,
+                                   layout_builder *builder) {
     const char *current = placement->repo->current_path;
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < 2 && status == NAULA_OK; index++) {
-        if (placement->stale_links[index] != NULL) {
+        if (placement->stale_links[index] != NULL && existing_link_at(input, placement->stale_links[index], 1) != NULL) {
             status = layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK,
                                 placement->stale_links[index], current, NULL);
         }
@@ -323,8 +341,8 @@ static naula_status emit_removals(const layout_placement *placement, layout_buil
     return status;
 }
 
-static naula_status emit_placement(const layout_tree *tree, const layout_placement *placement,
-                                   layout_builder *builder) {
+static naula_status emit_placement(const naula_layout_input *input, const layout_tree *tree,
+                                   const layout_placement *placement, layout_builder *builder) {
     if (placement->stays || placement->org == LAYOUT_NONE) {
         return NAULA_OK;
     }
@@ -334,10 +352,10 @@ static naula_status emit_placement(const layout_tree *tree, const layout_placeme
                             placement->repo->current_path, placement->checkout, NULL);
     }
     if (status == NAULA_OK && placement->repo->current_path != NULL) {
-        status = emit_removals(placement, builder);
+        status = emit_removals(input, placement, builder);
     }
     if (status == NAULA_OK && placement->link != NULL && !placement->removes) {
-        status = emit_link(tree, placement, builder);
+        status = emit_link(input, tree, placement, builder);
     }
     return status;
 }
@@ -531,7 +549,8 @@ static naula_status emit_stale_links(const naula_layout_input *input, const layo
     for (size_t index = 0; index < input->existing_link_count && status == NAULA_OK; index++) {
         const naula_layout_link *link = &input->existing_links[index];
         int stale = 0;
-        status = is_made(placements, link) ? NAULA_OK : is_stale_link(input, tree, link, &stale);
+        status = !link->made_by_naula || is_made(placements, link) ? NAULA_OK
+                                                                   : is_stale_link(input, tree, link, &stale);
         if (status == NAULA_OK && stale) {
             status = layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK, link->path, link->target,
                                 NULL);
@@ -553,11 +572,11 @@ static naula_status report_confirmation(const layout_tree *tree, const layout_pl
                          "the memberOf of %s %s, so it confirms nothing", layout_placement_name(placement), why);
 }
 
-static naula_status emit_placements(const layout_tree *tree, const layout_placements *placements,
-                                    layout_builder *builder) {
+static naula_status emit_placements(const naula_layout_input *input, const layout_tree *tree,
+                                    const layout_placements *placements, layout_builder *builder) {
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < placements->count && status == NAULA_OK; index++) {
-        status = emit_placement(tree, &placements->items[index], builder);
+        status = emit_placement(input, tree, &placements->items[index], builder);
         if (status == NAULA_OK) {
             status = report_notes(&placements->items[index], builder);
         }
@@ -629,7 +648,7 @@ static naula_status check_paths(const naula_layout_input *input, naula_refusal *
     }
     for (size_t index = 0; index < input->existing_link_count; index++) {
         const naula_layout_link *link = &input->existing_links[index];
-        if (link->size < offsetof(naula_layout_link, target) + sizeof link->target) {
+        if (link->size < offsetof(naula_layout_link, made_by_naula) + sizeof link->made_by_naula) {
             naula_refuse(refusal, "layout-input-invalid", INPUT_FIX,
                          "existing_links[%zu] is smaller than its first shape", index);
             return NAULA_REFUSED;
@@ -706,7 +725,7 @@ static naula_status plan_layout(const naula_layout_input *input, layout_tree *tr
         status = emit_tree_folders(tree, builder);
     }
     if (status == NAULA_OK) {
-        status = emit_placements(tree, placements, builder);
+        status = emit_placements(input, tree, placements, builder);
     }
     if (status == NAULA_OK) {
         status = emit_rules_files(tree, placements, builder);

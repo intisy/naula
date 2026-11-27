@@ -57,8 +57,11 @@ typedef struct naula_layout_repo {
  * root leaves out (the top org is never dropped). `top_repository` and `org_repositories[i]` are the ids of the repos
  * declaring `top` and `orgs[i]`, which is how an org's `parent` and its rules file are found. `extra` are single repos
  * kept from accounts no held org owns, `extra_orgs[i]` naming the org `extra[i]` is kept in, NULL meaning the top
- * org. `existing_links` are the links found under the root, each `path` pointing at `target`; one whose target sits
- * in a `repos` folder and that the plan does not make again is removed. First shape ends at `existing_link_count`.
+ * org. `existing_links` are the links found under the root, each `path` pointing at `target`. Only one marked
+ * `made_by_naula` is ever removed, and only when the plan does not make it again; one that is not marked and sits
+ * where the plan would make a link is reported `path-occupied` and nothing is made there. Task 14 must record every
+ * link it makes, in its journal or root file, and pass that record back as the flag. First shape ends at
+ * `existing_link_count`.
  *
  * An org holds an account it names when any repo with its declaring repo's id is homed there (for a sub-org entry, the
  * repo that lists it), or when a repo homed there names that declaring repo in `member_of`; any other account it names
@@ -76,11 +79,16 @@ typedef struct naula_layout_repo {
  * `layout-input-invalid`; an identical one is kept once. A listed sub-org whose declaration the entry accepts is nested by
  * the entry and takes its members from its own declaration, reported `suborg-declares-itself`.
  */
-/** First shape ends at `target`. */
+/**
+ * A link found under the root. `made_by_naula` is set only from naula's own record of the links it made (task 14's
+ * journal or root file), never inferred from where the link sits or what it points at: a link without it is never
+ * removed, so a first sync with no record removes nothing. First shape ends at `made_by_naula`.
+ */
 typedef struct naula_layout_link {
     uint32_t size;
     char *path;
     char *target;
+    int made_by_naula;
 } naula_layout_link;
 
 typedef struct naula_layout_input {
@@ -119,8 +127,9 @@ typedef enum naula_layout_step_kind {
  * - MAKE_FOLDER `path` makes the folder if it is missing.
  * - MOVE_CHECKOUT moves the checkout at `path` to `target`; the applier refuses when `path` is a link.
  * - REMOVE_LINK removes the link at `path` only while it is a link to `target`, never what it points at. Only a link
- *   naula could have made is removed: at an org folder's top or one folder below it (`archive`, or any folder that is
- *   neither reserved nor a laid-out org, since a renamed project or a released org's projects are named nowhere),
+ *   naula's record says it made is removed, and of those only one at an org folder's top or one folder below it
+ *   (`archive`, or any folder that is neither reserved nor a laid-out org, since a renamed project or a released
+ *   org's projects are named nowhere),
  *   pointing at a checkout folder (twelve lowercase hex, or `local-...`) directly in that org folder's `repos`, and
  *   outside every checkout.
  * - REMOVE_CLONE removes the archived checkout at `path`, which is a real folder and never a link: the applier refuses
