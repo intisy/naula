@@ -120,3 +120,7 @@ endif()
 
 naula_test(layout_plan_test)
 target_link_libraries(layout_plan_test PRIVATE naula naula_allocator_counting)
+
+naula_test(layout_apply_test)
+target_link_libraries(layout_apply_test PRIVATE naula_test_hooks naula_allocator)
+target_compile_definitions(layout_apply_test PRIVATE NAULA_TEST_HOOKS NAULA_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}")
