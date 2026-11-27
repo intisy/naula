@@ -202,14 +202,37 @@ static naula_status push_frame(removal *removing, int folder, char *name, unsign
     return NAULA_OK;
 }
 
+/** The names of one listing, each ended by a NUL. */
+typedef struct listing_snapshot {
+    char *names;
+    size_t length;
+    size_t capacity;
+} listing_snapshot;
+
+static naula_status snapshot_append(listing_snapshot *taken, const char *name) {
+    size_t needed = strlen(name) + 1;
+    if (taken->length + needed > taken->capacity) {
+        size_t grown = taken->capacity == 0 ? 4096 : taken->capacity * 2;
+        while (grown < taken->length + needed) {
+            grown *= 2;
+        }
+        char *larger = naula_memory_reallocate(taken->names, grown);
+        if (larger == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        taken->names = larger;
+        taken->capacity = grown;
+    }
+    memcpy(taken->names + taken->length, name, needed);
+    taken->length += needed;
+    return NAULA_OK;
+}
+
 /**
- * Reads `folder` from its start, removing every entry that is not a real folder, until it meets one to descend into,
- * handed back opened in `descend` with its name. `removed` says whether anything went, so a folder counts as empty
- * only once a whole reading found nothing.
+ * Every name in `folder`, read before any is acted on: a listing that removes as it reads can be fed new names behind
+ * its cursor for as long as another program writes, so a pass would never end.
  */
-static naula_status take_listing(int folder, int *descend, char **name, int *removed, unsigned long *error) {
-    *descend = -1;
-    *removed = 0;
+static naula_status read_snapshot(int folder, listing_snapshot *taken, unsigned long *error) {
     int copy = dup(folder);
     DIR *listing = copy < 0 ? NULL : fdopendir(copy);
     if (listing == NULL) {
@@ -221,37 +244,61 @@ static naula_status take_listing(int folder, int *descend, char **name, int *rem
     }
     rewinddir(listing);
     naula_status status = NAULA_OK;
-    for (;;) {
+    while (status == NAULA_OK) {
         errno = 0;
         struct dirent *entry = readdir(listing);
         if (entry == NULL) {
             status = errno != 0 ? refused(error) : NAULA_OK;
             break;
         }
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        *removed = 1;
-        struct stat found;
-        if (fstatat(folder, entry->d_name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
-            status = errno == ENOENT ? NAULA_OK : refused(error);
-        } else if (!S_ISDIR(found.st_mode)) {
-            status = unlinkat(folder, entry->d_name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
-        } else {
-            *name = copy_of(entry->d_name, strlen(entry->d_name));
-            *descend = *name == NULL ? -1 : open_folder_at(folder, entry->d_name);
-            status = *name == NULL ? NAULA_OUT_OF_MEMORY : (*descend < 0 ? refused(error) : NAULA_OK);
-            if (status != NAULA_OK) {
-                naula_memory_release(*name);
-                *name = NULL;
-            }
-            break;
-        }
-        if (status != NAULA_OK) {
-            break;
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+            status = snapshot_append(taken, entry->d_name);
         }
     }
     closedir(listing);
+    return status;
+}
+
+/** Removes the entry `name` of `folder` unless it is a real folder, which is handed back opened in `descend`. */
+static naula_status take_entry(int folder, const char *name, int *descend, char **descend_name, unsigned long *error) {
+    struct stat found;
+    if (fstatat(folder, name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
+        return errno == ENOENT ? NAULA_OK : refused(error);
+    }
+    if (!S_ISDIR(found.st_mode)) {
+        return unlinkat(folder, name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
+    }
+    *descend_name = copy_of(name, strlen(name));
+    if (*descend_name == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    *descend = open_folder_at(folder, name);
+    if (*descend < 0) {
+        naula_status status = refused(error);
+        naula_memory_release(*descend_name);
+        *descend_name = NULL;
+        return status;
+    }
+    return NAULA_OK;
+}
+
+/**
+ * Reads `folder` from its start, removing every entry that is not a real folder, until it meets one to descend into,
+ * handed back opened in `descend` with its name. `removed` says whether anything went, so a folder counts as empty
+ * only once a whole reading found nothing.
+ */
+static naula_status take_listing(int folder, int *descend, char **name, int *removed, unsigned long *error) {
+    *descend = -1;
+    *removed = 0;
+    listing_snapshot taken = {NULL, 0, 0};
+    naula_status status = read_snapshot(folder, &taken, error);
+    for (size_t offset = 0; status == NAULA_OK && offset < taken.length && *descend < 0;) {
+        const char *entry = taken.names + offset;
+        *removed = 1;
+        status = take_entry(folder, entry, descend, name, error);
+        offset += strlen(entry) + 1;
+    }
+    naula_memory_release(taken.names);
     return status;
 }
 

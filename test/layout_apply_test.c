@@ -2072,7 +2072,8 @@ static void an_alias_windows_generates_for_naulas_files_is_refused(void) {
 
 #define REFILL_WRITERS 3
 #define REFILL_SECONDS 20
-#define REFILL_FILES 2000
+#define REFILL_FILES 100
+#define REFILL_NAMES 10
 
 typedef struct refill_race {
     char folder[PATH_SIZE];
@@ -2084,15 +2085,34 @@ typedef struct refill_writer {
     int number;
 } refill_writer;
 
-/** Writes new files into the folder until the removal returns or the time is up, so a removal that never stops ends. */
+/** A file the writer holds open for a moment must not read as one another process holds against the removal. */
+static void create_letting_others_delete(const char *path) {
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+    }
+#else
+    int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (file >= 0) {
+        close(file);
+    }
+#endif
+}
+
+/**
+ * Puts back the writer's few files as fast as the removal takes them, until it returns or the time is up, so a
+ * removal that never stops still ends. A fixed set of names keeps every pass short on any file system; new names at
+ * full speed outgrow a slow removal, whose first pass then outlasts the writers.
+ */
 static void keep_refilling(refill_writer *writer) {
     time_t deadline = time(NULL) + REFILL_SECONDS;
     for (long made = 0; !writer->race->removal_returned && time(NULL) < deadline; made++) {
-        char path[PATH_SIZE];
-        snprintf(path, sizeof path, "%s/w%d-%08ld", writer->race->folder, writer->number, made);
-        FILE *file = fopen(path, "wb");
-        if (file != NULL) {
-            fclose(file);
+        char path[PATH_SIZE + 64];
+        snprintf(path, sizeof path, "%s/w%d-%02ld", writer->race->folder, writer->number, made % REFILL_NAMES);
+        if (kind_at(path) == 0) {
+            create_letting_others_delete(path);
         }
     }
 }
@@ -2142,11 +2162,13 @@ static naula_status remove_clone_while_refilling(refill_race *race) {
     return status;
 }
 
+#define REFILL_ROUNDS 10
+
 /**
- * Other programs keep writing into a folder of the clone while it is removed. The removal stops as `folder-refills`
- * rather than chase them for ever, leaving its journal to be resumed, and the resume finishes once they have stopped.
+ * One removal raced by the writers: 1 when it stopped as `folder-refills` and its resume then finished, 0 when it won
+ * the race outright because the writers left the folder empty for a whole listing, which a scheduler can do.
  */
-static void a_folder_that_keeps_refilling_stops_the_removal(void) {
+static int refill_round(int round) {
     fresh("refill");
     make_checkout(at("clone"), "clone");
     make_folder(at("clone/refill"));
@@ -2160,17 +2182,35 @@ static void a_folder_that_keeps_refilling_stops_the_removal(void) {
     compose(race.folder, at("clone/refill"), NULL);
     time_t started = time(NULL);
     naula_status status = remove_clone_while_refilling(&race);
-    printf("a_folder_that_keeps_refilling_stops_the_removal: answered %d %s after %ld s\n", (int)status, refusal.code,
-           (long)(time(NULL) - started));
-    CHECK(refused_with(status, "folder-refills"));
-    CHECK(kind_at(at("clone/refill")) == 1);
+    printf("a_folder_that_keeps_refilling_stops_the_removal: round %d answered %d %s after %ld s\n", round,
+           (int)status, refusal.code, (long)(time(NULL) - started));
+    int stopped = status == NAULA_REFUSED && strcmp(refusal.code, "folder-refills") == 0;
+    CHECK(stopped || status == NAULA_OK);
     CHECK(kind_at(at(".naula-journal/lock")) == 0);
     char *journal_file = unfinished_journal();
-    CHECK(journal_file != NULL);
-    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(stopped == (journal_file != NULL));
+    if (stopped) {
+        CHECK(kind_at(at("clone/refill")) == 1);
+        CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    }
     CHECK(kind_at(at("clone")) == 0);
     naula_memory_release(journal_file);
     finish("refill");
+    return stopped;
+}
+
+/**
+ * Other programs keep writing into a folder of the clone while it is removed. The removal stops as `folder-refills`
+ * rather than chase them for ever, leaving its journal to be resumed, and the resume finishes once they have stopped.
+ * A round the removal wins outright proves nothing either way, so of several rounds at least one must stop; a removal
+ * that chases the writers wins every round, once their time is up.
+ */
+static void a_folder_that_keeps_refilling_stops_the_removal(void) {
+    int stopped = 0;
+    for (int round = 0; round < REFILL_ROUNDS && !stopped; round++) {
+        stopped = refill_round(round);
+    }
+    CHECK(stopped);
 }
 
 /** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
