@@ -15,6 +15,8 @@ static const char *const JOURNAL_FIX = "check that the root's .naula-journal fol
 static const char *const MALFORMED_FIX = "restore the journal naula wrote, or lay the root out again with naula sync";
 static const char *const SEQUENCE_FIX = "move the file naula did not name out of .naula-journal, then run naula sync "
                                         "again";
+static const char *const DUPLICATE_FIX = "keep the journal naula wrote and move the copy out of .naula-journal, then "
+                                         "run naula sync again";
 static const char *const EXHAUSTED_FIX = "move the finished journals out of .naula-journal, keeping any unfinished "
                                          "one, then run naula sync again";
 
@@ -139,6 +141,20 @@ static naula_status take_journals(const char *folder, char **names, size_t count
     return NAULA_OK;
 }
 
+/** Two journals of one sequence, as a copied journal leaves, in a listing already in sequence order. */
+static naula_status refuse_shared_sequence(const char *folder, const journal_listing *listing,
+                                           naula_refusal *refusal) {
+    for (size_t index = 1; index < listing->count; index++) {
+        if (listing->journals[index].sequence == listing->journals[index - 1].sequence) {
+            naula_refuse(refusal, "journal-sequence-duplicate", DUPLICATE_FIX,
+                         "the journals %s and %s in %s carry one sequence, so neither can be read as the newer",
+                         listing->journals[index - 1].name, listing->journals[index].name, folder);
+            return NAULA_REFUSED;
+        }
+    }
+    return NAULA_OK;
+}
+
 naula_status journal_list(const char *folder, journal_listing *listing, naula_refusal *refusal) {
     listing->journals = NULL;
     listing->count = 0;
@@ -156,6 +172,7 @@ naula_status journal_list(const char *folder, journal_listing *listing, naula_re
     disk_names_release(names, count);
     if (status == NAULA_OK && listing->count > 1) {
         qsort(listing->journals, listing->count, sizeof *listing->journals, by_sequence_descending);
+        status = refuse_shared_sequence(folder, listing, refusal);
     }
     if (status != NAULA_OK) {
         journal_listing_release(listing);

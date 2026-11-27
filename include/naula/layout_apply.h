@@ -45,8 +45,12 @@ typedef struct naula_apply_options {
 
 /**
  * Applies `plan` in its order, journalled in `<root>/.naula-journal/<sequence>-<UTC yyyymmddThhmmssZ>.jsonl`, the
- * sequence ten digits or more, one past the largest there: journals are ordered by it, never by the clock, which can
- * be set back; the time is only information. The whole plan goes first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
+ * sequence of ten to nineteen digits, one past the largest there: journals are ordered by it, never by the clock, which
+ * can be set back; the time is only information. A root whose journals cannot be put in order refuses every run, every
+ * resume and every search for an unfinished journal: a name of a journal's form whose sequence naula cannot read as
+ * `journal-sequence-invalid`, two journals of one sequence, as a copied journal leaves, as `journal-sequence-duplicate`
+ * naming both. A journal of the largest sequence leaves none for the next run, refused as `journal-sequence-exhausted`.
+ * A journal named in the form before sequences is not read. The whole plan goes first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
  * goes on. Stops at the first step it refuses. A refusal that found the disk exactly at the step's start ends the
  * journal as `stopped`, so a new plan may be applied; one that came after part of a step's change, an allocation that
  * failed, or a process that died leaves it unfinished, and while any journal of the root is unfinished a new run is

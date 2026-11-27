@@ -87,7 +87,8 @@ typedef struct journal_listing {
 
 /**
  * The journals directly in `folder`, the largest sequence first. A name of a journal's form whose sequence cannot be
- * read refuses the listing as `journal-sequence-invalid`, so every run and resume stops until it is moved.
+ * read refuses the listing as `journal-sequence-invalid`, and two journals of one sequence, as a copied journal
+ * leaves, as `journal-sequence-duplicate` naming both, so every run and resume stops until the file is moved.
  */
 naula_status journal_list(const char *folder, journal_listing *listing, naula_refusal *refusal);
 void journal_listing_release(journal_listing *listing);

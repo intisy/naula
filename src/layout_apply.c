@@ -882,11 +882,34 @@ static naula_status check_journal_place(const char *root, const char *journal_fi
     return NAULA_OK;
 }
 
+static naula_status list_journals(const char *root, journal_listing *listing, naula_refusal *refusal) {
+    listing->journals = NULL;
+    listing->count = 0;
+    char *folder = layout_join(root, APPLY_JOURNAL_FOLDER);
+    if (folder == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    naula_status status = journal_list(folder, listing, refusal);
+    naula_memory_release(folder);
+    return status;
+}
+
+/** A journal resumed while the root's journals cannot be put in order, finished or not, might not be the newest. */
+static naula_status refuse_unordered_journals(const char *root, naula_refusal *refusal) {
+    journal_listing listing;
+    naula_status status = list_journals(root, &listing, refusal);
+    journal_listing_release(&listing);
+    return status;
+}
+
 static naula_status resume_contents(const char *journal_file, const naula_apply_options *options,
                                     journal_contents *contents, naula_refusal *refusal) {
     naula_status status = check_journal_place(options->root, journal_file, refusal);
     if (status == NAULA_OK) {
         status = apply_check_root(options->root, 0, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = refuse_unordered_journals(options->root, refusal);
     }
     if (status == NAULA_OK) {
         status = journal_load(journal_file, contents, refusal);
@@ -910,18 +933,6 @@ static const char *last_component(const char *path) {
         }
     }
     return name;
-}
-
-static naula_status list_journals(const char *root, journal_listing *listing, naula_refusal *refusal) {
-    listing->journals = NULL;
-    listing->count = 0;
-    char *folder = layout_join(root, APPLY_JOURNAL_FOLDER);
-    if (folder == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    naula_status status = journal_list(folder, listing, refusal);
-    naula_memory_release(folder);
-    return status;
 }
 
 static naula_status refuse_if_superseded(const char *root, const char *journal_file, naula_refusal *refusal) {

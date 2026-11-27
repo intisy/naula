@@ -1959,6 +1959,43 @@ static void a_journal_sequence_past_the_largest_refuses_the_run(void) {
     finish("sequence-edge");
 }
 
+/**
+ * A copied journal carries its original's sequence, so neither can be read as the newer: the search for an unfinished
+ * journal, a resume of either and a new run all refuse, naming both, and nothing more is changed.
+ */
+static void two_journals_of_one_sequence_refuse_the_run_and_the_resume(void) {
+    fresh("sequence-twice");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("a"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("b"), NULL, NULL);
+    naula_apply_test_stop_at(4);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    char *text = journal_file == NULL ? NULL : read_text(journal_file);
+    const char *own_name = journal_file == NULL ? "(none)" : strrchr(journal_file, '/') + 1;
+    char copy[PATH_SIZE];
+    compose(copy, at(".naula-journal/0000000001-20000101T000000Z.jsonl"), NULL);
+    write_text(copy, text == NULL ? "" : text);
+    char *found = NULL;
+    CHECK(refused_with(naula_journal_unfinished(root, &found, &refusal), "journal-sequence-duplicate"));
+    CHECK(found == NULL);
+    CHECK(strstr(refusal.detail, own_name) != NULL);
+    CHECK(strstr(refusal.detail, "0000000001-20000101T000000Z.jsonl") != NULL);
+    CHECK(journal_file != NULL && refused_with(resume(journal_file), "journal-sequence-duplicate"));
+    CHECK(refused_with(resume(copy), "journal-sequence-duplicate"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("other"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "journal-sequence-duplicate"));
+    CHECK(kind_at(at("b")) == 0);
+    CHECK(kind_at(at("other")) == 0);
+    CHECK(journal_count() == 2);
+    free(text);
+    naula_memory_release(journal_file);
+    finish("sequence-twice");
+}
+
 /** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
 static void lay_out_an_outside_org(const char *outside) {
     char path[PATH_SIZE];
@@ -2256,6 +2293,7 @@ static const named_test TESTS[] = {
     {"writing_the_root_file_takes_the_roots_lock", writing_the_root_file_takes_the_roots_lock},
     {"a_move_never_replaces_an_empty_folder", a_move_never_replaces_an_empty_folder},
     {"a_journal_sequence_past_the_largest_refuses_the_run", a_journal_sequence_past_the_largest_refuses_the_run},
+    {"two_journals_of_one_sequence_refuse_the_run_and_the_resume", two_journals_of_one_sequence_refuse_the_run_and_the_resume},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */
