@@ -1407,6 +1407,56 @@ static void removes_the_links_of_a_renamed_org(void) {
     naula_layout_plan_release(&plan);
 }
 
+static void a_checkout_reached_through_an_existing_link_is_left_alone(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/oldlink/x"));
+    old->archived = 1;
+    old->clean_and_pushed = 1;
+    add_link(&world, ROOT "/oldlink", ROOT "/repos/aaaaaaaaaaaa");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_CLONE, ROOT "/oldlink/x") == NULL);
+    CHECK(find_report(&plan, "under-existing-link", ROOT "/oldlink/x") != NULL);
+    naula_layout_plan_release(&plan);
+
+    start_world(&world);
+    world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
+    world.repos[3].current_path = ROOT "/docs/nested";
+    world.repos[2].current_path = ROOT "/docs";
+    add_link(&world, ROOT "/docs", ROOT "/repos/aaaaaaaaaaaa");
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/docs/nested") == NULL);
+    CHECK(find_report(&plan, "under-existing-link", ROOT "/docs/nested") != NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/docs") == NULL);
+    CHECK(find_report(&plan, "under-existing-link", ROOT "/docs") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void removes_only_links_in_the_places_naula_links(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
+    add_link(&world, ROOT "/views/naula", ROOT "/repos/dddddddddddd");
+    add_link(&world, ROOT "/repos/aaaaaaaaaaaa/siblings/naula", ROOT "/repos/dddddddddddd");
+    add_link(&world, ROOT "/some/repos/x", ROOT "/some/repos/x2");
+    add_link(&world, ROOT "/spisor/shared/deep/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_link(&world, ROOT "/spisor/archive/old", ROOT "/spisor/repos/111111111111");
+    add_link(&world, ROOT "/tools/naula-old", ROOT "/repos/dddddddddddd");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/views/naula") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/repos/aaaaaaaaaaaa/siblings/naula") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/some/repos/x") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/deep/lib") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/archive/old") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/tools/naula-old") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void leaves_links_naula_did_not_make(void) {
     scenario world;
     start_world(&world);
@@ -1698,6 +1748,8 @@ int main(void) {
     removes_the_links_of_a_dropped_org();
     removes_the_links_of_a_renamed_org();
     leaves_links_naula_did_not_make();
+    a_checkout_reached_through_an_existing_link_is_left_alone();
+    removes_only_links_in_the_places_naula_links();
     a_current_path_differing_only_in_case_is_in_place();
     a_checkout_inside_its_own_target_is_left_alone();
     an_extra_naming_an_unknown_or_ambiguous_org_is_reported();

@@ -141,7 +141,8 @@ naula_status layout_place(const naula_layout_input *input, const layout_tree *tr
                           naula_refusal *refusal);
 naula_status layout_refuse_collisions(layout_placements *placements, layout_builder *builder);
 /** Leaves alone a checkout sitting where naula puts its own links and folders, since that path may be a link. */
-naula_status layout_guard_naula_paths(const layout_tree *tree, layout_placements *placements, layout_builder *builder);
+naula_status layout_guard_naula_paths(const naula_layout_input *input, const layout_tree *tree,
+                                      layout_placements *placements, layout_builder *builder);
 naula_status layout_order_moves(layout_placements *placements, layout_builder *builder);
 const char *layout_placement_name(const layout_placement *placement);
 /** Where a report names a repo: where it will be once the plan has run. */

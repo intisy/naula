@@ -395,31 +395,127 @@ static int is_made(const layout_placements *placements, const naula_layout_link 
     return 0;
 }
 
-/** Whether `target` is a folder directly inside a `repos` folder under the root, which only naula's links point at. */
-static int points_into_repos(const char *root, const char *target) {
-    if (!layout_path_strictly_encloses(root, target)) {
+/** A copy with `/` for every separator and no trailing separator. */
+static char *normalized_copy(const char *path) {
+    char *copy = naula_memory_duplicate_text(path);
+    if (copy == NULL) {
+        return NULL;
+    }
+    size_t length = strlen(copy);
+    for (size_t index = 0; index < length; index++) {
+        copy[index] = copy[index] == '\\' ? '/' : copy[index];
+    }
+    while (length > 0 && copy[length - 1] == '/') {
+        copy[--length] = '\0';
+    }
+    return copy;
+}
+
+/** Cuts the last segment off `path` in place and answers it, NULL when there is no separator left. */
+static char *cut_last_segment(char *path) {
+    char *separator = strrchr(path, '/');
+    if (separator == NULL) {
+        return NULL;
+    }
+    *separator = '\0';
+    return separator + 1;
+}
+
+static int has_repos_segment(const char *path) {
+    for (const char *segment = path; *segment != '\0';) {
+        size_t length = strcspn(segment, "/");
+        char name[6] = "";
+        if (length == sizeof name - 1) {
+            memcpy(name, segment, length);
+            if (layout_same_name(name, "repos")) {
+                return 1;
+            }
+        }
+        segment += length + (segment[length] == '/');
+    }
+    return 0;
+}
+
+static int declares_project(const naula_org_declaration *org, const char *org_name, const char *project) {
+    if (org->name != NULL && layout_same_name(org->name, org_name)) {
+        for (size_t index = 0; index < org->project_count; index++) {
+            if (org->project_names[index] != NULL && layout_same_name(org->project_names[index], project)) {
+                return 1;
+            }
+        }
+    }
+    for (size_t index = 0; index < org->suborg_count; index++) {
+        if (declares_project(&org->suborgs[index], org_name, project)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** A project folder of the org laid out at `folder`, or of a held or dropped org that would be named like it. */
+static int is_project_folder_of(const naula_layout_input *input, const layout_tree *tree, const char *folder,
+                                const char *project) {
+    for (size_t index = 0; index < tree->count; index++) {
+        if (layout_path_equal(tree->orgs[index].folder, folder)) {
+            return layout_org_has_project(&tree->orgs[index], project);
+        }
+    }
+    const char *name = layout_basename(folder);
+    for (size_t index = 0; index < input->org_count; index++) {
+        if (declares_project(&input->orgs[index], name, project)) {
+            return 1;
+        }
+    }
+    return declares_project(input->top, name, project);
+}
+
+static int is_inside_a_checkout(const naula_layout_input *input, const char *path) {
+    for (size_t index = 0; index < input->repo_count; index++) {
+        const char *current = input->repos[index].current_path;
+        if (current != NULL && layout_path_strictly_encloses(current, path)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Whether naula could have made `link`: its target is a checkout directly in some org folder's `repos`, and the link
+ * sits where that org folder keeps links, at its top, in a project folder or in `archive`, outside every checkout.
+ */
+static int is_naula_link_place(const naula_layout_input *input, const layout_tree *tree, char *folder,
+                               const char *path) {
+    if (cut_last_segment(folder) == NULL) {
         return 0;
     }
-    size_t end = strlen(target);
-    while (end > 0 && (target[end - 1] == '/' || target[end - 1] == '\\')) {
-        end--;
-    }
-    while (end > 0 && target[end - 1] != '/' && target[end - 1] != '\\') {
-        end--;
-    }
-    size_t parent_end = end > 0 ? end - 1 : 0;
-    size_t parent_start = parent_end;
-    while (parent_start > 0 && target[parent_start - 1] != '/' && target[parent_start - 1] != '\\') {
-        parent_start--;
-    }
-    static const char REPOS[] = "repos";
-    if (parent_end - parent_start != sizeof REPOS - 1) {
+    const char *repos = cut_last_segment(folder);
+    if (repos == NULL || !layout_same_name(repos, "repos") || !layout_path_encloses(tree->root, folder) ||
+        has_repos_segment(layout_below_root(tree->root, folder)) || !layout_path_strictly_encloses(folder, path) ||
+        is_inside_a_checkout(input, path)) {
         return 0;
     }
-    char segment[sizeof REPOS];
-    memcpy(segment, target + parent_start, sizeof REPOS - 1);
-    segment[sizeof REPOS - 1] = '\0';
-    return layout_same_name(segment, REPOS);
+    char *rest = naula_memory_duplicate_text(path + strlen(folder) + 1);
+    if (rest == NULL) {
+        return -1;
+    }
+    const char *name = cut_last_segment(rest);
+    int answer = name == NULL ? !layout_is_reserved(rest)
+                 : strchr(rest, '/') != NULL ? 0
+                                             : layout_same_name(rest, "archive") ||
+                                                   is_project_folder_of(input, tree, folder, rest);
+    naula_memory_release(rest);
+    return answer;
+}
+
+static naula_status is_stale_link(const naula_layout_input *input, const layout_tree *tree,
+                                  const naula_layout_link *link, int *stale) {
+    char *folder = normalized_copy(link->target);
+    char *path = normalized_copy(link->path);
+    int answer = folder == NULL || path == NULL ? -1 : is_naula_link_place(input, tree, folder, path);
+    naula_memory_release(folder);
+    naula_memory_release(path);
+    *stale = answer == 1;
+    return answer < 0 ? NAULA_OUT_OF_MEMORY : NAULA_OK;
 }
 
 static naula_status emit_stale_links(const naula_layout_input *input, const layout_tree *tree,
@@ -427,8 +523,9 @@ static naula_status emit_stale_links(const naula_layout_input *input, const layo
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < input->existing_link_count && status == NAULA_OK; index++) {
         const naula_layout_link *link = &input->existing_links[index];
-        if (layout_path_strictly_encloses(tree->root, link->path) && points_into_repos(tree->root, link->target) &&
-            !is_made(placements, link)) {
+        int stale = 0;
+        status = is_made(placements, link) ? NAULA_OK : is_stale_link(input, tree, link, &stale);
+        if (status == NAULA_OK && stale) {
             status = layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK, link->path, link->target,
                                 NULL);
         }
@@ -580,7 +677,7 @@ static naula_status plan_layout(const naula_layout_input *input, layout_tree *tr
         status = layout_refuse_collisions(placements, builder);
     }
     if (status == NAULA_OK) {
-        status = layout_guard_naula_paths(tree, placements, builder);
+        status = layout_guard_naula_paths(input, tree, placements, builder);
     }
     if (status == NAULA_OK) {
         status = layout_order_moves(placements, builder);

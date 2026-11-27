@@ -465,13 +465,26 @@ static int is_at_naula_path(const layout_tree *tree, const layout_placements *pl
     return 0;
 }
 
-naula_status layout_guard_naula_paths(const layout_tree *tree, layout_placements *placements,
-                                      layout_builder *builder) {
+/** A path through a link reaches whatever the link points at, so nothing at or below one is moved or removed. */
+static int is_through_a_link(const naula_layout_input *input, const char *path, layout_obstacle *obstacle) {
+    for (size_t index = 0; index < input->existing_link_count; index++) {
+        const char *link = input->existing_links[index].path;
+        if (layout_path_encloses(link, path)) {
+            return found(obstacle, "under-existing-link", "it is reached through the link", link);
+        }
+    }
+    return 0;
+}
+
+naula_status layout_guard_naula_paths(const naula_layout_input *input, const layout_tree *tree,
+                                      layout_placements *placements, layout_builder *builder) {
     for (size_t index = 0; index < placements->count; index++) {
         layout_placement *placement = &placements->items[index];
         layout_obstacle obstacle;
-        if (placement->stays || placement->repo->current_path == NULL ||
-            !is_at_naula_path(tree, placements, placement, &obstacle)) {
+        const char *current = placement->repo->current_path;
+        if (placement->stays || current == NULL ||
+            (!is_through_a_link(input, current, &obstacle) &&
+             !is_at_naula_path(tree, placements, placement, &obstacle))) {
             continue;
         }
         naula_status status = block(builder, placement, &obstacle);
