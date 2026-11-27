@@ -494,11 +494,22 @@ const naula_layout_link *layout_unrecorded_link_over(const naula_layout_input *i
     return NULL;
 }
 
-static int is_into_an_unrecorded_link(const naula_layout_input *input, const layout_placement *placement,
-                                      layout_obstacle *obstacle) {
-    const naula_layout_link *link = layout_unrecorded_link_over(input, placement->checkout);
+const naula_layout_link *layout_lasting_link_over(const naula_layout_input *input, const layout_tree *tree,
+                                                  const char *path) {
+    for (size_t index = 0; index < input->existing_link_count && path != NULL; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        if (!tree->removable_links[index] && layout_path_encloses(link->path, path)) {
+            return link;
+        }
+    }
+    return NULL;
+}
+
+static int is_into_a_lasting_link(const naula_layout_input *input, const layout_tree *tree,
+                                  const layout_placement *placement, layout_obstacle *obstacle) {
+    const naula_layout_link *link = layout_lasting_link_over(input, tree, placement->checkout);
     return link != NULL && found(obstacle, "path-occupied",
-                                 "its checkout folder is reached through a link naula has no record of making, at",
+                                 "its checkout folder is reached through a link naula will not remove first, at",
                                  link->path);
 }
 
@@ -508,7 +519,7 @@ static int is_unsafe(const naula_layout_input *input, const layout_tree *tree, c
     if (current != NULL && is_through_a_link(input, current, obstacle)) {
         return 1;
     }
-    return is_into_an_unrecorded_link(input, placement, obstacle) ||
+    return is_into_a_lasting_link(input, tree, placement, obstacle) ||
            (current != NULL && is_at_naula_path(tree, placements, placement, obstacle));
 }
 

@@ -145,8 +145,8 @@ static const char *held_tree_folder(const layout_tree *tree, const char *path) {
 }
 
 /**
- * A checkout holding an org or `repos` folder would take the whole tree along when it moves, and a link naula has no
- * record of making there would put the tree wherever it points.
+ * A checkout holding an org or `repos` folder would take the whole tree along when it moves, and a link still there
+ * when the folders are made would put the tree wherever it points.
  */
 static naula_status refuse_occupied_tree(const naula_layout_input *input, const layout_tree *tree,
                                          naula_refusal *refusal) {
@@ -161,10 +161,11 @@ static naula_status refuse_occupied_tree(const naula_layout_input *input, const 
     }
     for (size_t index = 0; index < input->existing_link_count; index++) {
         const naula_layout_link *link = &input->existing_links[index];
-        const char *held = link->made_by_naula ? NULL : held_tree_folder(tree, link->path);
+        const char *held = tree->removable_links[index] ? NULL : held_tree_folder(tree, link->path);
         if (held != NULL) {
-            naula_refuse(refusal, "path-occupied", LINKED_FIX,
-                         "the link at %s, which naula has no record of making, holds the folder %s", link->path,
+            naula_refuse(refusal, "path-occupied", LINKED_FIX, "the link at %s, which naula %s, holds the folder %s",
+                         link->path,
+                         link->made_by_naula ? "recorded making but cannot remove first" : "has no record of making",
                          held);
             return NAULA_REFUSED;
         }
@@ -372,6 +373,14 @@ static naula_status emit_link(const naula_layout_input *input, const layout_tree
         return NAULA_OUT_OF_MEMORY;
     }
     parent[layout_basename(parent) - parent - 1] = '\0';
+    const naula_layout_link *lasting = layout_lasting_link_over(input, tree, parent);
+    if (lasting != NULL) {
+        naula_memory_release(parent);
+        return layout_report(builder, "path-occupied", placement->link, lasting->path,
+                             "%s gets no link: the folder it goes in is reached through a link naula will not remove "
+                             "first",
+                             layout_placement_name(placement));
+    }
     naula_status status = NAULA_OK;
     if (!layout_path_equal(parent, tree->orgs[placement->org].folder)) {
         status = layout_add(builder, LAYOUT_PHASE_LINK_FOLDERS, 0, NAULA_MAKE_FOLDER, parent, NULL, NULL);
@@ -614,6 +623,101 @@ static naula_status emit_stale_links(const naula_layout_input *input, const layo
     return status;
 }
 
+static naula_status mark_removable_links(const naula_layout_input *input, layout_tree *tree) {
+    size_t count = input->existing_link_count;
+    tree->removable_links = count == 0 ? NULL : naula_memory_allocate(count);
+    if (count > 0 && tree->removable_links == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    for (size_t index = 0; index < count; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        int stale = 0;
+        naula_status status = link->made_by_naula ? is_stale_link(input, tree, link, &stale) : NAULA_OK;
+        if (status != NAULA_OK) {
+            return status;
+        }
+        tree->removable_links[index] = (unsigned char)stale;
+    }
+    return NAULA_OK;
+}
+
+typedef struct layout_link_takers {
+    const naula_org_declaration **items;
+    size_t count;
+} layout_link_takers;
+
+static int is_listed(const layout_link_takers *takers, const naula_org_declaration *declaration) {
+    for (size_t index = 0; index < takers->count; index++) {
+        if (takers->items[index] == declaration) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static naula_status add_link_taker(layout_link_takers *takers, const naula_org_declaration *declaration) {
+    const naula_org_declaration **grown =
+        naula_memory_reallocate(takers->items, (takers->count + 1) * sizeof *takers->items);
+    if (grown == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    takers->items = grown;
+    takers->items[takers->count++] = declaration;
+    return NAULA_OK;
+}
+
+/** Adds each org, not accepted, whose folder is the link of a repo an accepted org holds; `added` when any is new. */
+static naula_status collect_link_takers(const layout_tree *tree, const layout_placements *placements,
+                                        layout_link_takers *takers, int *added) {
+    *added = 0;
+    for (size_t index = 0; index < placements->count; index++) {
+        const layout_placement *placement = &placements->items[index];
+        if (!has_link(placement) || placement->org == LAYOUT_NONE || !tree->orgs[placement->org].accepted) {
+            continue;
+        }
+        for (size_t org = 1; org < tree->count; org++) {
+            const layout_org *taker = &tree->orgs[org];
+            if (taker->accepted || !layout_path_equal(taker->folder, placement->link) ||
+                is_listed(takers, taker->declaration)) {
+                continue;
+            }
+            if (add_link_taker(takers, taker->declaration) != NAULA_OK) {
+                return NAULA_OUT_OF_MEMORY;
+            }
+            *added = 1;
+        }
+    }
+    return NAULA_OK;
+}
+
+/**
+ * Builds the tree and places the repos until no org that is not accepted sits where an accepted org's repo has its
+ * link: leaving such an org out can free an account for another org, whose repos then bring links of their own.
+ */
+static naula_status build_and_place(const naula_layout_input *input, layout_link_takers *takers, layout_tree *tree,
+                                    layout_placements *placements, layout_builder *builder,
+                                    naula_refusal *refusal) {
+    for (;;) {
+        naula_status status = layout_tree_build(input, takers->items, takers->count, tree, builder, refusal);
+        if (status == NAULA_OK) {
+            status = mark_removable_links(input, tree);
+        }
+        if (status == NAULA_OK) {
+            status = layout_place(input, tree, placements, refusal);
+        }
+        int added = 0;
+        if (status == NAULA_OK) {
+            status = collect_link_takers(tree, placements, takers, &added);
+        }
+        if (status != NAULA_OK || !added) {
+            return status;
+        }
+        layout_builder_release(builder);
+        layout_placements_release(placements);
+        layout_tree_release(tree);
+    }
+}
+
 static naula_status report_confirmation(const layout_tree *tree, const layout_placement *placement,
                                         layout_builder *builder) {
     const char *problem = layout_tree_confirmation_problem(tree, placement->repo);
@@ -756,14 +860,11 @@ static naula_status check_input(const naula_layout_input *input, naula_refusal *
     return check_paths(input, refusal);
 }
 
-static naula_status plan_layout(const naula_layout_input *input, layout_tree *tree, layout_placements *placements,
-                                layout_builder *builder, naula_refusal *refusal) {
-    naula_status status = layout_tree_build(input, tree, builder, refusal);
+static naula_status plan_layout(const naula_layout_input *input, layout_link_takers *takers, layout_tree *tree,
+                                layout_placements *placements, layout_builder *builder, naula_refusal *refusal) {
+    naula_status status = build_and_place(input, takers, tree, placements, builder, refusal);
     if (status == NAULA_OK) {
         status = refuse_occupied_tree(input, tree, refusal);
-    }
-    if (status == NAULA_OK) {
-        status = layout_place(input, tree, placements, refusal);
     }
     if (status == NAULA_OK) {
         status = layout_refuse_collisions(placements, builder);
@@ -810,13 +911,15 @@ naula_status naula_layout_plan_make(const naula_layout_input *input, naula_layou
     layout_tree tree;
     layout_placements placements = {NULL, 0};
     layout_builder builder = {NULL, 0, 0};
-    status = plan_layout(input, &tree, &placements, &builder, refusal);
+    layout_link_takers takers = {NULL, 0};
+    status = plan_layout(input, &takers, &tree, &placements, &builder, refusal);
     if (status == NAULA_OK) {
         status = finish(&builder, plan);
     }
     layout_builder_release(&builder);
     layout_placements_release(&placements);
     layout_tree_release(&tree);
+    naula_memory_release(takers.items);
     if (status != NAULA_OK) {
         naula_layout_plan_release(plan);
     }

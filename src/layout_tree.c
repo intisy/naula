@@ -368,12 +368,24 @@ static int takes_the_folder_of(const layout_org *winner, const layout_org *loser
            loser->declaration->name != NULL && layout_same_name(winner->declaration->name, loser->declaration->name);
 }
 
+static int is_link_taker(const layout_tree *tree, const naula_org_declaration *declaration) {
+    for (size_t index = 0; index < tree->link_taker_count; index++) {
+        if (tree->link_takers[index] == declaration) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /** What accepted already owns the folder the org at `index` would take, NULL when nothing does or it is accepted. */
 static const char *folder_owner(const layout_tree *tree, size_t index) {
     const layout_org *org = &tree->orgs[index];
     const char *name = org->declaration->name;
     if (org->accepted || name == NULL) {
         return NULL;
+    }
+    if (is_link_taker(tree, org->declaration)) {
+        return "the link of a repo its parent holds";
     }
     if (layout_is_reserved(name)) {
         return "a folder naula keeps";
@@ -844,9 +856,12 @@ static char *normalized_root(const char *root) {
     return copy;
 }
 
-naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tree, layout_builder *builder,
+naula_status layout_tree_build(const naula_layout_input *input, const naula_org_declaration *const *link_takers,
+                               size_t link_taker_count, layout_tree *tree, layout_builder *builder,
                                naula_refusal *refusal) {
     memset(tree, 0, sizeof *tree);
+    tree->link_takers = link_takers;
+    tree->link_taker_count = link_taker_count;
     tree->repos = input->repos;
     tree->repo_count = input->repo_count;
     if (!declaration_holds_first_shape(input->top)) {
@@ -901,6 +916,7 @@ void layout_tree_release(layout_tree *tree) {
     naula_memory_release(tree->root);
     naula_memory_release(tree->confirmations);
     naula_memory_release(tree->left_out);
+    naula_memory_release(tree->removable_links);
     memset(tree, 0, sizeof *tree);
 }
 

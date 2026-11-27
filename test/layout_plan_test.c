@@ -1587,16 +1587,43 @@ static void an_extra_naming_an_unknown_or_ambiguous_org_is_reported(void) {
     }
 }
 
-static void a_held_org_named_like_a_top_link_takes_the_folder(void) {
+static void an_unaccepted_org_never_takes_the_link_of_a_top_repo(void) {
+    const char *currents[] = {ROOT "/repos/aaaaaaaaaaaa", ROOT "/docs"};
+    for (size_t index = 0; index < 2; index++) {
+        scenario world;
+        start_world(&world);
+        world.orgs[2].name = "docs";
+        world.repos[0].current_path = (char *)currents[index];
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(find_report(&plan, "org-name-taken", ROOT "/docs") != NULL);
+        CHECK(links_to(&plan, ROOT "/docs", ROOT "/repos/aaaaaaaaaaaa"));
+        CHECK(find_report(&plan, "name-collides", NULL) == NULL);
+        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/docs/repos") == NULL);
+        CHECK(writes(&plan, ROOT "/CLAUDE.md", "@docs/RULES.md\n"));
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static naula_home docs_entry_accounts[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "docsorg", NULL, NULL}};
+static naula_org_declaration docs_entry;
+
+static void an_accepted_org_keeps_its_folder_and_the_repo_loses_its_link(void) {
     scenario world;
     start_world(&world);
-    world.orgs[2].name = "docs";
+    docs_entry = declaration("docs", NULL, docs_entry_accounts, NULL);
+    world.top.suborgs = &docs_entry;
+    world.top.suborg_count = 1;
     world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/docs/repos") != NULL);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/docs") == NULL);
     CHECK(find_report(&plan, "name-collides", ROOT "/repos/aaaaaaaaaaaa") != NULL);
+    CHECK(find_report(&plan, "org-name-taken", NULL) == NULL);
     CHECK(writes(&plan, ROOT "/CLAUDE.md", "@repos/aaaaaaaaaaaa/RULES.md\n"));
     naula_layout_plan_release(&plan);
 }
@@ -2036,6 +2063,89 @@ static void a_member_of_naming_a_left_out_org_says_it_was_left_out(void) {
     naula_layout_plan_release(&plan);
 }
 
+static int is_below(const char *path, const char *folder) {
+    size_t length = strlen(folder);
+    return path != NULL && strncmp(path, folder, length) == 0 && (path[length] == '\0' || path[length] == '/');
+}
+
+/** Whether `removed` is removed before every other step that creates something at or below it. */
+static int is_removed_first(const naula_layout_plan *plan, const char *removed) {
+    size_t removal = step_index(plan, NAULA_REMOVE_LINK, removed);
+    if (removal == (size_t)-1) {
+        fprintf(stderr, "  %s is not removed\n", removed);
+        return 0;
+    }
+    size_t created = 0;
+    for (size_t index = 0; index < plan->step_count; index++) {
+        const naula_layout_step *step = &plan->steps[index];
+        int creates = step->kind == NAULA_MAKE_FOLDER || step->kind == NAULA_WRITE_FILE ||
+                      step->kind == NAULA_MAKE_LINK || step->kind == NAULA_MOVE_CHECKOUT;
+        const char *at = step->kind == NAULA_MOVE_CHECKOUT ? step->target : step->path;
+        if (creates && is_below(at, removed)) {
+            created++;
+            if (index < removal) {
+                fprintf(stderr, "  %s is created before %s is removed\n", at, removed);
+                return 0;
+            }
+        }
+    }
+    return created > 0;
+}
+
+static void a_recorded_link_where_an_org_folder_goes_is_removed_first(void) {
+    scenario world;
+    start_world(&world);
+    lab_entry = declaration("lab", NULL, lab_entry_accounts, "RULES.md");
+    world.top.suborgs = &lab_entry;
+    world.top.suborg_count = 1;
+    add_repo(&world, repo_at(hex_of('3'), "lab", "intisy", ROOT "/repos/333333333333"));
+    add_repo(&world, repo_at(hex_of('4'), "bench", "lab", NULL));
+    add_link(&world, ROOT "/lab", ROOT "/repos/333333333333");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/lab/repos") != NULL);
+    CHECK(is_removed_first(&plan, ROOT "/lab"));
+    naula_layout_plan_release(&plan);
+
+    world.links[0].target = "T:/somewhere/else";
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "path-occupied", "a recorded link naula cannot remove first"));
+    CHECK(strstr(refusal.detail, ROOT "/lab") != NULL);
+}
+
+static void a_recorded_link_where_a_project_folder_goes_is_removed_first(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/spisor/shared", ROOT "/spisor/repos/eeeeeeeeeeee");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(links_to(&plan, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee"));
+    CHECK(is_removed_first(&plan, ROOT "/spisor/shared"));
+    naula_layout_plan_release(&plan);
+
+    world.links[0].target = "T:/somewhere/else";
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/shared") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/shared/library") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_recorded_link_naula_cannot_remove_at_a_checkout_folder_blocks_the_repo(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/repos/dddddddddddd", ROOT "/repos/aaaaaaaaaaaa");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/repos/dddddddddddd") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/tools/naula") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/repos/dddddddddddd") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void survives_every_allocation_failure(void) {
     scenario world;
     start_world(&world);
@@ -2127,7 +2237,8 @@ int main(void) {
     a_current_path_differing_only_in_case_is_in_place();
     a_checkout_inside_its_own_target_is_left_alone();
     an_extra_naming_an_unknown_or_ambiguous_org_is_reported();
-    a_held_org_named_like_a_top_link_takes_the_folder();
+    an_unaccepted_org_never_takes_the_link_of_a_top_repo();
+    an_accepted_org_keeps_its_folder_and_the_repo_loses_its_link();
     a_sixty_four_hex_id_collides_on_twelve_hex();
     an_extra_may_name_the_top_org();
     a_strangers_org_file_captures_nothing();
@@ -2150,6 +2261,9 @@ int main(void) {
     no_link_is_removed_through_an_unrecorded_link();
     a_held_org_named_like_a_top_project_or_kept_folder_is_left_out();
     a_member_of_naming_a_left_out_org_says_it_was_left_out();
+    a_recorded_link_where_an_org_folder_goes_is_removed_first();
+    a_recorded_link_where_a_project_folder_goes_is_removed_first();
+    a_recorded_link_naula_cannot_remove_at_a_checkout_folder_blocks_the_repo();
     survives_every_allocation_failure();
     return check_summary("layout_plan_test");
 }

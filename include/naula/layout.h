@@ -62,9 +62,10 @@ typedef struct naula_layout_repo {
  * kept from accounts no held org owns, `extra_orgs[i]` naming the org `extra[i]` is kept in, NULL meaning the top
  * org. `existing_links` are the links found under the root, each `path` pointing at `target`. Only one marked
  * `made_by_naula` is ever removed, and only when the plan does not make it again; one that is not marked is never
- * written through, as the top of this header says. Task 14 must record every
- * link it makes, in its journal or root file, and pass that record back as the flag. First shape ends at
- * `existing_link_count`.
+ * written through, as the top of this header says. Links are removed before any folder is made, so one naula made
+ * where an org, checkout or project folder now goes is gone first; a marked one the plan cannot remove counts as
+ * unmarked for every folder the plan makes at or below it. Task 14 must record every link it makes, in its journal or
+ * root file, and pass that record back as the flag. First shape ends at `existing_link_count`.
  *
  * An org holds an account it names when any repo with its declaring repo's id is homed there (for a sub-org entry, the
  * repo that lists it), or when a repo homed there names that declaring repo in `member_of`; any other account it names
@@ -78,10 +79,12 @@ typedef struct naula_layout_repo {
  * (a confirmation never counts here), or the parent lists its name and that repo is homed in an account the entry
  * names; otherwise it is laid out under the root and reported `parent-not-listing`, and the parent's entry stays. An
  * org at the root by default or refused by its parent never takes the folder of an entry or an accepted org, a project
- * of its parent or a folder naula keeps: it is left out and reported `org-name-taken`; two orgs of equal standing
- * refuse the plan as `name-collides`. Two `orgs` from one declaring repo with different declarations refuse the input
- * as `layout-input-invalid`; an identical one is kept once. A listed sub-org whose declaration the entry accepts is nested by
- * the entry and takes its members from its own declaration, reported `suborg-declares-itself`.
+ * of its parent, a folder naula keeps or the link of a repo an accepted org holds: it is left out and reported
+ * `org-name-taken`; two orgs of equal standing refuse the plan as `name-collides`, and an accepted org's folder takes
+ * a repo's link path, the repo getting no link, reported `name-collides`. Two `orgs` from one declaring repo with
+ * different declarations refuse the input as `layout-input-invalid`; an identical one is kept once. A listed sub-org
+ * whose declaration the entry accepts is nested by the entry and takes its members from its own declaration, reported
+ * `suborg-declares-itself`.
  */
 /**
  * A link found under the root. `made_by_naula` is set only from naula's own record of the links it made (task 14's
@@ -162,13 +165,13 @@ typedef struct naula_layout_plan {
 } naula_layout_plan;
 
 /**
- * Derives the plan for `input`, its steps in the order they are to run: org and `repos` folders, moves, link and
+ * Derives the plan for `input`, its steps in the order they are to run: link removals, org and `repos` folders, moves,
  * clone removals, project and archive folders, the org `CLAUDE.md` files, links, then reports. A repo it cannot place
  * safely is reported and left where it is; the whole plan is refused only when the org tree itself is undefined:
  * `account-held-twice`, `parent-cycle`, `name-collides` or `name-invalid` for an org or project folder, and
- * `path-occupied` for a checkout, or a link naula has no record of making, at or above an org or `repos` folder. A
- * struct smaller than its first shape is refused
- * as `layout-input-invalid`. On anything but NAULA_OK the plan is left empty.
+ * `path-occupied` for a checkout, or a link the plan does not remove first, at or above an org or `repos` folder. A
+ * struct smaller than its first shape is refused as `layout-input-invalid`. On anything but NAULA_OK the plan is left
+ * empty.
  */
 naula_status naula_layout_plan_make(const naula_layout_input *input, naula_layout_plan *plan, naula_refusal *refusal);
 

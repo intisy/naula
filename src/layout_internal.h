@@ -7,10 +7,11 @@
 
 #define LAYOUT_NONE ((size_t)-1)
 
+/** Link removals come first, so a link naula made is gone before a folder is made where it was or below it. */
 typedef enum layout_phase {
-    LAYOUT_PHASE_TREE_FOLDERS = 1,
-    LAYOUT_PHASE_MOVES = 2,
-    LAYOUT_PHASE_LINK_REMOVALS = 3,
+    LAYOUT_PHASE_LINK_REMOVALS = 1,
+    LAYOUT_PHASE_TREE_FOLDERS = 2,
+    LAYOUT_PHASE_MOVES = 3,
     LAYOUT_PHASE_CLONE_REMOVALS = 4,
     LAYOUT_PHASE_LINK_FOLDERS = 5,
     LAYOUT_PHASE_FILES = 6,
@@ -106,9 +107,18 @@ typedef struct layout_tree {
     size_t confirmation_count;
     layout_left_out *left_out;
     size_t left_out_count;
+    const naula_org_declaration *const *link_takers;
+    size_t link_taker_count;
+    unsigned char *removable_links;
 } layout_tree;
 
-naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tree, layout_builder *builder,
+/**
+ * `link_takers` are orgs, not accepted, whose folder an accepted org's repo has its link at; they are left out.
+ * `removable_links[i]`, set once the tree is built, says this plan removes `existing_links[i]` before it makes any
+ * folder.
+ */
+naula_status layout_tree_build(const naula_layout_input *input, const naula_org_declaration *const *link_takers,
+                               size_t link_taker_count, layout_tree *tree, layout_builder *builder,
                                naula_refusal *refusal);
 void layout_tree_release(layout_tree *tree);
 size_t layout_tree_account_owner(const layout_tree *tree, const naula_home *home);
@@ -164,6 +174,9 @@ naula_status layout_refuse_collisions(layout_placements *placements, layout_buil
  * makes, moves to or imports through there would land wherever that link points.
  */
 const naula_layout_link *layout_unrecorded_link_over(const naula_layout_input *input, const char *path);
+/** The link at `path` or above it that is still there when the plan makes folders: unrecorded, or one it keeps. */
+const naula_layout_link *layout_lasting_link_over(const naula_layout_input *input, const layout_tree *tree,
+                                                  const char *path);
 /**
  * Leaves alone a checkout sitting where naula puts its own links and folders, since that path may be a link, and one
  * whose checkout folder is reached through a link naula has no record of making.
