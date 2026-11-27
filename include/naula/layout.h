@@ -1,0 +1,120 @@
+#ifndef NAULA_LAYOUT_H
+#define NAULA_LAYOUT_H
+
+/**
+ * The layout of a root, derived and never written: which folder every org and every repo becomes, as a plan of steps
+ * that nothing here carries out. Every struct is read only up to its `size`; the caller sets it.
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "naula/home.h"
+#include "naula/id.h"
+#include "naula/repo_file.h"
+#include "naula/status.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * One repo the root may hold, as its host and its checkout show it. `primary` with `kind` 0, or a `local:` id, is a
+ * repo with no home. `current_path` is where its checkout is now, NULL when it is not cloned. `clean_and_pushed` says
+ * every commit of the checkout is on a home and nothing is uncommitted; only then may an archived clone be removed.
+ * First shape ends at `current_path`; a struct without `adopted` is read as adopted.
+ */
+typedef struct naula_layout_repo {
+    uint32_t size;
+    naula_id id;
+    char *name;
+    char **topics;
+    size_t topic_count;
+    naula_home primary;
+    int archived;
+    int clean_and_pushed;
+    char *current_path;
+    int adopted;
+} naula_layout_repo;
+
+/**
+ * `top` is the root's top org and `orgs` the other orgs it holds; `dropped` names orgs, a sub-org included, that the
+ * root leaves out (the top org is never dropped). `top_repository` and `org_repositories[i]` are the ids of the repos
+ * declaring `top` and `orgs[i]`, which is how an org's `parent` and its rules file are found. `extra` are single repos
+ * kept from accounts no held org owns, `extra_orgs[i]` naming the org `extra[i]` is kept in, NULL meaning the top
+ * org. First shape ends at `extra_orgs`.
+ */
+typedef struct naula_layout_input {
+    uint32_t size;
+    const char *root;
+    const naula_org_declaration *top;
+    const naula_org_declaration *orgs;
+    size_t org_count;
+    const char *const *dropped;
+    size_t dropped_count;
+    const naula_layout_repo *repos;
+    size_t repo_count;
+    const naula_reference *extra;
+    size_t extra_count;
+    const naula_id *top_repository;
+    const naula_id *org_repositories;
+    const char *const *extra_orgs;
+} naula_layout_input;
+
+/** Enums append only. */
+typedef enum naula_layout_step_kind {
+    NAULA_MAKE_FOLDER = 1,
+    NAULA_WRITE_FILE = 2,
+    NAULA_MAKE_LINK = 3,
+    NAULA_MOVE_CHECKOUT = 4,
+    NAULA_REMOVE_LINK = 5,
+    NAULA_REMOVE_CLONE = 6,
+    NAULA_REPORT = 7
+} naula_layout_step_kind;
+
+/**
+ * One step, each meant to be compared with the disk before it changes anything, so a plan from a laid-out root
+ * changes nothing:
+ * - MAKE_FOLDER `path` makes the folder if it is missing.
+ * - MOVE_CHECKOUT moves the checkout at `path` to `target`.
+ * - REMOVE_LINK removes the link at `path` only while it is a link to `target`, never what it points at.
+ * - REMOVE_CLONE removes the archived checkout at `path`.
+ * - WRITE_FILE gives the file at `path` exactly `content`.
+ * - MAKE_LINK makes `path` a link to `target`, replacing only a link.
+ * - REPORT names what the layout left alone: `code`, the repo or org at `path`, another one involved at `target` or
+ *   NULL, and `content` saying why. `unadopted` and `not-held` are notes; every other code is a refusal.
+ * First shape ends at `code`.
+ */
+typedef struct naula_layout_step {
+    uint32_t size;
+    uint32_t kind;
+    char *path;
+    char *target;
+    char *content;
+    char code[64];
+} naula_layout_step;
+
+/** First shape ends at `step_count`. */
+typedef struct naula_layout_plan {
+    uint32_t size;
+    naula_layout_step *steps;
+    size_t step_count;
+} naula_layout_plan;
+
+/**
+ * Derives the plan for `input`, its steps in the order they are to run: org and `repos` folders, moves, link and
+ * clone removals, project and archive folders, the org `CLAUDE.md` files, links, then reports. A repo it cannot place
+ * safely is reported and left where it is; the whole plan is refused only when the org tree itself is undefined:
+ * `account-held-twice`, `parent-cycle`, `name-collides` or `name-invalid` for an org or project folder, and
+ * `path-occupied` for a checkout holding an org or `repos` folder. A struct smaller than its first shape is refused
+ * as `layout-input-invalid`. On anything but NAULA_OK the plan is left empty.
+ */
+naula_status naula_layout_plan_make(const naula_layout_input *input, naula_layout_plan *plan, naula_refusal *refusal);
+
+void naula_layout_plan_release(naula_layout_plan *plan);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
