@@ -19,6 +19,9 @@ void run_buffer_discard(run_buffer *buffer);
 /** Checks `arguments` and empties `result`; a refusal says why not. */
 naula_status run_begin(const char *const *arguments, naula_run_result *result, naula_refusal *refusal);
 
+/** Refuses input over NAULA_RUN_INPUT_LIMIT. */
+naula_status run_check_input(const char *input, size_t input_length, naula_refusal *refusal);
+
 /** Hands both buffers to `result` as NUL-terminated text, or discards them on running out of memory. */
 naula_status run_finish(naula_run_result *result, run_buffer *output, run_buffer *error, int exit_code);
 

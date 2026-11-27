@@ -12,6 +12,7 @@
 
 typedef struct run_handles {
     HANDLE null_device;
+    HANDLE input_read;
     HANDLE output_read;
     HANDLE output_write;
     HANDLE error_read;
@@ -33,6 +34,7 @@ static void release_handles(run_handles *handles) {
         naula_memory_release(handles->attributes);
     }
     close_handle(&handles->null_device);
+    close_handle(&handles->input_read);
     close_handle(&handles->output_read);
     close_handle(&handles->output_write);
     close_handle(&handles->error_read);
@@ -131,15 +133,34 @@ static int prepare_attributes(run_handles *handles) {
         handles->attributes = NULL;
         return 0;
     }
-    handles->inherited[0] = handles->null_device;
+    handles->inherited[0] = handles->input_read != NULL ? handles->input_read : handles->null_device;
     handles->inherited[1] = handles->output_write;
     handles->inherited[2] = handles->error_write;
     return UpdateProcThreadAttribute(handles->attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles->inherited,
                                      sizeof handles->inherited, NULL, NULL) != 0;
 }
 
-static int prepare(run_handles *handles) {
+/** A pipe already holding all of `input` and closed for writing, its read end inheritable. */
+static int open_input(const char *input, size_t input_length, HANDLE *read_end) {
+    SECURITY_ATTRIBUTES inheritable = {sizeof inheritable, NULL, TRUE};
+    HANDLE write_end = NULL;
+    if (!CreatePipe(read_end, &write_end, &inheritable, PIPE_BYTES)) {
+        *read_end = NULL;
+        return 0;
+    }
+    DWORD written = 0;
+    int complete = SetHandleInformation(write_end, HANDLE_FLAG_INHERIT, 0) &&
+                   (input_length == 0 || (WriteFile(write_end, input, (DWORD)input_length, &written, NULL) &&
+                                          written == (DWORD)input_length));
+    CloseHandle(write_end);
+    return complete;
+}
+
+static int prepare(run_handles *handles, const char *input, size_t input_length) {
     memset(handles, 0, sizeof *handles);
+    if (input != NULL && !open_input(input, input_length, &handles->input_read)) {
+        return 0;
+    }
     handles->null_device = open_null_device();
     if (handles->null_device == INVALID_HANDLE_VALUE) {
         handles->null_device = NULL;
@@ -161,7 +182,7 @@ static int create(const run_inputs *inputs, run_handles *handles, PROCESS_INFORM
     memset(&startup, 0, sizeof startup);
     startup.StartupInfo.cb = sizeof startup;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = handles->null_device;
+    startup.StartupInfo.hStdInput = handles->inherited[0];
     startup.StartupInfo.hStdOutput = handles->output_write;
     startup.StartupInfo.hStdError = handles->error_write;
     startup.lpAttributeList = handles->attributes;
@@ -467,9 +488,13 @@ static naula_status build_inputs(const char *const *arguments, const char *direc
     return out_of_memory ? NAULA_OUT_OF_MEMORY : NAULA_MALFORMED;
 }
 
-naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
-                       naula_run_result *result, naula_refusal *refusal) {
+naula_status naula_run_with_input(const char *const *arguments, const char *directory,
+                                  const char *const *environment, const char *input, size_t input_length,
+                                  naula_run_result *result, naula_refusal *refusal) {
     naula_status status = run_begin(arguments, result, refusal);
+    if (status == NAULA_OK) {
+        status = run_check_input(input, input_length, refusal);
+    }
     if (status != NAULA_OK) {
         return status;
     }
@@ -477,7 +502,7 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
     status = build_inputs(arguments, directory, environment, &inputs, refusal);
     if (status == NAULA_OK) {
         run_handles handles;
-        if (prepare(&handles)) {
+        if (prepare(&handles, input, input_length)) {
             status = run_prepared(&inputs, arguments, directory, &handles, result, refusal);
         } else {
             naula_refuse(refusal, "run-failed", "close some programs and try again", "cannot prepare to run %s",

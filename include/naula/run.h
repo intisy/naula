@@ -33,6 +33,17 @@ typedef struct naula_run_result {
 naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
                        naula_run_result *result, naula_refusal *refusal);
 
+/**
+ * naula_run with `input_length` bytes of `input` on the program's standard input, then end of file; NULL `input` is
+ * naula_run. Input over NAULA_RUN_INPUT_LIMIT is refused as `run-input-too-large`, since it is written before the
+ * program starts and must fit the pipe whatever the system.
+ */
+naula_status naula_run_with_input(const char *const *arguments, const char *directory,
+                                  const char *const *environment, const char *input, size_t input_length,
+                                  naula_run_result *result, naula_refusal *refusal);
+
+#define NAULA_RUN_INPUT_LIMIT 4096
+
 void naula_run_result_release(naula_run_result *result);
 
 #ifdef __cplusplus

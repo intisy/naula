@@ -210,12 +210,12 @@ static naula_status prepare_program(const char *name, const char *const *additio
 }
 
 static void run_child(const char *const *arguments, const char *directory, const child_program *program,
-                      const run_pipe *output, const run_pipe *error, const run_pipe *report) {
-    int null_device = open("/dev/null", O_RDONLY | O_CLOEXEC);
+                      const run_pipe *input, const run_pipe *output, const run_pipe *error, const run_pipe *report) {
+    int standard_input = input->ends[0] >= 0 ? input->ends[0] : open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (directory != NULL && chdir(directory) != 0) {
         report_and_exit(report->ends[1], STAGE_DIRECTORY, errno);
     }
-    if (null_device < 0 || dup2(null_device, 0) < 0 || dup2(output->ends[1], 1) < 0 || dup2(error->ends[1], 2) < 0) {
+    if (standard_input < 0 || dup2(standard_input, 0) < 0 || dup2(output->ends[1], 1) < 0 || dup2(error->ends[1], 2) < 0) {
         report_and_exit(report->ends[1], STAGE_EXEC, errno);
     }
     restore_signals();
@@ -372,9 +372,38 @@ static naula_status refuse_system_failure(const char *what, const char *program,
     return saved == ENOMEM ? NAULA_OUT_OF_MEMORY : NAULA_REFUSED;
 }
 
-naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
-                       naula_run_result *result, naula_refusal *refusal) {
+/**
+ * A pipe already holding all of `input` with its write end closed, so the child reads it and then end of file.
+ *
+ * @implNote Written before the child starts, while this process still holds the read end, so the write can never
+ * raise SIGPIPE; run_check_input keeps it within what every system's pipe holds.
+ */
+static int fill_input(const char *input, size_t input_length, run_pipe *made) {
+    if (!open_pipe(made)) {
+        return 0;
+    }
+    size_t written = 0;
+    while (written < input_length) {
+        ssize_t wrote = write(made->ends[1], input + written, input_length - written);
+        if (wrote < 0 && errno == EINTR) {
+            continue;
+        }
+        if (wrote <= 0) {
+            return 0;
+        }
+        written += (size_t)wrote;
+    }
+    close_descriptor(&made->ends[1]);
+    return 1;
+}
+
+naula_status naula_run_with_input(const char *const *arguments, const char *directory,
+                                  const char *const *environment, const char *input, size_t input_length,
+                                  naula_run_result *result, naula_refusal *refusal) {
     naula_status begun = run_begin(arguments, result, refusal);
+    if (begun == NAULA_OK) {
+        begun = run_check_input(input, input_length, refusal);
+    }
     if (begun != NAULA_OK) {
         return begun;
     }
@@ -383,22 +412,25 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
     if (begun != NAULA_OK) {
         return begun;
     }
+    run_pipe input_pipe = {{-1, -1}};
     run_pipe output = {{-1, -1}};
     run_pipe error = {{-1, -1}};
     run_pipe report = {{-1, -1}};
     naula_status status = NAULA_OK;
-    if (!open_pipe(&output) || !open_pipe(&error) || !open_pipe(&report)) {
+    if ((input != NULL && !fill_input(input, input_length, &input_pipe)) || !open_pipe(&output) ||
+        !open_pipe(&error) || !open_pipe(&report)) {
         status = refuse_system_failure("open a pipe for", arguments[0], refusal);
     } else {
         pid_t child = fork();
         if (child < 0) {
             status = refuse_system_failure("start", arguments[0], refusal);
         } else if (child == 0) {
-            run_child(arguments, directory, &program, &output, &error, &report);
+            run_child(arguments, directory, &program, &input_pipe, &output, &error, &report);
         } else {
             status = run_started(child, &output, &error, &report, arguments, directory, result, refusal);
         }
     }
+    close_pipe(&input_pipe);
     close_pipe(&output);
     close_pipe(&error);
     close_pipe(&report);

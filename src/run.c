@@ -51,6 +51,20 @@ naula_status run_begin(const char *const *arguments, naula_run_result *result, n
     return NAULA_OK;
 }
 
+naula_status run_check_input(const char *input, size_t input_length, naula_refusal *refusal) {
+    if (input != NULL && input_length > NAULA_RUN_INPUT_LIMIT) {
+        naula_refuse(refusal, "run-input-too-large", "pass at most 4096 bytes of input",
+                     "the input is %zu bytes", input_length);
+        return NAULA_MALFORMED;
+    }
+    return NAULA_OK;
+}
+
+naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
+                       naula_run_result *result, naula_refusal *refusal) {
+    return naula_run_with_input(arguments, directory, environment, NULL, 0, result, refusal);
+}
+
 naula_status run_finish(naula_run_result *result, run_buffer *output, run_buffer *error, int exit_code) {
     result->exit_code = exit_code;
     result->output_length = output->length;
