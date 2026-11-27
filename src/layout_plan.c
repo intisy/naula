@@ -117,11 +117,14 @@ static int compare_entries(const void *left_pointer, const void *right_pointer) 
     return compared == 0 ? compare_text(left->step.content, right->step.content) : compared;
 }
 
+/** The top org's folder is the root itself, which every step lies below and the applier takes as given. */
 static naula_status emit_tree_folders(const layout_tree *tree, layout_builder *builder) {
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < tree->count && status == NAULA_OK; index++) {
-        status = layout_add(builder, LAYOUT_PHASE_TREE_FOLDERS, 0, NAULA_MAKE_FOLDER, tree->orgs[index].folder, NULL,
-                            NULL);
+        if (!layout_path_equal(tree->orgs[index].folder, tree->root)) {
+            status = layout_add(builder, LAYOUT_PHASE_TREE_FOLDERS, 0, NAULA_MAKE_FOLDER, tree->orgs[index].folder,
+                                NULL, NULL);
+        }
         if (status == NAULA_OK) {
             status = layout_add(builder, LAYOUT_PHASE_TREE_FOLDERS, 0, NAULA_MAKE_FOLDER,
                                 tree->orgs[index].repos_folder, NULL, NULL);

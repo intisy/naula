@@ -262,6 +262,18 @@ static void nests_a_suborg_under_its_parent(void) {
     naula_layout_plan_release(&plan);
 }
 
+/** Every step lies below the root and the applier takes the root as given, so none makes it. */
+static void plan_never_makes_the_root_folder(void) {
+    scenario world;
+    start_world(&world);
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT) == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/repos") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void a_suborg_holds_its_account_once_a_repo_there_confirms_it(void) {
     scenario world;
     start_world(&world);
@@ -2287,6 +2299,7 @@ static void survives_every_allocation_failure(void) {
 
 int main(void) {
     nests_a_suborg_under_its_parent();
+    plan_never_makes_the_root_folder();
     a_suborg_holds_its_account_once_a_repo_there_confirms_it();
     an_org_holds_an_extra_account_through_a_confirming_repo();
     a_strangers_member_of_confirms_nothing();
