@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -12,6 +13,10 @@
 
 static const char *const JOURNAL_FIX = "check that the root's .naula-journal folder is a real folder naula can write to";
 static const char *const MALFORMED_FIX = "restore the journal naula wrote, or lay the root out again with naula sync";
+static const char *const SEQUENCE_FIX = "move the file naula did not name out of .naula-journal, then run naula sync "
+                                        "again";
+static const char *const EXHAUSTED_FIX = "move the finished journals out of .naula-journal, keeping any unfinished "
+                                         "one, then run naula sync again";
 
 static naula_status refuse_journal(naula_refusal *refusal, const char *path, const char *why) {
     naula_refuse(refusal, "journal-invalid", MALFORMED_FIX, "the journal %s %s", path, why);
@@ -66,16 +71,9 @@ static int is_digit(char character) {
     return character >= '0' && character <= '9';
 }
 
-int journal_name_sequence(const char *name, unsigned long long *sequence) {
-    size_t digits = 0;
-    unsigned long long value = 0;
-    while (is_digit(name[digits]) && digits < JOURNAL_SEQUENCE_DIGITS_LIMIT) {
-        value = value * 10u + (unsigned long long)(name[digits] - '0');
-        digits++;
-    }
-    const char *stamp = name + digits + 1;
-    if (digits < JOURNAL_SEQUENCE_WIDTH || name[digits] != '-' || strlen(stamp) != 16 + 6 ||
-        strcmp(stamp + 16, ".jsonl") != 0 || stamp[8] != 'T' || stamp[15] != 'Z') {
+/** `<UTC yyyymmddThhmmssZ>.jsonl`. */
+static int is_stamp_suffix(const char *stamp) {
+    if (strlen(stamp) != 16 + 6 || strcmp(stamp + 16, ".jsonl") != 0 || stamp[8] != 'T' || stamp[15] != 'Z') {
         return 0;
     }
     for (size_t index = 0; index < 15; index++) {
@@ -83,26 +81,103 @@ int journal_name_sequence(const char *name, unsigned long long *sequence) {
             return 0;
         }
     }
-    *sequence = value;
     return 1;
 }
 
-static naula_status largest_sequence(const char *folder, unsigned long long *largest, naula_refusal *refusal) {
+journal_name_kind journal_name_read(const char *name, unsigned long long *sequence) {
+    size_t digits = 0;
+    while (is_digit(name[digits])) {
+        digits++;
+    }
+    if (digits == 0 || name[digits] != '-' || !is_stamp_suffix(name + digits + 1)) {
+        return JOURNAL_NAME_OTHER;
+    }
+    if (digits < JOURNAL_SEQUENCE_WIDTH || digits > JOURNAL_SEQUENCE_DIGITS_LIMIT) {
+        return JOURNAL_NAME_UNREADABLE;
+    }
+    unsigned long long value = 0;
+    for (size_t index = 0; index < digits; index++) {
+        value = value * 10u + (unsigned long long)(name[index] - '0');
+    }
+    *sequence = value;
+    return JOURNAL_NAME_SEQUENCED;
+}
+
+void journal_listing_release(journal_listing *listing) {
+    for (size_t index = 0; index < listing->count; index++) {
+        naula_memory_release(listing->journals[index].name);
+    }
+    naula_memory_release(listing->journals);
+    listing->journals = NULL;
+    listing->count = 0;
+}
+
+static int by_sequence_descending(const void *left, const void *right) {
+    unsigned long long left_sequence = ((const journal_name *)left)->sequence;
+    unsigned long long right_sequence = ((const journal_name *)right)->sequence;
+    return left_sequence < right_sequence ? 1 : (left_sequence > right_sequence ? -1 : 0);
+}
+
+/** Moves every journal's name out of `names` into `listing`, which has room for all of them. */
+static naula_status take_journals(const char *folder, char **names, size_t count, journal_listing *listing,
+                                  naula_refusal *refusal) {
+    for (size_t index = 0; index < count; index++) {
+        unsigned long long sequence = 0;
+        journal_name_kind kind = journal_name_read(names[index], &sequence);
+        if (kind == JOURNAL_NAME_UNREADABLE) {
+            naula_refuse(refusal, "journal-sequence-invalid", SEQUENCE_FIX,
+                         "%s in %s is named as a journal, with a sequence naula cannot read", names[index], folder);
+            return NAULA_REFUSED;
+        }
+        if (kind == JOURNAL_NAME_SEQUENCED) {
+            listing->journals[listing->count].name = names[index];
+            listing->journals[listing->count].sequence = sequence;
+            listing->count++;
+            names[index] = NULL;
+        }
+    }
+    return NAULA_OK;
+}
+
+naula_status journal_list(const char *folder, journal_listing *listing, naula_refusal *refusal) {
+    listing->journals = NULL;
+    listing->count = 0;
     char **names = NULL;
     size_t count = 0;
     unsigned long error = 0;
-    *largest = 0;
     naula_status status = disk_names(folder, &names, &count, &error);
     if (status == NAULA_REFUSED) {
-        return apply_refuse_disk(refusal, "journal-unwritable", JOURNAL_FIX, "cannot list", folder, error);
+        return apply_refuse_disk(refusal, "root-unreadable", JOURNAL_FIX, "cannot list", folder, error);
     }
-    for (size_t index = 0; status == NAULA_OK && index < count; index++) {
-        unsigned long long sequence = 0;
-        if (journal_name_sequence(names[index], &sequence) && sequence > *largest) {
-            *largest = sequence;
-        }
+    if (status == NAULA_OK && count > 0) {
+        listing->journals = naula_memory_allocate(count * sizeof *listing->journals);
+        status = listing->journals == NULL ? NAULA_OUT_OF_MEMORY : take_journals(folder, names, count, listing, refusal);
     }
     disk_names_release(names, count);
+    if (status == NAULA_OK && listing->count > 1) {
+        qsort(listing->journals, listing->count, sizeof *listing->journals, by_sequence_descending);
+    }
+    if (status != NAULA_OK) {
+        journal_listing_release(listing);
+    }
+    return status;
+}
+
+static naula_status largest_sequence(const char *folder, unsigned long long *largest, naula_refusal *refusal) {
+    journal_listing listing;
+    *largest = 0;
+    naula_status status = journal_list(folder, &listing, refusal);
+    if (status == NAULA_OK && listing.count > 0 && listing.journals[0].sequence >= JOURNAL_SEQUENCE_LARGEST) {
+        naula_refuse(refusal, "journal-sequence-exhausted", EXHAUSTED_FIX,
+                     "the journal %s in %s holds the largest sequence a journal's name carries, so no newer journal "
+                     "can be named",
+                     listing.journals[0].name, folder);
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK && listing.count > 0) {
+        *largest = listing.journals[0].sequence;
+    }
+    journal_listing_release(&listing);
     return status;
 }
 
@@ -115,7 +190,8 @@ static naula_status open_new(const char *folder, journal *journal, naula_refusal
     if (listed != NAULA_OK) {
         return listed;
     }
-    for (int attempt = 1; attempt <= JOURNAL_NAME_ATTEMPTS; attempt++) {
+    for (int attempt = 1; attempt <= JOURNAL_NAME_ATTEMPTS && largest + (unsigned)attempt <= JOURNAL_SEQUENCE_LARGEST;
+         attempt++) {
         char name[64];
         snprintf(name, sizeof name, "%0*llu-%s.jsonl", JOURNAL_SEQUENCE_WIDTH, largest + (unsigned long long)attempt,
                  stamp);

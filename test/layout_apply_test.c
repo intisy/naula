@@ -1912,6 +1912,53 @@ static void a_journal_stamped_in_the_future_never_blocks_a_resume(void) {
     finish("clock-back");
 }
 
+static void write_finished_journal(const char *name) {
+    char text[PATH_SIZE * 2];
+    char path[PATH_SIZE];
+    snprintf(text, sizeof text, "{\"journal\":1,\"root\":\"%s\",\"steps\":0}\n{\"state\":\"finished\"}\n", root);
+    compose(path, at(".naula-journal/"), name, NULL);
+    make_folder(at(".naula-journal"));
+    write_text(path, text);
+}
+
+static size_t journal_count(void) {
+    names found = list_names(at(".naula-journal"));
+    size_t count = 0;
+    for (size_t index = 0; index < found.count; index++) {
+        count += strstr(found.items[index], ".jsonl") != NULL;
+    }
+    release_names(&found);
+    return count;
+}
+
+/**
+ * A journal holding the largest sequence a name can carry leaves none for the next run, which is refused rather than
+ * named past what any listing reads; and a longer sequence, which no listing can order, refuses every run and every
+ * search for an unfinished journal until it is moved.
+ */
+static void a_journal_sequence_past_the_largest_refuses_the_run(void) {
+    fresh("sequence-edge");
+    write_finished_journal("9999999999999999999-20260101T000000Z.jsonl");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("second"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "journal-sequence-exhausted"));
+    CHECK(strstr(refusal.detail, "9999999999999999999-20260101T000000Z.jsonl") != NULL);
+    CHECK(kind_at(at("second")) == 0);
+    CHECK(journal_count() == 1);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    remove_tree(at(".naula-journal/9999999999999999999-20260101T000000Z.jsonl"));
+    write_finished_journal("10000000000000000000-20260101T000000Z.jsonl");
+    CHECK(refused_with(apply_plan(), "journal-sequence-invalid"));
+    CHECK(kind_at(at("second")) == 0);
+    char *journal_file = NULL;
+    CHECK(refused_with(naula_journal_unfinished(root, &journal_file, &refusal), "journal-sequence-invalid"));
+    CHECK(journal_file == NULL);
+    remove_tree(at(".naula-journal/10000000000000000000-20260101T000000Z.jsonl"));
+    write_finished_journal("1-20260101T000000Z.jsonl");
+    CHECK(refused_with(apply_plan(), "journal-sequence-invalid"));
+    finish("sequence-edge");
+}
+
 /** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
 static void lay_out_an_outside_org(const char *outside) {
     char path[PATH_SIZE];
@@ -2208,6 +2255,7 @@ static const named_test TESTS[] = {
     {"a_repointed_recorded_link_is_forgotten_by_the_scan", a_repointed_recorded_link_is_forgotten_by_the_scan},
     {"writing_the_root_file_takes_the_roots_lock", writing_the_root_file_takes_the_roots_lock},
     {"a_move_never_replaces_an_empty_folder", a_move_never_replaces_an_empty_folder},
+    {"a_journal_sequence_past_the_largest_refuses_the_run", a_journal_sequence_past_the_largest_refuses_the_run},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

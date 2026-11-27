@@ -846,8 +846,10 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
     return status;
 }
 
-static int is_newer_name(const char *candidate, const char *best);
-static int is_journal_name(const char *name);
+static int is_journal_name(const char *name) {
+    unsigned long long sequence = 0;
+    return journal_name_read(name, &sequence) == JOURNAL_NAME_SEQUENCED;
+}
 
 static naula_status refuse_journal_place(naula_refusal *refusal, const char *journal_file) {
     naula_refuse(refusal, "journal-elsewhere", "resume a journal naula wrote in the root's own .naula-journal folder",
@@ -910,31 +912,32 @@ static const char *last_component(const char *path) {
     return name;
 }
 
-static naula_status refuse_if_superseded(const char *root, const char *journal_file, naula_refusal *refusal) {
+static naula_status list_journals(const char *root, journal_listing *listing, naula_refusal *refusal) {
+    listing->journals = NULL;
+    listing->count = 0;
     char *folder = layout_join(root, APPLY_JOURNAL_FOLDER);
     if (folder == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
-    char **names = NULL;
-    size_t count = 0;
-    unsigned long error = 0;
-    naula_status status = disk_names(folder, &names, &count, &error);
-    if (status == NAULA_REFUSED) {
-        status = apply_refuse_disk(refusal, "root-unreadable", DISK_FIX, "cannot list", folder, error);
-    }
-    const char *own = last_component(journal_file);
-    for (size_t index = 0; status == NAULA_OK && index < count; index++) {
-        if (is_journal_name(names[index]) && is_newer_name(names[index], own)) {
-            naula_refuse(refusal, "journal-superseded",
-                         "check the disk by hand, then move the older journal out of .naula-journal and lay the root "
-                         "out again",
-                         "%s is older than the journal %s, so its plan may undo a newer layout", journal_file,
-                         names[index]);
-            status = NAULA_REFUSED;
-        }
-    }
-    disk_names_release(names, count);
+    naula_status status = journal_list(folder, listing, refusal);
     naula_memory_release(folder);
+    return status;
+}
+
+static naula_status refuse_if_superseded(const char *root, const char *journal_file, naula_refusal *refusal) {
+    journal_listing listing;
+    naula_status status = list_journals(root, &listing, refusal);
+    unsigned long long own = 0;
+    journal_name_read(last_component(journal_file), &own);
+    if (status == NAULA_OK && listing.count > 0 && listing.journals[0].sequence > own) {
+        naula_refuse(refusal, "journal-superseded",
+                     "check the disk by hand, then move the older journal out of .naula-journal and lay the root "
+                     "out again",
+                     "%s is older than the journal %s, so its plan may undo a newer layout", journal_file,
+                     listing.journals[0].name);
+        status = NAULA_REFUSED;
+    }
+    journal_listing_release(&listing);
     return status;
 }
 
@@ -999,60 +1002,28 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
     return status;
 }
 
-/** Whether `candidate` carries a larger sequence than `best`; both must be journal names. */
-static int is_newer_name(const char *candidate, const char *best) {
-    unsigned long long candidate_sequence = 0;
-    unsigned long long best_sequence = 0;
-    journal_name_sequence(candidate, &candidate_sequence);
-    journal_name_sequence(best, &best_sequence);
-    return candidate_sequence > best_sequence;
-}
-
-static int is_journal_name(const char *name) {
-    unsigned long long sequence = 0;
-    return journal_name_sequence(name, &sequence);
-}
-
-static naula_status unfinished_among(const char *folder, char **names, size_t count, char **journal_file,
+/** The newest journal in `listing` that neither finished nor stopped, read in the listing's order, newest first. */
+static naula_status unfinished_among(const char *folder, const journal_listing *listing, char **journal_file,
                                      naula_refusal *refusal) {
-    unsigned char *tried = naula_memory_allocate(count + 1);
-    if (tried == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    memset(tried, 0, count + 1);
-    naula_status status = NAULA_NOT_FOUND;
-    for (;;) {
-        size_t best = count;
-        for (size_t index = 0; index < count; index++) {
-            if (!tried[index] && is_journal_name(names[index]) &&
-                (best == count || is_newer_name(names[index], names[best]))) {
-                best = index;
-            }
-        }
-        if (best == count) {
-            break;
-        }
-        tried[best] = 1;
-        char *path = layout_join(folder, names[best]);
+    for (size_t index = 0; index < listing->count; index++) {
+        char *path = layout_join(folder, listing->journals[index].name);
         journal_contents contents;
         memset(&contents, 0, sizeof contents);
-        status = path == NULL ? NAULA_OUT_OF_MEMORY : journal_load(path, &contents, refusal);
+        naula_status status = path == NULL ? NAULA_OUT_OF_MEMORY : journal_load(path, &contents, refusal);
         int finished = status == NAULA_OK && (contents.finished || contents.stopped);
         if (status == NAULA_OK) {
             journal_contents_release(&contents);
         }
         if (status == NAULA_OK && !finished) {
             *journal_file = path;
-            break;
+            return NAULA_OK;
         }
         naula_memory_release(path);
         if (status != NAULA_OK) {
-            break;
+            return status;
         }
-        status = NAULA_NOT_FOUND;
     }
-    naula_memory_release(tried);
-    return status;
+    return NAULA_NOT_FOUND;
 }
 
 naula_status naula_journal_unfinished(const char *root, char **journal_file, naula_refusal *refusal) {
@@ -1065,17 +1036,17 @@ naula_status naula_journal_unfinished(const char *root, char **journal_file, nau
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
     status = disk_kind_of(folder, &kind, &error);
-    char **names = NULL;
-    size_t count = 0;
-    if (status == NAULA_OK && kind == DISK_FOLDER) {
-        status = disk_names(folder, &names, &count, &error);
-    }
     if (status == NAULA_REFUSED) {
-        status = apply_refuse_disk(refusal, "root-unreadable", DISK_FIX, "cannot list", folder, error);
-    } else if (status == NAULA_OK) {
-        status = unfinished_among(folder, names, count, journal_file, refusal);
+        status = apply_refuse_disk(refusal, "root-unreadable", DISK_FIX, "cannot read", folder, error);
     }
-    disk_names_release(names, count);
+    journal_listing listing = {NULL, 0};
+    if (status == NAULA_OK && kind == DISK_FOLDER) {
+        status = journal_list(folder, &listing, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = unfinished_among(folder, &listing, journal_file, refusal);
+    }
+    journal_listing_release(&listing);
     naula_memory_release(folder);
     return status;
 }

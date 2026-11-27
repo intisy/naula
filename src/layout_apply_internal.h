@@ -56,12 +56,41 @@ typedef struct journal {
 
 #define JOURNAL_SEQUENCE_WIDTH 10
 #define JOURNAL_SEQUENCE_DIGITS_LIMIT 19
+#define JOURNAL_SEQUENCE_LARGEST 9999999999999999999ull
+
+typedef enum journal_name_kind {
+    JOURNAL_NAME_OTHER = 0,
+    JOURNAL_NAME_SEQUENCED = 1,
+    JOURNAL_NAME_UNREADABLE = 2
+} journal_name_kind;
 
 /**
- * The sequence a journal's name `<sequence>-<UTC yyyymmddThhmmssZ>.jsonl` carries, at least 10 digits; 0 when `name`
- * is no journal's. Journals are ordered by it and never by the time, which a clock set back would reorder.
+ * Reads a name of a journal's form, `<sequence>-<UTC yyyymmddThhmmssZ>.jsonl`: SEQUENCED, with `sequence` set, when the
+ * sequence has 10 to 19 digits, which always fits; UNREADABLE when it has fewer or more, which no listing may pass
+ * over as no journal; OTHER for any other name. Journals are ordered by the sequence and never by the time, which a
+ * clock set back would reorder.
+ *
+ * @implNote A journal named in the form before sequences, `<UTC yyyymmddThhmmssZ>.jsonl`, is OTHER and never read,
+ * since naula supports no outdated form of its own files.
  */
-int journal_name_sequence(const char *name, unsigned long long *sequence);
+journal_name_kind journal_name_read(const char *name, unsigned long long *sequence);
+
+typedef struct journal_name {
+    char *name;
+    unsigned long long sequence;
+} journal_name;
+
+typedef struct journal_listing {
+    journal_name *journals;
+    size_t count;
+} journal_listing;
+
+/**
+ * The journals directly in `folder`, the largest sequence first. A name of a journal's form whose sequence cannot be
+ * read refuses the listing as `journal-sequence-invalid`, so every run and resume stops until it is moved.
+ */
+naula_status journal_list(const char *folder, journal_listing *listing, naula_refusal *refusal);
+void journal_listing_release(journal_listing *listing);
 
 /** Creates a new journal for `plan` at `root`, holding the root and every step before any step runs. */
 naula_status journal_start(const char *root, const naula_layout_plan *plan, journal *journal, naula_refusal *refusal);
