@@ -56,19 +56,19 @@ int layout_same_repository(const naula_id *left, const naula_id *right);
 int layout_reference_names(const naula_reference *reference, const naula_id *id, const naula_home *primary);
 
 /**
- * `declarer` is the primary home of the repo that declares the org, an account the org holds without confirmation;
- * NULL when that repo is not among the root's repos. `rules_repository` is that declaring repo, which a `memberOf`
- * names to confirm another account. `not_listing` marks an org laid out under the root because its parent does not
- * list it.
+ * `rules_repository` is the repo that declares the org: an account any input repo with that id is homed in is held
+ * without confirmation, and a `memberOf` names that repo to confirm another account. `not_listing` marks an org laid
+ * out under the root because its parent does not accept it; `replaces_entry` one that takes the place of its parent's
+ * `suborgs` entry of the same name.
  */
 typedef struct layout_org {
     const naula_org_declaration *declaration;
     const naula_id *repository;
     const naula_id *rules_repository;
-    const naula_home *declarer;
     size_t parent;
     int is_top;
     int not_listing;
+    int replaces_entry;
     char *folder;
     char *repos_folder;
 } layout_org;
@@ -80,6 +80,8 @@ typedef struct layout_confirmation {
 } layout_confirmation;
 
 typedef struct layout_tree {
+    const naula_layout_repo *repos;
+    size_t repo_count;
     char *root;
     layout_org *orgs;
     size_t count;

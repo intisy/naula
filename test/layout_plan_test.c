@@ -1047,6 +1047,73 @@ static void plan_is_stable_for_unchanged_input(void) {
     naula_layout_plan_release(&first);
 }
 
+static void insert_first(scenario *world, naula_layout_repo repo) {
+    memmove(&world->repos[1], &world->repos[0], world->repo_count * sizeof world->repos[0]);
+    world->repos[0] = repo;
+    world->repo_count++;
+}
+
+static void a_copy_of_a_declaring_repo_elsewhere_takes_no_account(void) {
+    for (int first = 0; first < 2; first++) {
+        scenario world;
+        start_world(&world);
+        world.repos[4].member_of = &spisor_docs_reference;
+        naula_layout_repo copy = repo_at(hex_of('b'), "docs", "evil", NULL);
+        if (first) {
+            insert_first(&world, copy);
+        } else {
+            add_repo(&world, copy);
+        }
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(find_report(&plan, "account-not-owned", ROOT "/spisor") == NULL);
+        CHECK(links_to(&plan, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee"));
+        CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static void plan_does_not_depend_on_input_order_with_a_copy(void) {
+    scenario before;
+    start_world(&before);
+    insert_first(&before, repo_at(hex_of('b'), "docs", "evil", NULL));
+    scenario after;
+    start_world(&after);
+    add_repo(&after, repo_at(hex_of('b'), "docs", "evil", NULL));
+    naula_layout_plan first;
+    naula_layout_plan last;
+    naula_refusal refusal;
+    CHECK(plan_world(&before, &first, &refusal) == NAULA_OK);
+    CHECK(plan_world(&after, &last, &refusal) == NAULA_OK);
+    CHECK(plans_equal(&first, &last));
+    naula_layout_plan_release(&first);
+    naula_layout_plan_release(&last);
+}
+
+static naula_home only_stranger_account[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "stranger", NULL, NULL}};
+
+static void a_stranger_named_like_a_listed_suborg_lands_at_the_root(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    world.repos[4].current_path = ROOT "/spisor/forebay/repos/ffffffffffff";
+    world.orgs[world.org_count] = declaration("forebay", &spisor_docs_reference, only_stranger_account, "RULES.md");
+    world.org_repositories[world.org_count++] = git_id(hex_of('7'));
+    add_repo(&world, repo_at(hex_of('7'), "records", "stranger", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "parent-not-listing", ROOT "/forebay") != NULL);
+    CHECK(find_report(&plan, "suborg-declares-itself", NULL) == NULL);
+    CHECK(writes(&plan, ROOT "/spisor/forebay/CLAUDE.md", "@../docs/forebay/CLAUDE.md\n"));
+    CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/forebay/repos/ffffffffffff") == NULL);
+    CHECK(links_to(&plan, ROOT "/forebay/records", ROOT "/forebay/repos/777777777777"));
+    naula_layout_plan_release(&plan);
+}
+
 static void plan_does_not_depend_on_input_order(void) {
     scenario world;
     start_world(&world);
@@ -1565,6 +1632,9 @@ int main(void) {
     refuses_a_checkout_holding_an_org_folder();
     plan_is_stable_for_unchanged_input();
     plan_does_not_depend_on_input_order();
+    plan_does_not_depend_on_input_order_with_a_copy();
+    a_copy_of_a_declaring_repo_elsewhere_takes_no_account();
+    a_stranger_named_like_a_listed_suborg_lands_at_the_root();
     refuses_an_unclean_root_or_current_path();
     a_held_repo_outside_the_root_is_left_alone();
     a_filesystem_root_keeps_its_slash();
