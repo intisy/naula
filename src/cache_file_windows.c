@@ -6,68 +6,11 @@
 
 #include "cache_internal.h"
 #include "naula/memory.h"
+#include "wide_path.h"
 
 #define CACHE_FILE_LIMIT (1024 * 1024)
 #define WRITE_CHUNK 65536u
 #define PATH_TEXT_SIZE 4096
-
-static naula_status widen(const char *text, wchar_t **wide) {
-    *wide = NULL;
-    int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
-    if (count <= 0) {
-        return NAULA_REFUSED;
-    }
-    *wide = naula_memory_allocate((size_t)count * sizeof **wide);
-    if (*wide == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, *wide, count) != count) {
-        naula_memory_release(*wide);
-        *wide = NULL;
-        return NAULA_REFUSED;
-    }
-    return NAULA_OK;
-}
-
-static naula_status prefixed(const wchar_t *full, wchar_t **wide) {
-    int already = full[0] == L'\\' && full[1] == L'\\' && (full[2] == L'?' || full[2] == L'.');
-    int unc = !already && full[0] == L'\\' && full[1] == L'\\';
-    const wchar_t *prefix = already ? L"" : (unc ? L"\\\\?\\UNC\\" : L"\\\\?\\");
-    const wchar_t *rest = unc ? full + 2 : full;
-    size_t prefix_length = wcslen(prefix);
-    size_t rest_length = wcslen(rest);
-    *wide = naula_memory_allocate((prefix_length + rest_length + 1) * sizeof **wide);
-    if (*wide == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    wmemcpy(*wide, prefix, prefix_length);
-    wmemcpy(*wide + prefix_length, rest, rest_length + 1);
-    return NAULA_OK;
-}
-
-/**
- * A path as Windows opens it past MAX_PATH: made absolute, then given the `\\?\` prefix, since a record under a deep
- * cache folder named for a 64 hex id passes 260 characters, where a path without the prefix is refused.
- */
-static naula_status widen_path(const char *path, wchar_t **wide) {
-    wchar_t *plain = NULL;
-    *wide = NULL;
-    naula_status status = widen(path, &plain);
-    if (status != NAULA_OK) {
-        return status;
-    }
-    DWORD needed = GetFullPathNameW(plain, 0, NULL, NULL);
-    wchar_t *full = needed == 0 ? NULL : naula_memory_allocate((size_t)needed * sizeof *full);
-    if (needed == 0 || full == NULL) {
-        naula_memory_release(plain);
-        return needed == 0 ? NAULA_REFUSED : NAULA_OUT_OF_MEMORY;
-    }
-    DWORD written = GetFullPathNameW(plain, needed, full, NULL);
-    naula_memory_release(plain);
-    status = written == 0 || written >= needed ? NAULA_REFUSED : prefixed(full, wide);
-    naula_memory_release(full);
-    return status;
-}
 
 static naula_status read_handle(HANDLE file, uint8_t **bytes, size_t *length) {
     LARGE_INTEGER size;
@@ -100,7 +43,7 @@ naula_status naula_cache_file_read(const char *path, uint8_t **bytes, size_t *le
     wchar_t *wide = NULL;
     *bytes = NULL;
     *length = 0;
-    naula_status status = widen_path(path, &wide);
+    naula_status status = wide_path(path, &wide);
     if (status != NAULA_OK) {
         return status;
     }
@@ -157,15 +100,15 @@ static naula_status widen_paths(const char *directory, const char *path, replace
                  (long)InterlockedIncrement(&counter)) >= (int)sizeof temporary) {
         return NAULA_REFUSED;
     }
-    naula_status status = widen_path(directory, &paths->directory);
+    naula_status status = wide_path(directory, &paths->directory);
     if (status == NAULA_OK) {
-        status = widen_path(identities, &paths->identities);
+        status = wide_path(identities, &paths->identities);
     }
     if (status == NAULA_OK) {
-        status = widen_path(temporary, &paths->temporary);
+        status = wide_path(temporary, &paths->temporary);
     }
     if (status == NAULA_OK) {
-        status = widen_path(path, &paths->target);
+        status = wide_path(path, &paths->target);
     }
     return status;
 }
@@ -271,7 +214,7 @@ naula_status naula_cache_file_names(const char *directory, char ***names, size_t
     if (snprintf(identities, sizeof identities, "%s/identities", directory) >= (int)sizeof identities) {
         return NAULA_OK;
     }
-    naula_status status = widen_path(identities, &wide);
+    naula_status status = wide_path(identities, &wide);
     if (status != NAULA_OK) {
         return status == NAULA_OUT_OF_MEMORY ? status : NAULA_OK;
     }
