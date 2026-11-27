@@ -227,9 +227,8 @@ static const layout_placement *rules_holder(const layout_placements *placements,
     return NULL;
 }
 
-/** One import line, through the rules repo's link, or its checkout when the link was refused. */
-static char *import_line(const layout_tree *tree, const layout_org *org, const layout_placement *holder) {
-    const char *reached = holder->link != NULL ? holder->link : holder->checkout;
+/** One import line, through `reached`: the rules repo's link, or its checkout when the link cannot be trusted. */
+static char *import_line(const layout_tree *tree, const layout_org *org, const char *reached) {
     char *relative =
         layout_relative(layout_below_root(tree->root, org->folder), layout_below_root(tree->root, reached));
     char *through = relative == NULL ? NULL : layout_join(relative, org->declaration->rules);
@@ -254,16 +253,35 @@ static const char *occupant(const layout_placements *placements, const char *pat
     return NULL;
 }
 
-static naula_status emit_rules_file(const layout_tree *tree, const layout_placements *placements,
-                                    const layout_org *org, layout_builder *builder) {
+static const naula_layout_link *existing_link_at(const naula_layout_input *input, const char *path, int made_by_naula);
+
+/**
+ * The rules are imported through the link only when naula will make it there itself; a link naula has no record of,
+ * or a checkout at that path, could point anywhere, and the import would load whatever rules it points at. A rules
+ * repo that is not cloned has no checkout to fall back on, so then nothing is imported at all.
+ */
+static const char *rules_path(const naula_layout_input *input, const layout_placements *placements,
+                              const layout_placement *holder) {
+    int link_is_naulas = holder->link != NULL && existing_link_at(input, holder->link, 0) == NULL &&
+                         occupant(placements, holder->link) == NULL;
+    if (link_is_naulas) {
+        return holder->link;
+    }
+    return holder->repo->current_path == NULL ? NULL : holder->checkout;
+}
+
+static naula_status emit_rules_file(const naula_layout_input *input, const layout_tree *tree,
+                                    const layout_placements *placements, const layout_org *org,
+                                    layout_builder *builder) {
     char *path = layout_join(org->folder, "CLAUDE.md");
     if (path == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
     const layout_placement *holder = rules_holder(placements, org->rules_repository);
+    const char *reached = holder == NULL ? NULL : rules_path(input, placements, holder);
     const char *in_the_way = occupant(placements, path);
     naula_status status;
-    if (holder == NULL) {
+    if (reached == NULL) {
         status = layout_report(builder, "rules-repo-missing", org->folder, NULL,
                                "the repo holding the rules of %s is not laid out in this root, so its CLAUDE.md is "
                                "not written",
@@ -272,7 +290,7 @@ static naula_status emit_rules_file(const layout_tree *tree, const layout_placem
         status = layout_report(builder, "path-occupied", path, in_the_way, "the CLAUDE.md of %s sits in a checkout",
                                org->declaration->name == NULL ? "the top org" : org->declaration->name);
     } else {
-        char *line = import_line(tree, org, holder);
+        char *line = import_line(tree, org, reached);
         status = line == NULL ? NAULA_OUT_OF_MEMORY
                               : layout_add(builder, LAYOUT_PHASE_FILES, 0, NAULA_WRITE_FILE, path, NULL, line);
         naula_memory_release(line);
@@ -281,12 +299,12 @@ static naula_status emit_rules_file(const layout_tree *tree, const layout_placem
     return status;
 }
 
-static naula_status emit_rules_files(const layout_tree *tree, const layout_placements *placements,
-                                     layout_builder *builder) {
+static naula_status emit_rules_files(const naula_layout_input *input, const layout_tree *tree,
+                                     const layout_placements *placements, layout_builder *builder) {
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < tree->count && status == NAULA_OK; index++) {
         if (tree->orgs[index].declaration->rules != NULL) {
-            status = emit_rules_file(tree, placements, &tree->orgs[index], builder);
+            status = emit_rules_file(input, tree, placements, &tree->orgs[index], builder);
         }
     }
     return status;
@@ -728,7 +746,7 @@ static naula_status plan_layout(const naula_layout_input *input, layout_tree *tr
         status = emit_placements(input, tree, placements, builder);
     }
     if (status == NAULA_OK) {
-        status = emit_rules_files(tree, placements, builder);
+        status = emit_rules_files(input, tree, placements, builder);
     }
     if (status == NAULA_OK) {
         status = emit_stale_links(input, tree, placements, builder);

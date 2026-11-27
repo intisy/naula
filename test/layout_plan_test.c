@@ -1506,6 +1506,28 @@ static void a_foreign_link_where_naula_links_is_reported_and_left(void) {
     }
 }
 
+static void rules_never_load_through_a_foreign_link(void) {
+    const char *targets[] = {ROOT "/spisor/repos/bbbbbbbbbbbb", "T:/evil/rules"};
+    for (size_t index = 0; index < 2; index++) {
+        scenario world;
+        start_world(&world);
+        world.repos[2].current_path = ROOT "/spisor/repos/bbbbbbbbbbbb";
+        add_foreign_link(&world, ROOT "/spisor/docs", targets[index]);
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(writes(&plan, ROOT "/spisor/CLAUDE.md", "@repos/bbbbbbbbbbbb/RULES.md\n"));
+        CHECK(writes(&plan, ROOT "/spisor/forebay/CLAUDE.md", "@../repos/bbbbbbbbbbbb/forebay/CLAUDE.md\n"));
+        naula_layout_plan_release(&plan);
+
+        world.repos[2].current_path = NULL;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/spisor/CLAUDE.md") == NULL);
+        CHECK(find_report(&plan, "rules-repo-missing", ROOT "/spisor") != NULL);
+        naula_layout_plan_release(&plan);
+    }
+}
+
 static void leaves_links_naula_did_not_make(void) {
     scenario world;
     start_world(&world);
@@ -1569,6 +1591,7 @@ static void a_held_org_named_like_a_top_link_takes_the_folder(void) {
     scenario world;
     start_world(&world);
     world.orgs[2].name = "docs";
+    world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
@@ -1937,6 +1960,7 @@ int main(void) {
     leaves_links_naula_did_not_make();
     removes_only_links_naula_recorded_making();
     a_foreign_link_where_naula_links_is_reported_and_left();
+    rules_never_load_through_a_foreign_link();
     a_checkout_reached_through_an_existing_link_is_left_alone();
     removes_only_links_in_the_places_naula_links();
     a_current_path_differing_only_in_case_is_in_place();
