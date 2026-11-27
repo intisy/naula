@@ -2,6 +2,9 @@
 #include <windows.h>
 #else
 #define _POSIX_C_SOURCE 200809L
+#ifdef __linux__
+#define _GNU_SOURCE
+#endif
 #include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -2562,19 +2565,28 @@ static void a_file_bind_mounted_inside_a_clone_is_never_removed(void) {
  * Linux before 5.8 has no mount id in statx; the one a file handle carries tells every mount apart there as well. A
  * test folder on a file system that names no file by handle, as overlayfs without nfs_export, cannot show it.
  */
+static int names_files_by_handle(const char *path) {
+    _Alignas(struct file_handle) unsigned char room[sizeof(struct file_handle) + MAX_HANDLE_SZ];
+    struct file_handle *handle = (struct file_handle *)room;
+    handle->handle_bytes = MAX_HANDLE_SZ;
+    int mount_id = 0;
+    return name_to_handle_at(AT_FDCWD, path, handle, &mount_id, 0) == 0;
+}
+
 static void mounts_inside_a_clone_are_told_apart_without_statx(void) {
+    if (!names_files_by_handle(base)) {
+        printf("mounts_inside_a_clone_are_told_apart_without_statx: skipped, the test folder's file system names no "
+               "file by handle\n");
+        return;
+    }
     fresh("by-handle");
     make_checkout(at("clone"), "clone");
     plan_start();
     plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
     naula_disk_test_mount_ids(0, 1);
     naula_status status = apply_plan();
-    if (status == NAULA_REFUSED && strcmp(refusal.code, "mount-unverifiable") == 0) {
-        printf("mounts_inside_a_clone_are_told_apart_without_statx: skipped, the test folder's file system names no "
-               "file by handle\n");
-        naula_disk_test_mount_ids(1, 1);
-        finish("by-handle");
-        return;
+    if (status != NAULA_OK) {
+        fprintf(stderr, "removing a clone by file handle mount ids: %s %s\n", refusal.code, refusal.detail);
     }
     CHECK(status == NAULA_OK);
     CHECK(kind_at(at("clone")) == 0);
