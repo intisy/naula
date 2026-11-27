@@ -13,8 +13,8 @@
  * Before any change, every step is checked against the disk: no component of its `path` or `target` below the root
  * may be a link or other reparse point, except the link a MAKE_LINK replaces or a REMOVE_LINK removes. A step that
  * finds the disk already as it asks changes nothing, so a plan applied twice changes nothing the second time. A step
- * whose `path` or `target` has a segment below the root that ends in a dot or a space, or holds `~`, is refused as
- * `apply-input-invalid`, since Windows would open another entry than the one it names.
+ * whose `path` or `target` names `.naula-journal` or `.naula.json` is refused as `apply-input-invalid`, on Windows
+ * also by a name Windows opens as one of them: with a trailing dot or space, or as an 8.3 alias such as `NAULA-~1`.
  */
 
 #include <stddef.h>

@@ -85,36 +85,61 @@ static int is_separator(char character) {
     return character == '/' || character == '\\';
 }
 
-/** A path below the root that names naula's own files there, which no step may touch. */
+#ifdef _WIN32
+#define WINDOWS_ALIASES 1
+#else
+#define WINDOWS_ALIASES 0
+#endif
+
+static int is_hex_digit(char character) {
+    return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') ||
+           (character >= 'A' && character <= 'F');
+}
+
+/**
+ * Whether `first` could be the 8.3 alias Windows gives `.naula-journal` or `.naula.json`: one to six characters of
+ * `NAULA-`, or `NA` and four hex digits once many names collide, then `~` and a digit.
+ */
+static int is_naula_short_alias(const char *first) {
+    size_t prefix = strcspn(first, "~");
+    if (first[prefix] != '~' || prefix == 0 || prefix > 6 || first[prefix + 1] < '0' || first[prefix + 1] > '9') {
+        return 0;
+    }
+    char base[7];
+    char wanted[7] = "NAULA-";
+    memcpy(base, first, prefix);
+    base[prefix] = '\0';
+    wanted[prefix] = '\0';
+    if (layout_same_name(base, wanted)) {
+        return 1;
+    }
+    char head[3] = {base[0], base[1], '\0'};
+    return prefix == 6 && layout_same_name(head, "NA") && is_hex_digit(base[2]) && is_hex_digit(base[3]) &&
+           is_hex_digit(base[4]) && is_hex_digit(base[5]);
+}
+
+/**
+ * A path below the root that names naula's own files there, which no step may touch. On Windows that includes the
+ * names Windows opens as them: a trailing dot or space is dropped (`.naula-journal.`), and an 8.3 alias stands in.
+ */
 static int names_naula_files(const char *below) {
     size_t length = strcspn(below, "/\\");
+    while (WINDOWS_ALIASES && length > 0 && (below[length - 1] == '.' || below[length - 1] == ' ')) {
+        length--;
+    }
     char first[32];
     if (length >= sizeof first) {
         return 0;
     }
     memcpy(first, below, length);
     first[length] = '\0';
-    return layout_same_name(first, APPLY_JOURNAL_FOLDER) || layout_same_name(first, ".naula.json");
-}
-
-/**
- * Whether a segment below the root could name another entry than it reads as: Windows drops a trailing dot or space
- * (`.naula-journal.` opens `.naula-journal`), and `~` is how an 8.3 alias such as `NAULA-~1` is spelled.
- */
-static int has_aliasing_segment(const char *below) {
-    for (const char *character = below; *character != '\0'; character++) {
-        int ends_segment = character[1] == '\0' || is_separator(character[1]);
-        if (*character == '~' || (ends_segment && (*character == '.' || *character == ' '))) {
-            return 1;
-        }
-    }
-    return 0;
+    return layout_same_name(first, APPLY_JOURNAL_FOLDER) || layout_same_name(first, ".naula.json") ||
+           (WINDOWS_ALIASES && is_naula_short_alias(first));
 }
 
 static int is_usable_path(const char *root, const char *path) {
     const char *below = path == NULL ? NULL : apply_below(root, path);
-    return below != NULL && layout_is_clean_absolute(path) && !has_aliasing_segment(below) &&
-           !names_naula_files(below);
+    return below != NULL && layout_is_clean_absolute(path) && !names_naula_files(below);
 }
 
 static naula_status refuse_input(naula_refusal *refusal, const char *why, size_t index) {
