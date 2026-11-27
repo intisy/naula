@@ -9,8 +9,11 @@
  * Every path is absolute (`/`, or a drive letter and a separator) with no empty, `.` or `..` segment and no `:`
  * past the drive, or the input is refused as `layout-input-invalid`; the root is a folder, never `/` or a whole drive.
  * A checkout's `current_path` must name the real folder, never a link to it or a path through one: the plan cannot
- * see the disk, so it leaves alone every checkout at or below an `existing_links` path, and the applier refuses any
- * step whose path has a link as any component below the root.
+ * see the disk, so it leaves alone every checkout at or below an `existing_links` path. A link without
+ * `made_by_naula` at or above any path the plan would write, make, move to, remove or import through makes that step
+ * `path-occupied`: it is skipped with everything below it, and the plan is refused when the link holds an org or
+ * `repos` folder. The applier checks every component of both a step's `path` and its `target` below the root and
+ * refuses a step that reaches through a link, except the link a MAKE_LINK replaces or a REMOVE_LINK removes.
  *
  * The trust model rests on `naula_layout_repo.primary`: an org holds an account because a repo is homed there, so
  * `primary` must be the home the provider verified, the account the host answered for that very repository, never
@@ -58,8 +61,8 @@ typedef struct naula_layout_repo {
  * declaring `top` and `orgs[i]`, which is how an org's `parent` and its rules file are found. `extra` are single repos
  * kept from accounts no held org owns, `extra_orgs[i]` naming the org `extra[i]` is kept in, NULL meaning the top
  * org. `existing_links` are the links found under the root, each `path` pointing at `target`. Only one marked
- * `made_by_naula` is ever removed, and only when the plan does not make it again; one that is not marked and sits
- * where the plan would make a link is reported `path-occupied` and nothing is made there. Task 14 must record every
+ * `made_by_naula` is ever removed, and only when the plan does not make it again; one that is not marked is never
+ * written through, as the top of this header says. Task 14 must record every
  * link it makes, in its journal or root file, and pass that record back as the flag. First shape ends at
  * `existing_link_count`.
  *
@@ -162,7 +165,8 @@ typedef struct naula_layout_plan {
  * clone removals, project and archive folders, the org `CLAUDE.md` files, links, then reports. A repo it cannot place
  * safely is reported and left where it is; the whole plan is refused only when the org tree itself is undefined:
  * `account-held-twice`, `parent-cycle`, `name-collides` or `name-invalid` for an org or project folder, and
- * `path-occupied` for a checkout holding an org or `repos` folder. A struct smaller than its first shape is refused
+ * `path-occupied` for a checkout, or a link naula has no record of making, at or above an org or `repos` folder. A
+ * struct smaller than its first shape is refused
  * as `layout-input-invalid`. On anything but NAULA_OK the plan is left empty.
  */
 naula_status naula_layout_plan_make(const naula_layout_input *input, naula_layout_plan *plan, naula_refusal *refusal);

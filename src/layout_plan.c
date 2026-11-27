@@ -10,6 +10,7 @@
 static const char INPUT_FIX[] = "set each struct's size to its sizeof and give the input a root and a top org";
 static const char PATH_FIX[] = "pass every path absolute and resolved, as the folder it names on disk";
 static const char OCCUPIED_FIX[] = "move that checkout out of the org folder's path, then lay the root out again";
+static const char LINKED_FIX[] = "replace that link with a real folder, then lay the root out again";
 
 static char *copy_or_null(const char *text, int *failed) {
     if (text == NULL) {
@@ -129,21 +130,43 @@ static naula_status emit_tree_folders(const layout_tree *tree, layout_builder *b
     return status;
 }
 
-/** A checkout holding an org or `repos` folder would take the whole tree along when it moves. */
+/** The org or `repos` folder at or below `path`, NULL when there is none. */
+static const char *held_tree_folder(const layout_tree *tree, const char *path) {
+    for (size_t index = 0; index < tree->count; index++) {
+        const layout_org *org = &tree->orgs[index];
+        if (layout_path_encloses(path, org->folder)) {
+            return org->folder;
+        }
+        if (layout_path_encloses(path, org->repos_folder)) {
+            return org->repos_folder;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * A checkout holding an org or `repos` folder would take the whole tree along when it moves, and a link naula has no
+ * record of making there would put the tree wherever it points.
+ */
 static naula_status refuse_occupied_tree(const naula_layout_input *input, const layout_tree *tree,
                                          naula_refusal *refusal) {
     for (size_t repo = 0; repo < input->repo_count; repo++) {
         const char *current = input->repos[repo].current_path;
-        for (size_t index = 0; index < tree->count && current != NULL; index++) {
-            const layout_org *org = &tree->orgs[index];
-            const char *held = layout_path_encloses(current, org->folder)         ? org->folder
-                               : layout_path_encloses(current, org->repos_folder) ? org->repos_folder
-                                                                                  : NULL;
-            if (held != NULL) {
-                naula_refuse(refusal, "path-occupied", OCCUPIED_FIX, "the checkout at %s holds the folder %s",
-                             current, held);
-                return NAULA_REFUSED;
-            }
+        const char *held = current == NULL ? NULL : held_tree_folder(tree, current);
+        if (held != NULL) {
+            naula_refuse(refusal, "path-occupied", OCCUPIED_FIX, "the checkout at %s holds the folder %s", current,
+                         held);
+            return NAULA_REFUSED;
+        }
+    }
+    for (size_t index = 0; index < input->existing_link_count; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        const char *held = link->made_by_naula ? NULL : held_tree_folder(tree, link->path);
+        if (held != NULL) {
+            naula_refuse(refusal, "path-occupied", LINKED_FIX,
+                         "the link at %s, which naula has no record of making, holds the folder %s", link->path,
+                         held);
+            return NAULA_REFUSED;
         }
     }
     return NAULA_OK;
@@ -253,16 +276,14 @@ static const char *occupant(const layout_placements *placements, const char *pat
     return NULL;
 }
 
-static const naula_layout_link *existing_link_at(const naula_layout_input *input, const char *path, int made_by_naula);
-
 /**
  * The rules are imported through the link only when naula will make it there itself; a link naula has no record of,
- * or a checkout at that path, could point anywhere, and the import would load whatever rules it points at. A rules
- * repo that is not cloned has no checkout to fall back on, so then nothing is imported at all.
+ * at that path or above it, or a checkout at that path, could point anywhere, and the import would load whatever
+ * rules it points at. A rules repo that is not cloned has no checkout to fall back on, so then nothing is imported.
  */
 static const char *rules_path(const naula_layout_input *input, const layout_placements *placements,
                               const layout_placement *holder) {
-    int link_is_naulas = holder->link != NULL && existing_link_at(input, holder->link, 0) == NULL &&
+    int link_is_naulas = holder->link != NULL && layout_unrecorded_link_over(input, holder->link) == NULL &&
                          occupant(placements, holder->link) == NULL;
     if (link_is_naulas) {
         return holder->link;
@@ -280,15 +301,21 @@ static naula_status emit_rules_file(const naula_layout_input *input, const layou
     const layout_placement *holder = rules_holder(placements, org->rules_repository);
     const char *reached = holder == NULL ? NULL : rules_path(input, placements, holder);
     const char *in_the_way = occupant(placements, path);
+    const naula_layout_link *linked = layout_unrecorded_link_over(input, path);
+    const char *name = org->declaration->name == NULL ? "the top org" : org->declaration->name;
     naula_status status;
     if (reached == NULL) {
         status = layout_report(builder, "rules-repo-missing", org->folder, NULL,
                                "the repo holding the rules of %s is not laid out in this root, so its CLAUDE.md is "
                                "not written",
-                               org->declaration->name == NULL ? "the top org" : org->declaration->name);
+                               name);
     } else if (in_the_way != NULL) {
         status = layout_report(builder, "path-occupied", path, in_the_way, "the CLAUDE.md of %s sits in a checkout",
-                               org->declaration->name == NULL ? "the top org" : org->declaration->name);
+                               name);
+    } else if (linked != NULL) {
+        status = layout_report(builder, "path-occupied", path, linked->path,
+                               "the CLAUDE.md of %s is a link naula has no record of making, so it is not written",
+                               name);
     } else {
         char *line = import_line(tree, org, reached);
         status = line == NULL ? NAULA_OUT_OF_MEMORY
@@ -310,22 +337,34 @@ static naula_status emit_rules_files(const naula_layout_input *input, const layo
     return status;
 }
 
-static const naula_layout_link *existing_link_at(const naula_layout_input *input, const char *path, int made_by_naula) {
+static int is_recorded_link_at(const naula_layout_input *input, const char *path) {
     for (size_t index = 0; index < input->existing_link_count; index++) {
         const naula_layout_link *link = &input->existing_links[index];
-        if ((link->made_by_naula != 0) == made_by_naula && layout_path_equal(link->path, path)) {
-            return link;
+        if (link->made_by_naula && layout_path_equal(link->path, path)) {
+            return 1;
         }
     }
-    return NULL;
+    return 0;
+}
+
+static naula_status emit_link_removal(const naula_layout_input *input, const char *path, const char *target,
+                                      layout_builder *builder) {
+    const naula_layout_link *foreign = layout_unrecorded_link_over(input, path);
+    if (foreign != NULL) {
+        return layout_report(builder, "path-occupied", path, foreign->path,
+                             "the link naula made here is reached through a link naula has no record of making, so "
+                             "it is not removed");
+    }
+    return layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK, path, target, NULL);
 }
 
 static naula_status emit_link(const naula_layout_input *input, const layout_tree *tree,
                               const layout_placement *placement, layout_builder *builder) {
-    const naula_layout_link *foreign = existing_link_at(input, placement->link, 0);
+    const naula_layout_link *foreign = layout_unrecorded_link_over(input, placement->link);
     if (foreign != NULL) {
-        return layout_report(builder, "path-occupied", placement->link, foreign->target,
-                             "%s gets no link: a link naula has no record of making sits where its link goes",
+        return layout_report(builder, "path-occupied", placement->link, foreign->path,
+                             "%s gets no link: a link naula has no record of making sits where its link goes or "
+                             "above it",
                              layout_placement_name(placement));
     }
     char *parent = naula_memory_duplicate_text(placement->link);
@@ -348,9 +387,8 @@ static naula_status emit_removals(const naula_layout_input *input, const layout_
     const char *current = placement->repo->current_path;
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < 2 && status == NAULA_OK; index++) {
-        if (placement->stale_links[index] != NULL && existing_link_at(input, placement->stale_links[index], 1) != NULL) {
-            status = layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK,
-                                placement->stale_links[index], current, NULL);
+        if (placement->stale_links[index] != NULL && is_recorded_link_at(input, placement->stale_links[index])) {
+            status = emit_link_removal(input, placement->stale_links[index], current, builder);
         }
     }
     if (status == NAULA_OK && placement->removes) {
@@ -570,8 +608,7 @@ static naula_status emit_stale_links(const naula_layout_input *input, const layo
         status = !link->made_by_naula || is_made(placements, link) ? NAULA_OK
                                                                    : is_stale_link(input, tree, link, &stale);
         if (status == NAULA_OK && stale) {
-            status = layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK, link->path, link->target,
-                                NULL);
+            status = emit_link_removal(input, link->path, link->target, builder);
         }
     }
     return status;

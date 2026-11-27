@@ -1875,6 +1875,113 @@ static void two_different_declarations_from_one_repo_are_refused(void) {
     CHECK(check_text(refusal.code, "layout-input-invalid", "a declaration beside the top's"));
 }
 
+static void an_unrecorded_link_at_an_org_or_repos_folder_refuses_the_plan(void) {
+    const char *links[] = {ROOT "/spisor", ROOT "/spisor/repos", ROOT "/Spisor/Forebay", ROOT "/repos"};
+    for (size_t index = 0; index < sizeof links / sizeof links[0]; index++) {
+        scenario world;
+        start_world(&world);
+        world.repos[4].member_of = &spisor_docs_reference;
+        world.repos[3].current_path = "T:/old/library";
+        add_foreign_link(&world, links[index], "D:/foreign");
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+        CHECK(check_text(refusal.code, "path-occupied", links[index]));
+        CHECK(strstr(refusal.detail, links[index]) != NULL);
+        CHECK(plan.step_count == 0 && plan.steps == NULL);
+    }
+}
+
+static void nothing_is_made_through_an_unrecorded_link_at_a_project_folder(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    add_foreign_link(&world, ROOT "/spisor/shared", "D:/foreign");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/shared") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/shared/library") != NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/docs", ROOT "/spisor/repos/bbbbbbbbbbbb"));
+    naula_layout_plan_release(&plan);
+}
+
+static void rules_never_import_through_an_unrecorded_link_above_their_link(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    set_topics(&world.repos[0], naula_topics, 1);
+    world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
+    add_foreign_link(&world, ROOT "/tools", "D:/foreign");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(writes(&plan, ROOT "/CLAUDE.md", "@repos/aaaaaaaaaaaa/RULES.md\n"));
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/tools/docs") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/tools/naula") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/tools") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/tools/docs") != NULL);
+    naula_layout_plan_release(&plan);
+
+    world.repos[0].current_path = NULL;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/CLAUDE.md") == NULL);
+    CHECK(find_report(&plan, "rules-repo-missing", ROOT) != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_checkout_folder_reached_through_an_unrecorded_link_is_left_alone(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[1].current_path = ROOT "/old/naula";
+    add_foreign_link(&world, ROOT "/repos/aaaaaaaaaaaa", "D:/foreign");
+    add_foreign_link(&world, ROOT "/repos/dddddddddddd", "D:/foreign");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/docs") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/repos/aaaaaaaaaaaa") != NULL);
+    CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/CLAUDE.md") == NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/naula") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/tools/naula") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/old/naula") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void no_rules_file_is_written_through_an_unrecorded_link(void) {
+    scenario world;
+    start_world(&world);
+    add_foreign_link(&world, ROOT "/spisor/CLAUDE.md", "D:/foreign/CLAUDE.md");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/spisor/CLAUDE.md") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/CLAUDE.md") != NULL);
+    CHECK(writes(&plan, ROOT "/weivel/CLAUDE.md", "@records/RULES.md\n"));
+    naula_layout_plan_release(&plan);
+}
+
+static void no_link_is_removed_through_an_unrecorded_link(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/spisor/old/library", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_foreign_link(&world, ROOT "/spisor/old", "D:/foreign");
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/spisor/repos/111111111111"));
+    old->archived = 1;
+    old->clean_and_pushed = 1;
+    add_link(&world, ROOT "/spisor/archive/backend", ROOT "/spisor/repos/111111111111");
+    add_foreign_link(&world, ROOT "/spisor/archive", "D:/foreign");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/old/library") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/old/library") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/archive/backend") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/archive/backend") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void survives_every_allocation_failure(void) {
     scenario world;
     start_world(&world);
@@ -1981,6 +2088,12 @@ int main(void) {
     two_orgs_of_equal_standing_with_one_folder_refuse_the_plan();
     a_report_always_names_its_subject();
     two_different_declarations_from_one_repo_are_refused();
+    an_unrecorded_link_at_an_org_or_repos_folder_refuses_the_plan();
+    nothing_is_made_through_an_unrecorded_link_at_a_project_folder();
+    rules_never_import_through_an_unrecorded_link_above_their_link();
+    a_checkout_folder_reached_through_an_unrecorded_link_is_left_alone();
+    no_rules_file_is_written_through_an_unrecorded_link();
+    no_link_is_removed_through_an_unrecorded_link();
     survives_every_allocation_failure();
     return check_summary("layout_plan_test");
 }

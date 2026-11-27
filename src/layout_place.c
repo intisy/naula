@@ -484,15 +484,40 @@ static int is_through_a_link(const naula_layout_input *input, const char *path, 
     return 0;
 }
 
+const naula_layout_link *layout_unrecorded_link_over(const naula_layout_input *input, const char *path) {
+    for (size_t index = 0; index < input->existing_link_count && path != NULL; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        if (!link->made_by_naula && layout_path_encloses(link->path, path)) {
+            return link;
+        }
+    }
+    return NULL;
+}
+
+static int is_into_an_unrecorded_link(const naula_layout_input *input, const layout_placement *placement,
+                                      layout_obstacle *obstacle) {
+    const naula_layout_link *link = layout_unrecorded_link_over(input, placement->checkout);
+    return link != NULL && found(obstacle, "path-occupied",
+                                 "its checkout folder is reached through a link naula has no record of making, at",
+                                 link->path);
+}
+
+static int is_unsafe(const naula_layout_input *input, const layout_tree *tree, const layout_placements *placements,
+                     const layout_placement *placement, layout_obstacle *obstacle) {
+    const char *current = placement->repo->current_path;
+    if (current != NULL && is_through_a_link(input, current, obstacle)) {
+        return 1;
+    }
+    return is_into_an_unrecorded_link(input, placement, obstacle) ||
+           (current != NULL && is_at_naula_path(tree, placements, placement, obstacle));
+}
+
 naula_status layout_guard_naula_paths(const naula_layout_input *input, const layout_tree *tree,
                                       layout_placements *placements, layout_builder *builder) {
     for (size_t index = 0; index < placements->count; index++) {
         layout_placement *placement = &placements->items[index];
         layout_obstacle obstacle;
-        const char *current = placement->repo->current_path;
-        if (placement->stays || current == NULL ||
-            (!is_through_a_link(input, current, &obstacle) &&
-             !is_at_naula_path(tree, placements, placement, &obstacle))) {
+        if (placement->stays || !is_unsafe(input, tree, placements, placement, &obstacle)) {
             continue;
         }
         naula_status status = block(builder, placement, &obstacle);

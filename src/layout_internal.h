@@ -151,7 +151,15 @@ int layout_placement_moves(const layout_placement *placement);
 naula_status layout_place(const naula_layout_input *input, const layout_tree *tree, layout_placements *placements,
                           naula_refusal *refusal);
 naula_status layout_refuse_collisions(layout_placements *placements, layout_builder *builder);
-/** Leaves alone a checkout sitting where naula puts its own links and folders, since that path may be a link. */
+/**
+ * The link naula has no record of making at `path` or above it, NULL when there is none. Whatever the plan writes,
+ * makes, moves to or imports through there would land wherever that link points.
+ */
+const naula_layout_link *layout_unrecorded_link_over(const naula_layout_input *input, const char *path);
+/**
+ * Leaves alone a checkout sitting where naula puts its own links and folders, since that path may be a link, and one
+ * whose checkout folder is reached through a link naula has no record of making.
+ */
 naula_status layout_guard_naula_paths(const naula_layout_input *input, const layout_tree *tree,
                                       layout_placements *placements, layout_builder *builder);
 naula_status layout_order_moves(layout_placements *placements, layout_builder *builder);
