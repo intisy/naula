@@ -44,7 +44,10 @@ typedef struct naula_apply_options {
 /**
  * Applies `plan` in its order, journalled in `<root>/.naula-journal/<UTC yyyymmddThhmmssZ>.jsonl`: the whole plan
  * first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
- * goes on. Stops at the first step it refuses, leaving the journal to resume from there.
+ * goes on. Stops at the first step it refuses. A refusal that found the disk exactly at the step's start ends the
+ * journal as `stopped`, so a new plan may be applied; one that came after part of a step's change, an allocation that
+ * failed, or a process that died leaves it unfinished, and while any journal of the root is unfinished a new run is
+ * refused as `journal-unfinished`: that journal is resumed first.
  *
  * The run holds `<root>/.naula-journal/lock`, made in one exclusive create naming its process id, and removes it at
  * the end. A lock another running naula holds refuses as `root-locked`; one whose process is gone, left by a run that
@@ -74,7 +77,10 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
  */
 naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options, naula_refusal *refusal);
 
-/** The newest journal in `<root>/.naula-journal/` that did not finish, NAULA_NOT_FOUND when every one did. */
+/**
+ * The newest journal in `<root>/.naula-journal/` that neither finished nor stopped cleanly, NAULA_NOT_FOUND when there
+ * is none. A journal that stopped cleanly may still be resumed by name.
+ */
 naula_status naula_journal_unfinished(const char *root, char **journal_file, naula_refusal *refusal);
 
 /**

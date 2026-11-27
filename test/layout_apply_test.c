@@ -591,6 +591,8 @@ static void apply_writes_the_journal_before_each_step(void) {
     finish("before");
 }
 
+static char *only_journal(void);
+
 static void apply_stops_at_a_held_folder_and_resumes(void) {
 #ifdef _WIN32
     fresh("held");
@@ -609,14 +611,15 @@ static void apply_stops_at_a_held_folder_and_resumes(void) {
     CHECK(kind_at(at("repos/" HEX)) == 0);
     CHECK(kind_at(at("name")) == 0);
     CloseHandle(held);
-    char *journal_file = unfinished_journal();
+    CHECK(unfinished_journal() == NULL);
+    char *journal_file = only_journal();
     CHECK(journal_file != NULL);
     CHECK(resume(journal_file) == NAULA_OK);
     CHECK(kind_at(at("old")) == 0);
     CHECK(file_holds(at("repos/" HEX "/README.md"), "held checkout"));
     CHECK(links_to(at("name"), at("repos/" HEX)));
     CHECK(unfinished_journal() == NULL);
-    naula_memory_release(journal_file);
+    free(journal_file);
     finish("held");
 #else
     printf("apply_stops_at_a_held_folder_and_resumes: skipped, a held folder still renames on POSIX\n");
@@ -1317,6 +1320,71 @@ static void a_stale_lock_is_reported_and_never_taken(void) {
     finish("stale-lock");
 }
 
+static void a_second_apply_waits_for_an_unfinished_journal(void) {
+    fresh("unfinished");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    naula_apply_test_stop_at(3);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("other"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "journal-unfinished"));
+    CHECK(refusal.fix != NULL && strstr(refusal.fix, "naula_journal_resume") != NULL);
+    CHECK(journal_file != NULL && strstr(refusal.detail, journal_file) != NULL);
+    CHECK(kind_at(at("other")) == 0);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    CHECK(resume(journal_file) == NAULA_OK);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("other")) == 1);
+    naula_memory_release(journal_file);
+    finish("unfinished");
+}
+
+static void a_run_refused_before_any_change_leaves_nothing_to_resume(void) {
+    fresh("stopped-clean");
+    make_folder(at("repos"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    plan_add(NAULA_MAKE_LINK, at("name"), at("repos/" HEX), NULL);
+    CHECK(refused_with(apply_plan(), "target-missing"));
+    CHECK(unfinished_journal() == NULL);
+    make_checkout(at("repos/" HEX), "now there");
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(links_to(at("name"), at("repos/" HEX)));
+    finish("stopped-clean");
+}
+
+static void a_run_refused_halfway_through_a_step_must_be_resumed(void) {
+#ifdef _WIN32
+    fresh("stopped-halfway");
+    make_checkout(at("archived"), "archived");
+    make_folder(at("archived/a"));
+    write_text(at("archived/a/first.txt"), "first");
+    make_folder(at("archived/z"));
+    write_text(at("archived/z/held.txt"), "held");
+    HANDLE held = CreateFileA(at("archived/z/held.txt"), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(held != INVALID_HANDLE_VALUE);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("archived"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "change-refused"));
+    CHECK(kind_at(at("archived/a")) == 0);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    CHECK(refused_with(apply_plan(), "journal-unfinished"));
+    CloseHandle(held);
+    CHECK(resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("archived")) == 0);
+    naula_memory_release(journal_file);
+    finish("stopped-halfway");
+#else
+    printf("a_run_refused_halfway_through_a_step_must_be_resumed: skipped, an open file is removed on POSIX\n");
+#endif
+}
+
 typedef struct named_test {
     const char *name;
     void (*run)(void);
@@ -1350,6 +1418,9 @@ static const named_test TESTS[] = {
     {"a_journal_elsewhere_or_for_another_root_is_refused", a_journal_elsewhere_or_for_another_root_is_refused},
     {"a_root_another_naula_holds_is_refused", a_root_another_naula_holds_is_refused},
     {"a_stale_lock_is_reported_and_never_taken", a_stale_lock_is_reported_and_never_taken},
+    {"a_second_apply_waits_for_an_unfinished_journal", a_second_apply_waits_for_an_unfinished_journal},
+    {"a_run_refused_before_any_change_leaves_nothing_to_resume", a_run_refused_before_any_change_leaves_nothing_to_resume},
+    {"a_run_refused_halfway_through_a_step_must_be_resumed", a_run_refused_halfway_through_a_step_must_be_resumed},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

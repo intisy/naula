@@ -25,6 +25,7 @@ typedef struct applier {
     journal journal;
     link_record record;
     char *lock;
+    int step_changed;
     naula_refusal *refusal;
 } applier;
 
@@ -452,7 +453,9 @@ static naula_status refuse_not_a_checkout(applier *applying, const char *path) {
                                                                        "removes");
 }
 
-static naula_status decide_remove_clone(applier *applying, const naula_layout_step *step, decision *decided) {
+/** A removal cut short may already have taken `.git`, so a resumed one asks only for the real folder. */
+static naula_status decide_remove_clone(applier *applying, const naula_layout_step *step, int resuming,
+                                        decision *decided) {
     reach where = {DISK_MISSING, 0};
     naula_status status = reach_of(applying, step->path, &where);
     if (status != NAULA_OK || where.last == DISK_MISSING) {
@@ -464,6 +467,10 @@ static naula_status decide_remove_clone(applier *applying, const naula_layout_st
     }
     if (where.last != DISK_FOLDER) {
         return refuse_not_a_checkout(applying, step->path);
+    }
+    if (resuming) {
+        decided->change = 1;
+        return NAULA_OK;
     }
     char *dot_git = layout_join(step->path, ".git");
     disk_kind kind = DISK_MISSING;
@@ -489,7 +496,7 @@ static naula_status decide(applier *applying, const naula_layout_step *step, int
     case NAULA_REMOVE_LINK:
         return decide_remove_link(applying, step, decided);
     case NAULA_REMOVE_CLONE:
-        return decide_remove_clone(applying, step, decided);
+        return decide_remove_clone(applying, step, resuming, decided);
     default:
         return NAULA_OK;
     }
@@ -513,6 +520,7 @@ static naula_status perform_move(applier *applying, const naula_layout_step *ste
         if (status != NAULA_OK) {
             return refuse_change(applying, status, "cannot move", step->path, error);
         }
+        applying->step_changed = 1;
         if (stops_here(applying->refusal)) {
             return NAULA_REFUSED;
         }
@@ -533,6 +541,7 @@ static naula_status perform_make_link(applier *applying, const naula_layout_step
         if (status != NAULA_OK) {
             return refuse_change(applying, status, "cannot remove the link", step->path, error);
         }
+        applying->step_changed = 1;
         if (stops_here(applying->refusal)) {
             return NAULA_REFUSED;
         }
@@ -562,6 +571,7 @@ static naula_status perform(applier *applying, const naula_layout_step *step, co
         return refuse_change(applying, disk_link_remove(step->path, &error), "cannot remove the link", step->path,
                              error);
     case NAULA_REMOVE_CLONE:
+        applying->step_changed = 1;
         return refuse_change(applying, disk_tree_remove(step->path, &error), "cannot remove", step->path, error);
     default:
         return NAULA_OK;
@@ -599,6 +609,10 @@ static void tell(applier *applying, const naula_layout_step *step, naula_status 
     }
 }
 
+/**
+ * Journals a refusal. One that left the disk exactly at the step's start also ends the journal as `stopped`, so a new
+ * plan may be applied; one that came after part of the step's change leaves the journal unfinished, to be resumed.
+ */
 static naula_status stop_refused(applier *applying, size_t index, const naula_layout_step *step,
                                  naula_status status) {
     if (status == NAULA_REFUSED && strcmp(applying->refusal->code, "test-stopped") == 0) {
@@ -607,13 +621,17 @@ static naula_status stop_refused(applier *applying, size_t index, const naula_la
     if (status == NAULA_REFUSED) {
         naula_refusal ignored;
         ignored.size = sizeof ignored;
-        journal_mark(&applying->journal, index, "refused", applying->refusal->code, NULL, &ignored);
+        if (journal_mark(&applying->journal, index, "refused", applying->refusal->code, NULL, &ignored) == NAULA_OK &&
+            !applying->step_changed) {
+            journal_stop(&applying->journal, &ignored);
+        }
     }
     tell(applying, step, status);
     return status;
 }
 
 static naula_status finish_link_step(applier *applying, size_t index, const naula_layout_step *step) {
+    applying->step_changed = 1;
     naula_status status = settle_record(applying, step);
     if (status != NAULA_OK) {
         return stop_refused(applying, index, step, status);
@@ -637,6 +655,7 @@ static void release_decision(decision *decided) {
 static naula_status run_change(applier *applying, size_t index, const naula_layout_step *step, int resuming) {
     decision decided;
     memset(&decided, 0, sizeof decided);
+    applying->step_changed = 0;
     naula_status status = decide(applying, step, resuming, &decided);
     if (status == NAULA_OK) {
         status = journal_mark(&applying->journal, index, "intended", NULL, decided.previous, applying->refusal);
@@ -725,6 +744,22 @@ static void report_dry_run(const naula_layout_plan *plan, const naula_apply_opti
     }
 }
 
+static naula_status refuse_unfinished(const char *root, naula_refusal *refusal) {
+    char *journal_file = NULL;
+    naula_status status = naula_journal_unfinished(root, &journal_file, refusal);
+    if (status == NAULA_NOT_FOUND) {
+        return NAULA_OK;
+    }
+    if (status == NAULA_OK) {
+        naula_refuse(refusal, "journal-unfinished",
+                     "resume it with naula_journal_resume (naula sync does), then lay the root out again",
+                     "the journal %s records a run that stopped partway, so the disk may be mid-step", journal_file);
+        status = NAULA_REFUSED;
+    }
+    naula_memory_release(journal_file);
+    return status;
+}
+
 naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options,
                                 naula_refusal *refusal) {
     naula_status status = check_input(plan, options, refusal);
@@ -740,6 +775,9 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
     status = apply_check_root(options->root, 1, refusal);
     if (status == NAULA_OK) {
         status = root_lock_take(options->root, &applying.lock, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = refuse_unfinished(options->root, refusal);
     }
     if (status == NAULA_OK) {
         status = link_record_read(options->root, &applying.record, refusal);
@@ -887,7 +925,7 @@ static naula_status unfinished_among(const char *folder, char **names, size_t co
         journal_contents contents;
         memset(&contents, 0, sizeof contents);
         status = path == NULL ? NAULA_OUT_OF_MEMORY : journal_load(path, &contents, refusal);
-        int finished = status == NAULA_OK && contents.finished;
+        int finished = status == NAULA_OK && (contents.finished || contents.stopped);
         if (status == NAULA_OK) {
             journal_contents_release(&contents);
         }

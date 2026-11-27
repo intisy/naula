@@ -60,6 +60,8 @@ naula_status journal_start(const char *root, const naula_layout_plan *plan, jour
 naula_status journal_mark(journal *journal, size_t step, const char *state, const char *code, const char *previous,
                           naula_refusal *refusal);
 naula_status journal_finish(journal *journal, naula_refusal *refusal);
+/** Ends a run a refusal stopped while the disk stood exactly at the start of a step. */
+naula_status journal_stop(journal *journal, naula_refusal *refusal);
 void journal_close(journal *journal);
 
 typedef struct journal_contents {
@@ -67,6 +69,7 @@ typedef struct journal_contents {
     naula_layout_plan plan;
     unsigned char *progress;
     int finished;
+    int stopped;
     int ends_mid_line;
 } journal_contents;
 

@@ -148,6 +148,15 @@ naula_status journal_finish(journal *journal, naula_refusal *refusal) {
     return append_line(journal, line, refusal);
 }
 
+naula_status journal_stop(journal *journal, naula_refusal *refusal) {
+    cJSON *line = cJSON_CreateObject();
+    if (line == NULL || !add_text(line, "state", "stopped")) {
+        cJSON_Delete(line);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    return append_line(journal, line, refusal);
+}
+
 void journal_close(journal *journal) {
     disk_appender_close(journal->appender);
     naula_memory_release(journal->path);
@@ -276,6 +285,11 @@ static naula_status read_line(const cJSON *line, const char *path, journal_conte
         contents->finished = 1;
         return NAULA_OK;
     }
+    if (strcmp(state->valuestring, "stopped") == 0) {
+        contents->stopped = 1;
+        return NAULA_OK;
+    }
+    contents->stopped = 0;
     size_t index = 0;
     if (!whole_number(cJSON_GetObjectItemCaseSensitive(line, "step"), (double)contents->plan.step_count, &index)) {
         return refuse_journal(refusal, path, "names a step the plan does not hold");
