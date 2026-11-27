@@ -54,6 +54,18 @@ naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, u
  */
 naula_status disk_file_replace(const char *path, const uint8_t *bytes, size_t length, unsigned long *error);
 
+/** Creates `path` holding `bytes` in one exclusive create, flushed; one already there refuses and sets `exists`. */
+naula_status disk_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
+                              unsigned long *error);
+
+/** Removes the regular file `path`, never a folder or what a link points at. */
+naula_status disk_file_remove(const char *path, unsigned long *error);
+
+unsigned long disk_process_id(void);
+
+/** Whether a process with this id runs now; a process the system will not let naula see counts as running. */
+int disk_process_is_alive(unsigned long process_id);
+
 /** The names in the folder `path`, without `.` and `..`. Release with disk_names_release. */
 naula_status disk_names(const char *path, char ***names, size_t *count, unsigned long *error);
 void disk_names_release(char **names, size_t count);

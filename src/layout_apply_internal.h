@@ -79,6 +79,15 @@ void journal_contents_release(journal_contents *contents);
 /** The memory bank folder of `real_path` under `banks`, NULL when memory runs out or the key does not fit. */
 char *memory_bank_path(const char *banks, const char *real_path);
 
+/**
+ * Takes `<root>/.naula-journal/lock` in one exclusive create holding this process's id, so two naula never lay out
+ * one root at once. A lock held by a running process refuses as `root-locked`; one whose process is gone refuses as
+ * `stale-lock` and is never taken over, since the run it belonged to may have stopped halfway.
+ */
+naula_status root_lock_take(const char *root, char **lock_path, naula_refusal *refusal);
+/** Removes the lock while it still names this process, and releases `lock_path`. NULL does nothing. */
+void root_lock_release(char *lock_path);
+
 #ifdef NAULA_TEST_HOOKS
 /**
  * Makes the applier stop as if the process died at the `checkpoint`th boundary it reaches from now, 1 being the

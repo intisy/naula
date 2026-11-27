@@ -24,6 +24,7 @@ typedef struct applier {
     void *context;
     journal journal;
     link_record record;
+    char *lock;
     naula_refusal *refusal;
 } applier;
 
@@ -702,9 +703,20 @@ static void start_applier(applier *applying, const naula_apply_options *options,
     applying->refusal = refusal;
 }
 
-static void end_applier(applier *applying) {
+static int is_simulated_death(naula_status status, const naula_refusal *refusal) {
+    return status == NAULA_REFUSED && strcmp(refusal->code, "test-stopped") == 0;
+}
+
+/** A run the test hooks stop dies as a process would, leaving its lock behind. */
+static void end_applier(applier *applying, naula_status status) {
     journal_close(&applying->journal);
     link_record_release(&applying->record);
+    if (is_simulated_death(status, applying->refusal)) {
+        naula_memory_release(applying->lock);
+    } else {
+        root_lock_release(applying->lock);
+    }
+    applying->lock = NULL;
 }
 
 static void report_dry_run(const naula_layout_plan *plan, const naula_apply_options *options) {
@@ -727,6 +739,9 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
     start_applier(&applying, options, refusal);
     status = apply_check_root(options->root, 1, refusal);
     if (status == NAULA_OK) {
+        status = root_lock_take(options->root, &applying.lock, refusal);
+    }
+    if (status == NAULA_OK) {
         status = link_record_read(options->root, &applying.record, refusal);
     }
     if (status == NAULA_OK) {
@@ -737,7 +752,7 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
     } else if (status == NAULA_OK) {
         status = run_steps(&applying, plan, NULL);
     }
-    end_applier(&applying);
+    end_applier(&applying, status);
     return status;
 }
 
@@ -798,18 +813,28 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
     if (journal_file == NULL) {
         return refuse_journal_place(refusal, "(none)");
     }
+    applier applying;
+    start_applier(&applying, options, refusal);
+    status = check_journal_place(options->root, journal_file, refusal);
+    if (status == NAULA_OK && !options->dry_run) {
+        status = apply_check_root(options->root, 0, refusal);
+    }
+    if (status == NAULA_OK && !options->dry_run) {
+        status = root_lock_take(options->root, &applying.lock, refusal);
+    }
     journal_contents contents;
     memset(&contents, 0, sizeof contents);
-    status = resume_contents(journal_file, options, &contents, refusal);
+    if (status == NAULA_OK) {
+        status = resume_contents(journal_file, options, &contents, refusal);
+    }
     if (status != NAULA_OK || contents.finished || options->dry_run) {
         if (status == NAULA_OK && options->dry_run) {
             report_dry_run(&contents.plan, options);
         }
         journal_contents_release(&contents);
+        end_applier(&applying, status);
         return status;
     }
-    applier applying;
-    start_applier(&applying, options, refusal);
     status = link_record_read(options->root, &applying.record, refusal);
     if (status == NAULA_OK) {
         status = journal_reopen(journal_file, contents.ends_mid_line, &applying.journal, refusal);
@@ -817,7 +842,7 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
     if (status == NAULA_OK) {
         status = run_steps(&applying, &contents.plan, contents.progress);
     }
-    end_applier(&applying);
+    end_applier(&applying, status);
     journal_contents_release(&contents);
     return status;
 }

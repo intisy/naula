@@ -3,6 +3,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -363,4 +365,47 @@ void disk_error_text(unsigned long error, char *text, size_t capacity) {
     if (capacity > 0) {
         snprintf(text, capacity, "%s (errno %lu)", strerror((int)error), error);
     }
+}
+
+naula_status disk_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
+                              unsigned long *error) {
+    *exists = 0;
+    *error = 0;
+    int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666);
+    if (descriptor < 0) {
+        *exists = errno == EEXIST;
+        return refused(error);
+    }
+    naula_status status = write_all(descriptor, bytes, length) && fsync(descriptor) == 0 ? NAULA_OK : refused(error);
+    close(descriptor);
+    if (status != NAULA_OK) {
+        unlink(path);
+    } else {
+        sync_parent(path);
+    }
+    return status;
+}
+
+naula_status disk_file_remove(const char *path, unsigned long *error) {
+    struct stat found;
+    *error = 0;
+    if (lstat(path, &found) != 0) {
+        return refused(error);
+    }
+    if (!S_ISREG(found.st_mode)) {
+        *error = EINVAL;
+        return NAULA_REFUSED;
+    }
+    return unlink(path) == 0 ? NAULA_OK : refused(error);
+}
+
+unsigned long disk_process_id(void) {
+    return (unsigned long)getpid();
+}
+
+int disk_process_is_alive(unsigned long process_id) {
+    if (process_id == 0 || process_id > (unsigned long)INT_MAX) {
+        return 0;
+    }
+    return kill((pid_t)process_id, 0) == 0 || errno == EPERM;
 }

@@ -46,6 +46,10 @@ typedef struct naula_apply_options {
  * first, then a line before each step (`intended`) and after it (`done`), each flushed to the disk before the step
  * goes on. Stops at the first step it refuses, leaving the journal to resume from there.
  *
+ * The run holds `<root>/.naula-journal/lock`, made in one exclusive create naming its process id, and removes it at
+ * the end. A lock another running naula holds refuses as `root-locked`; one whose process is gone, left by a run that
+ * died, refuses as `stale-lock` and is never taken over: it is removed by hand once no naula runs.
+ *
  * - MAKE_FOLDER makes the one folder; its parent must exist.
  * - WRITE_FILE replaces the file through a temporary beside it; a file with other bytes is first copied, hex encoded,
  *   into the `intended` line as `previous`, so its old content survives.
@@ -65,7 +69,8 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
 /**
  * Carries on the run `journal_file` records from where it stopped, checking every remaining step against the disk
  * as naula_layout_apply does, and appending to the same journal. The journal must sit directly in
- * `<options->root>/.naula-journal/` and name that root. A journal that finished changes nothing.
+ * `<options->root>/.naula-journal/` and name that root. A journal that finished changes nothing. It takes the root's
+ * lock as naula_layout_apply does.
  */
 naula_status naula_journal_resume(const char *journal_file, const naula_apply_options *options, naula_refusal *refusal);
 

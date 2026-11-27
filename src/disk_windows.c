@@ -377,3 +377,61 @@ void disk_error_text(unsigned long error, char *text, size_t capacity) {
     message[length] = '\0';
     snprintf(text, capacity, "%s (system error %lu)", length > 0 ? message : "unknown error", error);
 }
+
+naula_status disk_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
+                              unsigned long *error) {
+    wchar_t *wide = NULL;
+    *exists = 0;
+    *error = 0;
+    naula_status status = wide_path(path, &wide);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    HANDLE file = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        status = refused(error);
+        *exists = *error == ERROR_FILE_EXISTS || *error == ERROR_ALREADY_EXISTS;
+    } else {
+        status = write_all(file, bytes, length) && FlushFileBuffers(file) ? NAULA_OK : refused(error);
+        CloseHandle(file);
+        if (status != NAULA_OK) {
+            DeleteFileW(wide);
+        }
+    }
+    naula_memory_release(wide);
+    return status;
+}
+
+naula_status disk_file_remove(const char *path, unsigned long *error) {
+    wchar_t *wide = NULL;
+    *error = 0;
+    naula_status status = wide_path(path, &wide);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    DWORD attributes = GetFileAttributesW(wide);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        status = refused(error);
+    } else if (attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) {
+        *error = ERROR_FILE_INVALID;
+        status = NAULA_REFUSED;
+    } else if (!DeleteFileW(wide)) {
+        status = refused(error);
+    }
+    naula_memory_release(wide);
+    return status;
+}
+
+unsigned long disk_process_id(void) {
+    return (unsigned long)GetCurrentProcessId();
+}
+
+int disk_process_is_alive(unsigned long process_id) {
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)process_id);
+    if (process == NULL) {
+        return GetLastError() != ERROR_INVALID_PARAMETER;
+    }
+    DWORD waited = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    return waited == WAIT_TIMEOUT;
+}

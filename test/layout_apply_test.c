@@ -381,6 +381,31 @@ static naula_status resume(const char *journal_file) {
     return naula_journal_resume(journal_file, &options, &refusal);
 }
 
+static unsigned long own_process_id(void) {
+#ifdef _WIN32
+    return (unsigned long)GetCurrentProcessId();
+#else
+    return (unsigned long)getpid();
+#endif
+}
+
+/** A process id no process holds: past Linux's largest pid, and one Windows answers as invalid. */
+#define GONE_PROCESS_ID 2147480000ul
+
+static void write_lock(unsigned long process_id) {
+    char text[32];
+    snprintf(text, sizeof text, "%lu\n", process_id);
+    make_folder(at(".naula-journal"));
+    write_text(at(".naula-journal/lock"), text);
+}
+
+/** A crash leaves the lock behind; the person resuming removes it, as the stale lock's fix says. */
+static void after_a_simulated_crash(void) {
+    naula_apply_test_stop_at(0);
+    CHECK(kind_at(at(".naula-journal/lock")) == 2);
+    remove_tree(at(".naula-journal/lock"));
+}
+
 static void append_snapshot(char **text, size_t *length, size_t *capacity, const char *line) {
     size_t line_length = strlen(line);
     while (*length + line_length + 1 > *capacity) {
@@ -540,7 +565,7 @@ static void apply_writes_the_journal_before_each_step(void) {
     plan_add(NAULA_MAKE_FOLDER, at("spisor"), NULL, NULL);
     naula_apply_test_stop_at(2);
     CHECK(refused_with(apply_plan(), "test-stopped"));
-    naula_apply_test_stop_at(0);
+    after_a_simulated_crash();
     char *journal_file = unfinished_journal();
     CHECK(journal_file != NULL);
     CHECK(kind_at(at("spisor")) == 0);
@@ -552,7 +577,7 @@ static void apply_writes_the_journal_before_each_step(void) {
     fresh("before");
     naula_apply_test_stop_at(3);
     CHECK(refused_with(apply_plan(), "test-stopped"));
-    naula_apply_test_stop_at(0);
+    after_a_simulated_crash();
     journal_file = unfinished_journal();
     CHECK(kind_at(at("spisor")) == 1);
     line = journal_file == NULL ? NULL : last_line(journal_file);
@@ -833,7 +858,7 @@ static void the_record_holds_a_link_only_once_it_is_made_and_until_it_is_removed
     plan_add(NAULA_MAKE_LINK, at("name"), at("repos/" HEX), NULL);
     naula_apply_test_stop_at(2);
     CHECK(refused_with(apply_plan(), "test-stopped"));
-    naula_apply_test_stop_at(0);
+    after_a_simulated_crash();
     CHECK(kind_at(at("name")) == 0);
     CHECK(!is_recorded(at("name"), NULL));
 
@@ -842,7 +867,7 @@ static void the_record_holds_a_link_only_once_it_is_made_and_until_it_is_removed
     make_checkout(at("repos/" HEX), "checkout");
     naula_apply_test_stop_at(4);
     CHECK(refused_with(apply_plan(), "test-stopped"));
-    naula_apply_test_stop_at(0);
+    after_a_simulated_crash();
     CHECK(links_to(at("name"), at("repos/" HEX)));
     CHECK(!is_recorded(at("name"), NULL));
     char *journal_file = unfinished_journal();
@@ -1189,7 +1214,7 @@ static void a_resume_after_a_crash_at_every_boundary_converges(void) {
         lay_out_the_crash_scene();
         naula_apply_test_stop_at(stop);
         naula_status stopped = apply_plan();
-        naula_apply_test_stop_at(0);
+        after_a_simulated_crash();
         if (!refused_with(stopped, "test-stopped")) {
             check_failures++;
             continue;
@@ -1222,7 +1247,7 @@ static void a_journal_elsewhere_or_for_another_root_is_refused(void) {
     plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
     naula_apply_test_stop_at(2);
     CHECK(refused_with(apply_plan(), "test-stopped"));
-    naula_apply_test_stop_at(0);
+    after_a_simulated_crash();
     char *journal_file = unfinished_journal();
     char *text = journal_file == NULL ? NULL : read_text(journal_file);
     char copy[PATH_SIZE];
@@ -1235,6 +1260,61 @@ static void a_journal_elsewhere_or_for_another_root_is_refused(void) {
     free(text);
     naula_memory_release(journal_file);
     finish("journal-place");
+}
+
+static void a_root_another_naula_holds_is_refused(void) {
+    fresh("locked");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    naula_apply_test_stop_at(2);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    naula_apply_test_stop_at(0);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    char held[32];
+    snprintf(held, sizeof held, "%lu\n", own_process_id());
+    CHECK(file_holds(at(".naula-journal/lock"), held));
+    CHECK(refused_with(apply_plan(), "root-locked"));
+    CHECK(refused_with(resume(journal_file), "root-locked"));
+    CHECK(kind_at(at("org")) == 0);
+    CHECK(file_holds(at(".naula-journal/lock"), held));
+    remove_tree(at(".naula-journal/lock"));
+    CHECK(resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("org")) == 1);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    naula_memory_release(journal_file);
+
+    plan_start();
+    plan_add(NAULA_MAKE_LINK, at("name"), at("missing"), NULL);
+    CHECK(refused_with(apply_plan(), "target-missing"));
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    finish("locked");
+}
+
+static void a_stale_lock_is_reported_and_never_taken(void) {
+    fresh("stale-lock");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    naula_apply_test_stop_at(2);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    char *journal_file = unfinished_journal();
+    write_lock(GONE_PROCESS_ID);
+    CHECK(refused_with(apply_plan(), "stale-lock"));
+    CHECK(strstr(refusal.detail, "2147480000") != NULL);
+    CHECK(refusal.fix != NULL && strstr(refusal.fix, "remove") != NULL);
+    CHECK(refused_with(resume(journal_file), "stale-lock"));
+    CHECK(file_holds(at(".naula-journal/lock"), "2147480000\n"));
+    CHECK(kind_at(at("org")) == 0);
+
+    remove_tree(at(".naula-journal/lock"));
+    make_folder(at("elsewhere"));
+    make_link(at(".naula-journal/lock"), at("elsewhere"));
+    CHECK(refused_with(apply_plan(), "record-is-link"));
+    CHECK(refused_with(resume(journal_file), "record-is-link"));
+    CHECK(kind_at(at("org")) == 0);
+    naula_memory_release(journal_file);
+    finish("stale-lock");
 }
 
 typedef struct named_test {
@@ -1268,6 +1348,8 @@ static const named_test TESTS[] = {
     {"root_file_round_trips", root_file_round_trips},
     {"a_resume_after_a_crash_at_every_boundary_converges", a_resume_after_a_crash_at_every_boundary_converges},
     {"a_journal_elsewhere_or_for_another_root_is_refused", a_journal_elsewhere_or_for_another_root_is_refused},
+    {"a_root_another_naula_holds_is_refused", a_root_another_naula_holds_is_refused},
+    {"a_stale_lock_is_reported_and_never_taken", a_stale_lock_is_reported_and_never_taken},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */
