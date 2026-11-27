@@ -18,6 +18,8 @@ static const char *const DISK_FIX = "check the folder's permissions and free spa
 static const char *const REFILLS_FIX = "stop the program that keeps writing into the clone, then run naula sync "
                                        "again to resume";
 static const char *const MOUNT_FIX = "unmount what is mounted inside the clone, then run naula sync again to resume";
+static const char *const UNVERIFIABLE_FIX = "check that nothing is mounted inside the clone and remove it by hand, or "
+                                            "run naula on Linux 5.8 or later, then run naula sync again to resume";
 static const char *const BANK_FIX = "merge or remove one of the two memory banks by hand, then run naula sync again";
 
 typedef struct applier {
@@ -688,7 +690,14 @@ static naula_status perform_remove_clone(applier *applying, const naula_layout_s
     }
     if (status == NAULA_REFUSED && reason == DISK_REMOVAL_MOUNT_INSIDE) {
         naula_refuse(applying->refusal, "mount-inside", MOUNT_FIX,
-                     "%s holds a folder another file system is mounted on, which naula never empties", step->path);
+                     "%s holds a folder or file mounted there from elsewhere, which naula never enters or removes",
+                     step->path);
+        return NAULA_REFUSED;
+    }
+    if (status == NAULA_REFUSED && reason == DISK_REMOVAL_MOUNT_UNVERIFIABLE) {
+        naula_refuse(applying->refusal, "mount-unverifiable", UNVERIFIABLE_FIX,
+                     "this system gives naula no mount id inside %s, so a bind mount there cannot be told apart",
+                     step->path);
         return NAULA_REFUSED;
     }
     return refuse_change(applying, status, "cannot remove", step->path, error);

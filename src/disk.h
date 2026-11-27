@@ -57,14 +57,17 @@ naula_status disk_move(const char *from, const char *to, int *held, unsigned lon
  * bounded only by memory. A folder counts as empty only once a whole listing of it finds nothing; one that is found
  * refilled on DISK_REMOVAL_REFILL_PASSES listings after its first whole one stops the removal. On POSIX a folder or
  * file inside on another file system or mount than the clone's, a bind mount included, is never entered or removed:
- * the removal stops there, and a clone that is itself a mount point stops it before anything is removed. On Windows a
- * mounted folder is a reparse point, removed itself. `reason` says why a refusal came.
+ * the removal stops there, and a clone that is itself a mount point stops it before anything is removed. On Linux a
+ * bind mount is told apart only by its mount id, from statx or else a file handle; where neither gives one, the
+ * removal stops as DISK_REMOVAL_MOUNT_UNVERIFIABLE before it removes what it cannot tell apart. On Windows a mounted
+ * folder is a reparse point, removed itself. `reason` says why a refusal came.
  */
 typedef enum disk_removal_refusal {
     DISK_REMOVAL_REFUSED = 0,
     DISK_REMOVAL_HELD = 1,
     DISK_REMOVAL_REFILLED = 2,
-    DISK_REMOVAL_MOUNT_INSIDE = 3
+    DISK_REMOVAL_MOUNT_INSIDE = 3,
+    DISK_REMOVAL_MOUNT_UNVERIFIABLE = 4
 } disk_removal_refusal;
 
 #define DISK_REMOVAL_REFILL_PASSES 8

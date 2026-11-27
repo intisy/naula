@@ -17,6 +17,9 @@
 
 #include "check.h"
 #include "disk.h"
+#ifdef __linux__
+#include "disk_posix_internal.h"
+#endif
 #include "layout_apply_internal.h"
 #include "memory_testing.h"
 #include "naula/json.h"
@@ -2344,8 +2347,8 @@ static int subfolder_round(int round) {
     for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
         made += writers[index].made;
     }
-    printf("a_folder_refilled_with_new_subfolders_stops_well_before_its_writers: round %d answered %d %s after %lld ms, "
-           "the writers made %ld folders\n",
+    printf("a_folder_refilled_with_new_subfolders_stops_well_before_its_writers: round %d answered %d %s after "
+           "%lld ms, the writers made %ld folders\n",
            round, (int)status, status == NAULA_OK ? "" : refusal.code, took, made);
     int stopped = status == NAULA_REFUSED && strcmp(refusal.code, "folder-refills") == 0;
     CHECK(stopped || status == NAULA_OK);
@@ -2535,6 +2538,52 @@ static void a_file_bind_mounted_inside_a_clone_is_never_removed(void) {
     CHECK(file_holds(outside, "must survive"));
     naula_memory_release(journal_file);
     finish("mount-file");
+}
+
+/**
+ * Linux before 5.8 has no mount id in statx; the one a file handle carries tells every mount apart there as well. A
+ * test folder on a file system that names no file by handle, as overlayfs without nfs_export, cannot show it.
+ */
+static void mounts_inside_a_clone_are_told_apart_without_statx(void) {
+    fresh("by-handle");
+    make_checkout(at("clone"), "clone");
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_disk_test_mount_ids(0, 1);
+    naula_status status = apply_plan();
+    if (status == NAULA_REFUSED && strcmp(refusal.code, "mount-unverifiable") == 0) {
+        printf("mounts_inside_a_clone_are_told_apart_without_statx: skipped, the test folder's file system names no "
+               "file by handle\n");
+        naula_disk_test_mount_ids(1, 1);
+        finish("by-handle");
+        return;
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    finish("by-handle");
+    a_file_system_mounted_inside_a_clone_is_never_entered();
+    a_clone_that_is_itself_a_mount_point_is_never_emptied();
+    a_file_bind_mounted_inside_a_clone_is_never_removed();
+    naula_disk_test_mount_ids(1, 1);
+}
+
+/** Where neither gives a mount id, a bind mount cannot be told from the clone, so nothing of the clone is removed. */
+static void a_clone_whose_mounts_cannot_be_told_apart_is_refused(void) {
+    fresh("unverifiable");
+    make_checkout(at("clone"), "clone");
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_disk_test_mount_ids(0, 0);
+    naula_status status = apply_plan();
+    naula_disk_test_mount_ids(1, 1);
+    CHECK(refused_with(status, "mount-unverifiable"));
+    CHECK(file_holds(at("clone/README.md"), "clone"));
+    CHECK(kind_at(at("clone/.git/HEAD")) == 2);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    naula_memory_release(journal_file);
+    finish("unverifiable");
 }
 #elif defined(_WIN32)
 /**
@@ -2884,6 +2933,8 @@ static const named_test TESTS[] = {
 #ifdef __linux__
     {"a_clone_that_is_itself_a_mount_point_is_never_emptied", a_clone_that_is_itself_a_mount_point_is_never_emptied},
     {"a_file_bind_mounted_inside_a_clone_is_never_removed", a_file_bind_mounted_inside_a_clone_is_never_removed},
+    {"mounts_inside_a_clone_are_told_apart_without_statx", mounts_inside_a_clone_are_told_apart_without_statx},
+    {"a_clone_whose_mounts_cannot_be_told_apart_is_refused", a_clone_whose_mounts_cannot_be_told_apart_is_refused},
 #endif
 };
 

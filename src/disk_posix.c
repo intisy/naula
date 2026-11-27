@@ -164,8 +164,8 @@ typedef struct removal_frame {
 } removal_frame;
 
 /**
- * The file system and the mount an entry is on. A bind mount shares its file system's device, so only the mount id
- * tells it apart, where Linux has one; elsewhere the device alone does.
+ * The file system and the mount an entry is on. A bind mount shares its file system's device, so on Linux only the
+ * mount id tells it apart; elsewhere the device alone does.
  */
 typedef struct mount_identity {
     dev_t device;
@@ -173,26 +173,85 @@ typedef struct mount_identity {
     int has_mount;
 } mount_identity;
 
-/** The mount of the entry `name` in `folder`, never through a link, or of `folder` itself when `name` is empty. */
-static void mount_identity_at(int folder, const char *name, dev_t device, mount_identity *identity) {
-    identity->device = device;
-    identity->mount = 0;
-    identity->has_mount = 0;
-#if defined(__linux__) && defined(STATX_MNT_ID)
-    int flags = AT_SYMLINK_NOFOLLOW | (name[0] == '\0' ? AT_EMPTY_PATH : 0);
-    struct statx extended;
-    if (statx(folder, name, flags, STATX_MNT_ID, &extended) == 0 && (extended.stx_mask & STATX_MNT_ID)) {
-        identity->mount = extended.stx_mnt_id;
-        identity->has_mount = 1;
+#ifdef __linux__
+#ifdef NAULA_TEST_HOOKS
+static int test_without_statx;
+static int test_without_file_handle;
+
+void naula_disk_test_mount_ids(int by_statx, int by_file_handle) {
+    test_without_statx = !by_statx;
+    test_without_file_handle = !by_file_handle;
+}
+#else
+#define test_without_statx 0
+#define test_without_file_handle 0
+#endif
+
+/** The mount id statx gives since Linux 5.8; 0 with `errno` set where it gives none. */
+static int mount_by_statx(int folder, const char *name, uint64_t *mount) {
+    if (test_without_statx) {
+        errno = ENOSYS;
+        return 0;
     }
+#ifdef STATX_MNT_ID
+    struct statx extended;
+    int flags = AT_SYMLINK_NOFOLLOW | (name[0] == '\0' ? AT_EMPTY_PATH : 0);
+    if (statx(folder, name, flags, STATX_MNT_ID, &extended) != 0) {
+        return 0;
+    }
+    if (!(extended.stx_mask & STATX_MNT_ID)) {
+        errno = ENOTSUP;
+        return 0;
+    }
+    *mount = extended.stx_mnt_id;
+    return 1;
 #else
     (void)folder;
     (void)name;
+    (void)mount;
+    errno = ENOSYS;
+    return 0;
 #endif
 }
 
-static int is_other_mount(const mount_identity *clone, const mount_identity *found) {
-    return found->device != clone->device || (clone->has_mount && found->has_mount && found->mount != clone->mount);
+/**
+ * The same mount id, from a file handle, which Linux gives since 2.6.39 on every file system that can name its files
+ * by handle; 0 with `errno` set where it gives none.
+ */
+static int mount_by_file_handle(int folder, const char *name, uint64_t *mount) {
+    _Alignas(struct file_handle) unsigned char room[sizeof(struct file_handle) + MAX_HANDLE_SZ];
+    struct file_handle *handle = (struct file_handle *)room;
+    handle->handle_bytes = MAX_HANDLE_SZ;
+    int mount_id = 0;
+    if (test_without_file_handle) {
+        errno = ENOSYS;
+        return 0;
+    }
+    if (name_to_handle_at(folder, name, handle, &mount_id, name[0] == '\0' ? AT_EMPTY_PATH : 0) != 0) {
+        return 0;
+    }
+    *mount = (uint64_t)(unsigned)mount_id;
+    return 1;
+}
+#endif
+
+/**
+ * The mount of the entry `name` in `folder`, never through a link, or of `folder` itself when `name` is empty. Answers
+ * 0, or the error of the last way tried when none gave a mount id, with `has_mount` left 0.
+ */
+static int mount_identity_at(int folder, const char *name, dev_t device, mount_identity *identity) {
+    identity->device = device;
+    identity->mount = 0;
+    identity->has_mount = 0;
+#ifdef __linux__
+    identity->has_mount =
+        mount_by_statx(folder, name, &identity->mount) || mount_by_file_handle(folder, name, &identity->mount);
+    return identity->has_mount ? 0 : errno;
+#else
+    (void)folder;
+    (void)name;
+    return 0;
+#endif
 }
 
 typedef struct removal {
@@ -204,10 +263,31 @@ typedef struct removal {
     disk_removal_refusal reason;
 } removal;
 
-static naula_status refuse_mount_inside(removal *removing, unsigned long *error) {
-    removing->reason = DISK_REMOVAL_MOUNT_INSIDE;
-    *error = EXDEV;
+static naula_status refuse_mount(removal *removing, disk_removal_refusal reason, unsigned long code,
+                                 unsigned long *error) {
+    removing->reason = reason;
+    *error = code;
     return NAULA_REFUSED;
+}
+
+/**
+ * NAULA_OK when `found` is on the mount `expected` is on. On Linux an entry whose mount id neither way can read
+ * cannot be told from a bind mount on the same device, so it is refused as unverifiable.
+ */
+static naula_status judge_mount(removal *removing, const mount_identity *expected, const mount_identity *found,
+                                unsigned long *error) {
+    if (found->device != expected->device) {
+        return refuse_mount(removing, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
+    }
+#ifdef __linux__
+    if (!expected->has_mount || !found->has_mount) {
+        return refuse_mount(removing, DISK_REMOVAL_MOUNT_UNVERIFIABLE, ENOTSUP, error);
+    }
+    if (found->mount != expected->mount) {
+        return refuse_mount(removing, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
+    }
+#endif
+    return NAULA_OK;
 }
 
 /**
@@ -218,7 +298,7 @@ static naula_status check_mount(removal *removing, int folder, const struct stat
     mount_identity identity;
     mount_identity_at(folder, "", found->st_dev, &identity);
     if (removing->depth > 0) {
-        return is_other_mount(&removing->clone, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
+        return judge_mount(removing, &removing->clone, &identity, error);
     }
     struct stat parent_found;
     if (fstat(removing->parent, &parent_found) != 0) {
@@ -227,7 +307,7 @@ static naula_status check_mount(removal *removing, int folder, const struct stat
     mount_identity parent;
     mount_identity_at(removing->parent, "", parent_found.st_dev, &parent);
     removing->clone = identity;
-    return is_other_mount(&parent, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
+    return judge_mount(removing, &parent, &identity, error);
 }
 
 /** Takes ownership of `folder` and `name`, closing and releasing both when it cannot push them. */
@@ -328,9 +408,12 @@ static naula_status read_snapshot(int folder, listing_snapshot *taken, unsigned 
 static naula_status remove_entry(removal *removing, int folder, const char *name, const struct stat *found,
                                  unsigned long *error) {
     mount_identity identity;
-    mount_identity_at(folder, name, found->st_dev, &identity);
-    if (is_other_mount(&removing->clone, &identity)) {
-        return refuse_mount_inside(removing, error);
+    if (mount_identity_at(folder, name, found->st_dev, &identity) == ENOENT) {
+        return NAULA_OK;
+    }
+    naula_status status = judge_mount(removing, &removing->clone, &identity, error);
+    if (status != NAULA_OK) {
+        return status;
     }
     return unlinkat(folder, name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
 }
