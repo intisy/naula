@@ -389,12 +389,90 @@ static naula_status scan_folder(scan *scanning, const char *folder, int depth) {
     return status;
 }
 
+static naula_status still_made(const naula_layout_link *entry, int *made, naula_refusal *refusal) {
+    disk_kind kind = DISK_MISSING;
+    unsigned long error = 0;
+    *made = 0;
+    naula_status status = disk_kind_of(entry->path, &kind, &error);
+    if (status == NAULA_REFUSED) {
+        return apply_refuse_disk(refusal, "root-unreadable", RECORD_FIX, "cannot read", entry->path, error);
+    }
+    if (status != NAULA_OK || kind != DISK_LINK) {
+        return status;
+    }
+    char *target = NULL;
+    status = disk_link_target(entry->path, &target, &error);
+    if (status == NAULA_OK) {
+        *made = apply_same_target(target, entry->target);
+    }
+    naula_memory_release(target);
+    return status == NAULA_REFUSED ? NAULA_OK : status;
+}
+
+static naula_status forget_entries(const char *root, link_record *record, journal *journalling,
+                                   naula_refusal *refusal) {
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; status == NAULA_OK && index < record->count;) {
+        int made = 0;
+        status = still_made(&record->links[index], &made, refusal);
+        if (status != NAULA_OK || made) {
+            index++;
+            continue;
+        }
+        if (journalling->appender == NULL) {
+            naula_layout_plan empty = {sizeof empty, NULL, 0};
+            status = journal_start(root, &empty, journalling, refusal);
+        }
+        if (status == NAULA_OK) {
+            status = journal_forgotten(journalling, record->links[index].path, record->links[index].target, refusal);
+        }
+        if (status == NAULA_OK) {
+            status = link_record_forget(root, record, record->links[index].path, refusal);
+        }
+    }
+    if (status == NAULA_OK && journalling->appender != NULL) {
+        status = journal_finish(journalling, refusal);
+    }
+    return status;
+}
+
+/**
+ * Forgets every recorded link the disk no longer holds exactly as recorded, journalled under the root's lock, so a
+ * link someone makes there later is never read as naula's.
+ */
+static naula_status forget_vanished(const char *root, link_record *record, naula_refusal *refusal) {
+    int any = 0;
+    for (size_t index = 0; index < record->count && !any; index++) {
+        int made = 0;
+        naula_status status = still_made(&record->links[index], &made, refusal);
+        if (status != NAULA_OK) {
+            return status;
+        }
+        any = !made;
+    }
+    if (!any) {
+        return NAULA_OK;
+    }
+    char *lock = NULL;
+    naula_status status = root_lock_take(root, &lock, refusal);
+    journal journalling = {NULL, NULL};
+    if (status == NAULA_OK) {
+        status = forget_entries(root, record, &journalling, refusal);
+    }
+    journal_close(&journalling);
+    root_lock_release(lock);
+    return status;
+}
+
 naula_status naula_layout_links_scan(const char *root, naula_layout_links *links, naula_refusal *refusal) {
     links->size = sizeof *links;
     links->links = NULL;
     links->count = 0;
     link_record record = {NULL, 0};
     naula_status status = link_record_read(root, &record, refusal);
+    if (status == NAULA_OK) {
+        status = forget_vanished(root, &record, refusal);
+    }
     if (status == NAULA_OK) {
         scan scanning = {&record, links, refusal};
         status = scan_folder(&scanning, root, 0);

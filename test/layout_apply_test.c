@@ -972,6 +972,49 @@ static void a_scanned_link_is_made_by_naula_only_while_it_points_at_the_recorded
     finish("scan");
 }
 
+static int a_journal_holds(const char *first, const char *second) {
+    char folder[PATH_SIZE];
+    compose(folder, root, "/.naula-journal", NULL);
+    names found = list_names(folder);
+    int holds = 0;
+    for (size_t index = 0; index < found.count && !holds; index++) {
+        char path[PATH_SIZE];
+        compose(path, folder, "/", found.items[index], NULL);
+        char *text = read_text(path);
+        holds = text != NULL && strstr(text, first) != NULL && strstr(text, second) != NULL;
+        free(text);
+    }
+    release_names(&found);
+    return holds;
+}
+
+static void a_vanished_recorded_link_is_forgotten_by_the_scan(void) {
+    fresh("vanished");
+    make_folder(at("repos"));
+    make_checkout(at("repos/" HEX), "one");
+    make_folder(at("tools"));
+    plan_start();
+    plan_add(NAULA_MAKE_LINK, at("tools/naula"), at("repos/" HEX), NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    unlink_link(at("tools/naula"));
+    CHECK(is_recorded(at("tools/naula"), NULL));
+
+    naula_layout_links scanned;
+    CHECK(naula_layout_links_scan(root, &scanned, &refusal) == NAULA_OK);
+    CHECK(scanned.count == 0);
+    naula_layout_links_release(&scanned);
+    CHECK(!is_recorded(at("tools/naula"), NULL));
+    CHECK(a_journal_holds("\"state\":\"forgotten\"", at("tools/naula")));
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+
+    make_link(at("tools/naula"), at("repos/" HEX));
+    CHECK(naula_layout_links_scan(root, &scanned, &refusal) == NAULA_OK);
+    const naula_layout_link *hand = scanned_at(&scanned, at("tools/naula"));
+    CHECK(hand != NULL && hand->made_by_naula == 0);
+    naula_layout_links_release(&scanned);
+    finish("vanished");
+}
+
 static int hex_digit(char character) {
     return character >= 'a' ? character - 'a' + 10 : character - '0';
 }
@@ -1409,6 +1452,7 @@ static const named_test TESTS[] = {
     {"the_record_holds_a_link_only_once_it_is_made_and_until_it_is_removed", the_record_holds_a_link_only_once_it_is_made_and_until_it_is_removed},
     {"the_record_is_refused_when_it_or_the_root_is_a_link", the_record_is_refused_when_it_or_the_root_is_a_link},
     {"a_scanned_link_is_made_by_naula_only_while_it_points_at_the_recorded_target", a_scanned_link_is_made_by_naula_only_while_it_points_at_the_recorded_target},
+    {"a_vanished_recorded_link_is_forgotten_by_the_scan", a_vanished_recorded_link_is_forgotten_by_the_scan},
     {"an_overwritten_claude_file_keeps_its_old_content", an_overwritten_claude_file_keeps_its_old_content},
     {"a_write_through_a_link_at_the_file_is_refused", a_write_through_a_link_at_the_file_is_refused},
     {"a_step_outside_the_root_or_on_naulas_files_is_refused", a_step_outside_the_root_or_on_naulas_files_is_refused},

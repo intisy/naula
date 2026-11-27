@@ -148,6 +148,16 @@ naula_status journal_finish(journal *journal, naula_refusal *refusal) {
     return append_line(journal, line, refusal);
 }
 
+naula_status journal_forgotten(journal *journal, const char *path, const char *target, naula_refusal *refusal) {
+    cJSON *line = cJSON_CreateObject();
+    if (line == NULL || !add_text(line, "state", "forgotten") || !add_text(line, "path", path) ||
+        !add_text(line, "target", target)) {
+        cJSON_Delete(line);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    return append_line(journal, line, refusal);
+}
+
 naula_status journal_stop(journal *journal, naula_refusal *refusal) {
     cJSON *line = cJSON_CreateObject();
     if (line == NULL || !add_text(line, "state", "stopped")) {
@@ -287,6 +297,9 @@ static naula_status read_line(const cJSON *line, const char *path, journal_conte
     }
     if (strcmp(state->valuestring, "stopped") == 0) {
         contents->stopped = 1;
+        return NAULA_OK;
+    }
+    if (strcmp(state->valuestring, "forgotten") == 0) {
         return NAULA_OK;
     }
     contents->stopped = 0;

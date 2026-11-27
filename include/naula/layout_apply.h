@@ -102,7 +102,9 @@ typedef struct naula_layout_links {
  * Every link and other reparse point under `root`, for naula_layout_input's `existing_links`, without entering a
  * link, a checkout (a folder holding `.git`) or `.naula-journal`. `made_by_naula` is set only where naula's record
  * holds the path and the link on disk still points at exactly the recorded target, so a link someone replaced or
- * repointed reads as unrecorded. Another reparse point reads as an unrecorded link with an empty target.
+ * repointed reads as unrecorded. Another reparse point reads as an unrecorded link with an empty target. A recorded
+ * link the disk no longer holds exactly as recorded is first forgotten, under the root's lock and journalled as
+ * `forgotten`, so a link someone makes at that path later is never read as naula's.
  */
 naula_status naula_layout_links_scan(const char *root, naula_layout_links *links, naula_refusal *refusal);
 void naula_layout_links_release(naula_layout_links *links);

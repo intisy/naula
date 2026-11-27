@@ -60,6 +60,8 @@ naula_status journal_start(const char *root, const naula_layout_plan *plan, jour
 naula_status journal_mark(journal *journal, size_t step, const char *state, const char *code, const char *previous,
                           naula_refusal *refusal);
 naula_status journal_finish(journal *journal, naula_refusal *refusal);
+/** Says the record forgot a link it held, because the disk no longer holds it as recorded. */
+naula_status journal_forgotten(journal *journal, const char *path, const char *target, naula_refusal *refusal);
 /** Ends a run a refusal stopped while the disk stood exactly at the start of a step. */
 naula_status journal_stop(journal *journal, naula_refusal *refusal);
 void journal_close(journal *journal);
