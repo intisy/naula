@@ -1967,7 +1967,8 @@ static void no_link_is_removed_through_an_unrecorded_link(void) {
     start_world(&world);
     add_link(&world, ROOT "/spisor/old/library", ROOT "/spisor/repos/eeeeeeeeeeee");
     add_foreign_link(&world, ROOT "/spisor/old", "D:/foreign");
-    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/spisor/repos/111111111111"));
+    naula_layout_repo *old =
+        add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/spisor/repos/111111111111"));
     old->archived = 1;
     old->clean_and_pushed = 1;
     add_link(&world, ROOT "/spisor/archive/backend", ROOT "/spisor/repos/111111111111");
@@ -2006,7 +2007,8 @@ static void a_held_org_named_like_a_top_project_or_kept_folder_is_left_out(void)
     }
 }
 
-static naula_home deep_entry_accounts[] = {{sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "deep", NULL, NULL}};
+static naula_home deep_entry_accounts[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "deep", NULL, NULL}};
 static naula_org_declaration deep_entry;
 static naula_reference left_out_reference = {sizeof(naula_reference), "git:3333333333333333333333333333333333333333",
                                              NULL, NULL, 0};
