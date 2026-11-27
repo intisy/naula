@@ -410,6 +410,50 @@ naula_status disk_tree_remove(const char *root, const char *below, int *held, un
     return status;
 }
 
+static int is_absent_error(DWORD code) {
+    return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND || code == ERROR_INVALID_NAME ||
+           code == ERROR_BAD_PATHNAME;
+}
+
+/** The 128-bit id where the file system has one (ReFS needs it), else the volume serial and 64-bit file index. */
+static naula_status identity_of_handle(HANDLE handle, disk_identity *identity, unsigned long *error) {
+    FILE_ID_INFO wide_id;
+    if (GetFileInformationByHandleEx(handle, FileIdInfo, &wide_id, sizeof wide_id)) {
+        identity->volume = wide_id.VolumeSerialNumber;
+        memcpy(&identity->low, wide_id.FileId.Identifier, sizeof identity->low);
+        memcpy(&identity->high, wide_id.FileId.Identifier + sizeof identity->low, sizeof identity->high);
+        return NAULA_OK;
+    }
+    BY_HANDLE_FILE_INFORMATION information;
+    if (!GetFileInformationByHandle(handle, &information)) {
+        return refused(error);
+    }
+    identity->volume = information.dwVolumeSerialNumber;
+    identity->low = ((uint64_t)information.nFileIndexHigh << 32) | information.nFileIndexLow;
+    return NAULA_OK;
+}
+
+naula_status disk_identity_of(const char *path, disk_identity *identity, unsigned long *error) {
+    wchar_t *wide = NULL;
+    *error = 0;
+    memset(identity, 0, sizeof *identity);
+    naula_status status = wide_path(path, &wide);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    HANDLE handle = CreateFileW(wide, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD code = GetLastError();
+    naula_memory_release(wide);
+    if (handle == INVALID_HANDLE_VALUE) {
+        *error = code;
+        return is_absent_error(code) ? NAULA_NOT_FOUND : NAULA_REFUSED;
+    }
+    status = identity_of_handle(handle, identity, error);
+    CloseHandle(handle);
+    return status;
+}
+
 static naula_status read_handle(HANDLE file, uint8_t **bytes, size_t *length, unsigned long *error) {
     BY_HANDLE_FILE_INFORMATION information;
     if (!GetFileInformationByHandle(file, &information)) {

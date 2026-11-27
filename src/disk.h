@@ -18,6 +18,16 @@ typedef enum disk_kind { DISK_MISSING = 0, DISK_FOLDER = 1, DISK_FILE = 2, DISK_
 /** What `path` itself is, never what a link there points at. */
 naula_status disk_kind_of(const char *path, disk_kind *kind, unsigned long *error);
 
+/** Which file an entry is on its volume, so two names that open one file compare equal. */
+typedef struct disk_identity {
+    uint64_t volume;
+    uint64_t high;
+    uint64_t low;
+} disk_identity;
+
+/** The identity of `path` itself, never of what a link there points at: NAULA_NOT_FOUND when there is nothing. */
+naula_status disk_identity_of(const char *path, disk_identity *identity, unsigned long *error);
+
 /**
  * Where the link at `path` points, with `/` separators and Windows' `\??\` prefix taken off, exactly as
  * disk_link_make was given it. Release with naula_memory_release.

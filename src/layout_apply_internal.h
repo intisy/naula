@@ -16,6 +16,13 @@ const char *apply_below(const char *root, const char *path);
 /** Whether two link targets are the same text once separators read alike. */
 int apply_same_target(const char *left, const char *right);
 
+/**
+ * Refuses, as `apply-input-invalid`, a step whose `path` or `target` has a first component below `root` that the disk
+ * opens as `.naula-journal` or `.naula.json`, compared by file identity, never through a link. It runs after the rule
+ * on names, which catches the aliases Windows is known to make, for any alias that rule does not know.
+ */
+naula_status apply_check_aliases(const char *root, const naula_layout_plan *plan, naula_refusal *refusal);
+
 /** Fills `refusal` with the path and the system's text for `error`. Answers NAULA_REFUSED. */
 naula_status apply_refuse_disk(naula_refusal *refusal, const char *code, const char *fix, const char *what,
                                const char *path, unsigned long error);

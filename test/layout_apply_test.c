@@ -1996,6 +1996,79 @@ static void two_journals_of_one_sequence_refuse_the_run_and_the_resume(void) {
     finish("sequence-twice");
 }
 
+static naula_status aliases_checked(void) {
+    memset(&refusal, 0, sizeof refusal);
+    refusal.size = sizeof refusal;
+    return apply_check_aliases(root, &plans.plan, &refusal);
+}
+
+/** The identity check alone, past the rule on names: naula's own files by their own names, and an ordinary folder. */
+static void a_step_into_naulas_files_is_refused_by_their_identity(void) {
+    fresh("identity");
+    make_folder(at(".naula-journal"));
+    write_text(at(".naula.json"), "{}");
+    make_folder(at("org"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at(".naula-journal/x"), NULL, NULL);
+    CHECK(refused_with(aliases_checked(), "apply-input-invalid"));
+    plan_start();
+    plan_add(NAULA_MOVE_CHECKOUT, at("org/a"), at(".naula.json/b"), NULL);
+    CHECK(refused_with(aliases_checked(), "apply-input-invalid"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/x"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("missing/x"), NULL, NULL);
+    plan_add(NAULA_REPORT, NULL, NULL, NULL);
+    CHECK(aliases_checked() == NAULA_OK);
+    finish("identity");
+}
+
+/**
+ * The 8.3 aliases Windows makes for `.naula-journal` and `.naula.json` once enough names collide, read back from the
+ * volume: a step through either is refused by the rule on names and by the identity check alone.
+ */
+static void an_alias_windows_generates_for_naulas_files_is_refused(void) {
+#ifdef _WIN32
+    fresh("generated-alias");
+    static const char *const colliding[] = {".naula-journalA", ".naula-journalB", ".naula-journalC", ".naula-journalD",
+                                            ".naula-journalE", ".naula-journalF", ".naula-journalG", ".naula-journal",
+                                            ".naula.jsonA",    ".naula.jsonB",    ".naula.jsonC",    ".naula.jsonD",
+                                            ".naula.jsonE",    ".naula.jsonF",    ".naula.json"};
+    for (size_t index = 0; index < sizeof colliding / sizeof colliding[0]; index++) {
+        make_folder(at(colliding[index]));
+    }
+    static const char *const own[] = {".naula-journal", ".naula.json"};
+    int aliases = 0;
+    for (size_t index = 0; index < 2; index++) {
+        char short_path[PATH_SIZE];
+        DWORD got = GetShortPathNameA(at(own[index]), short_path, sizeof short_path);
+        const char *alias = got == 0 || got >= sizeof short_path ? NULL : strrchr(short_path, '\\');
+        alias = alias == NULL ? strrchr(short_path, '/') : alias;
+        if (got == 0 || alias == NULL || _stricmp(alias + 1, own[index]) == 0) {
+            continue;
+        }
+        aliases++;
+        char step_path[PATH_SIZE];
+        compose(step_path, root, "/", alias + 1, "/x", NULL);
+        printf("an_alias_windows_generates_for_naulas_files_is_refused: %s is %s\n", own[index], alias + 1);
+        plan_start();
+        plan_add(NAULA_MAKE_FOLDER, step_path, NULL, NULL);
+        CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+        CHECK(refused_with(aliases_checked(), "apply-input-invalid"));
+        char made[PATH_SIZE];
+        compose(made, at(own[index]), "/x", NULL);
+        CHECK(kind_at(made) == 0);
+    }
+    if (aliases == 0) {
+        printf("an_alias_windows_generates_for_naulas_files_is_refused: skipped, the volume makes no 8.3 names\n");
+    } else {
+        CHECK(aliases == 2);
+    }
+    finish("generated-alias");
+#else
+    printf("an_alias_windows_generates_for_naulas_files_is_refused: skipped, only Windows makes 8.3 aliases\n");
+#endif
+}
+
 /** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
 static void lay_out_an_outside_org(const char *outside) {
     char path[PATH_SIZE];
@@ -2294,6 +2367,8 @@ static const named_test TESTS[] = {
     {"a_move_never_replaces_an_empty_folder", a_move_never_replaces_an_empty_folder},
     {"a_journal_sequence_past_the_largest_refuses_the_run", a_journal_sequence_past_the_largest_refuses_the_run},
     {"two_journals_of_one_sequence_refuse_the_run_and_the_resume", two_journals_of_one_sequence_refuse_the_run_and_the_resume},
+    {"a_step_into_naulas_files_is_refused_by_their_identity", a_step_into_naulas_files_is_refused_by_their_identity},
+    {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

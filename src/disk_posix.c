@@ -369,6 +369,19 @@ naula_status disk_tree_remove(const char *root, const char *below, int *held, un
     return status;
 }
 
+naula_status disk_identity_of(const char *path, disk_identity *identity, unsigned long *error) {
+    struct stat found;
+    *error = 0;
+    memset(identity, 0, sizeof *identity);
+    if (lstat(path, &found) != 0) {
+        *error = (unsigned long)errno;
+        return errno == ENOENT || errno == ENOTDIR ? NAULA_NOT_FOUND : NAULA_REFUSED;
+    }
+    identity->volume = (uint64_t)found.st_dev;
+    identity->low = (uint64_t)found.st_ino;
+    return NAULA_OK;
+}
+
 naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, unsigned long *error) {
     *bytes = NULL;
     *length = 0;

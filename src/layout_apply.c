@@ -195,6 +195,86 @@ static naula_status check_input(const naula_layout_plan *plan, const naula_apply
     return NAULA_OK;
 }
 
+/** naula's own files at a root, as the disk identifies them; `has_` is clear for one that is not there. */
+typedef struct naula_files {
+    disk_identity journal_folder;
+    disk_identity root_file;
+    int has_journal_folder;
+    int has_root_file;
+} naula_files;
+
+static int is_same_identity(const disk_identity *left, const disk_identity *right) {
+    return left->volume == right->volume && left->high == right->high && left->low == right->low;
+}
+
+static naula_status identity_at(const char *path, disk_identity *identity, int *exists, naula_refusal *refusal) {
+    unsigned long error = 0;
+    naula_status status = disk_identity_of(path, identity, &error);
+    *exists = status == NAULA_OK;
+    if (status == NAULA_NOT_FOUND) {
+        return NAULA_OK;
+    }
+    return status == NAULA_REFUSED ? apply_refuse_disk(refusal, "path-unreadable", DISK_FIX, "cannot read", path, error)
+                                   : status;
+}
+
+static naula_status naula_files_at(const char *root, naula_files *files, naula_refusal *refusal) {
+    char *journal_folder = layout_join(root, APPLY_JOURNAL_FOLDER);
+    char *root_file = layout_join(root, ".naula.json");
+    naula_status status = journal_folder == NULL || root_file == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
+    if (status == NAULA_OK) {
+        status = identity_at(journal_folder, &files->journal_folder, &files->has_journal_folder, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = identity_at(root_file, &files->root_file, &files->has_root_file, refusal);
+    }
+    naula_memory_release(journal_folder);
+    naula_memory_release(root_file);
+    return status;
+}
+
+/** Refuses `path` when its first component below the root opens one of naula's own files, whatever it is named. */
+static naula_status refuse_alias_on_disk(const char *root, const naula_files *files, const char *path, size_t index,
+                                         naula_refusal *refusal) {
+    char *first = naula_memory_duplicate_text(path);
+    if (first == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    size_t cut = (size_t)(apply_below(root, path) - path);
+    first[cut + strcspn(first + cut, "/\\")] = '\0';
+    disk_identity found;
+    int exists = 0;
+    naula_status status = identity_at(first, &found, &exists, refusal);
+    naula_memory_release(first);
+    int is_alias = exists && ((files->has_journal_folder && is_same_identity(&found, &files->journal_folder)) ||
+                              (files->has_root_file && is_same_identity(&found, &files->root_file)));
+    if (status == NAULA_OK && is_alias) {
+        return refuse_input(refusal, "names naula's own files at the root by another name the disk opens as them",
+                            index);
+    }
+    return status;
+}
+
+naula_status apply_check_aliases(const char *root, const naula_layout_plan *plan, naula_refusal *refusal) {
+    naula_files files;
+    memset(&files, 0, sizeof files);
+    naula_status status = naula_files_at(root, &files, refusal);
+    if (status != NAULA_OK || (!files.has_journal_folder && !files.has_root_file)) {
+        return status;
+    }
+    for (size_t index = 0; status == NAULA_OK && index < plan->step_count; index++) {
+        const naula_layout_step *step = &plan->steps[index];
+        if (step->kind == NAULA_REPORT) {
+            continue;
+        }
+        status = refuse_alias_on_disk(root, &files, step->path, index, refusal);
+        if (status == NAULA_OK && needs_target(step->kind)) {
+            status = refuse_alias_on_disk(root, &files, step->target, index, refusal);
+        }
+    }
+    return status;
+}
+
 static naula_status refuse_kind(applier *applying, const char *code, const char *fix, const char *path,
                                 const char *why) {
     naula_refuse(applying->refusal, code, fix, "%s %s", path, why);
@@ -815,6 +895,9 @@ static naula_status refuse_unfinished(const char *root, naula_refusal *refusal) 
 naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options,
                                 naula_refusal *refusal) {
     naula_status status = check_input(plan, options, refusal);
+    if (status == NAULA_OK) {
+        status = apply_check_aliases(options->root, plan, refusal);
+    }
     if (status != NAULA_OK) {
         return status;
     }
@@ -921,6 +1004,9 @@ static naula_status resume_contents(const char *journal_file, const naula_apply_
     }
     if (status == NAULA_OK) {
         status = check_input(&contents->plan, options, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = apply_check_aliases(options->root, &contents->plan, refusal);
     }
     return status;
 }
