@@ -20,24 +20,32 @@ static char *lock_path_of(const char *root) {
     return path;
 }
 
-static int read_holder(const char *path, unsigned long *holder) {
+/** NAULA_OK with `named` set when the lock names a process id; out of memory is never read as a lock naming none. */
+static naula_status read_holder(const char *path, unsigned long *holder, int *named) {
     uint8_t *bytes = NULL;
     size_t length = 0;
     unsigned long error = 0;
-    if (disk_file_read(path, &bytes, &length, &error) != NAULA_OK) {
-        return 0;
+    *named = 0;
+    naula_status status = disk_file_read(path, &bytes, &length, &error);
+    if (status != NAULA_OK) {
+        return status == NAULA_OUT_OF_MEMORY ? status : NAULA_OK;
     }
     char *end = NULL;
     unsigned long value = strtoul((const char *)bytes, &end, 10);
-    int read = end != (char *)bytes && *end == '\n' && end[1] == '\0' && value != 0;
+    *named = end != (char *)bytes && *end == '\n' && end[1] == '\0' && value != 0;
     naula_memory_release(bytes);
     *holder = value;
-    return read;
+    return NAULA_OK;
 }
 
 static naula_status refuse_held(const char *path, naula_refusal *refusal) {
     unsigned long holder = 0;
-    if (!read_holder(path, &holder)) {
+    int named = 0;
+    naula_status status = read_holder(path, &holder, &named);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    if (!named) {
         naula_refuse(refusal, "root-locked", LOCKED_FIX, "the lock %s is held by a naula whose process id it does not "
                                                          "name",
                      path);
@@ -52,44 +60,37 @@ static naula_status refuse_held(const char *path, naula_refusal *refusal) {
     return NAULA_REFUSED;
 }
 
-naula_status root_lock_take(const char *root, char **lock_path, naula_refusal *refusal) {
-    *lock_path = lock_path_of(root);
-    if (*lock_path == NULL) {
+naula_status root_lock_take(const char *root, disk_owned_file **lock, naula_refusal *refusal) {
+    *lock = NULL;
+    char *lock_path = lock_path_of(root);
+    if (lock_path == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
-    naula_status status = disk_kind_of(*lock_path, &kind, &error);
+    naula_status status = disk_kind_of(lock_path, &kind, &error);
     if (status == NAULA_OK && kind != DISK_MISSING && kind != DISK_FILE) {
         naula_refuse(refusal, "record-is-link", "remove it; naula keeps its lock as a regular file",
-                     "the lock %s is not a regular file", *lock_path);
+                     "the lock %s is not a regular file", lock_path);
         status = NAULA_REFUSED;
     } else if (status == NAULA_REFUSED) {
-        status = apply_refuse_disk(refusal, "root-unreadable", LOCKED_FIX, "cannot read", *lock_path, error);
+        status = apply_refuse_disk(refusal, "root-unreadable", LOCKED_FIX, "cannot read", lock_path, error);
     }
     if (status == NAULA_OK) {
         char text[32];
         snprintf(text, sizeof text, "%lu\n", disk_process_id());
         int exists = 0;
-        status = disk_file_create(*lock_path, (const uint8_t *)text, strlen(text), &exists, &error);
+        status = disk_owned_file_create(lock_path, (const uint8_t *)text, strlen(text), &exists, lock, &error);
         if (status == NAULA_REFUSED) {
-            status = exists ? refuse_held(*lock_path, refusal)
-                            : apply_refuse_disk(refusal, "root-unwritable", LOCKED_FIX, "cannot create", *lock_path,
+            status = exists ? refuse_held(lock_path, refusal)
+                            : apply_refuse_disk(refusal, "root-unwritable", LOCKED_FIX, "cannot create", lock_path,
                                                 error);
         }
     }
-    if (status != NAULA_OK) {
-        naula_memory_release(*lock_path);
-        *lock_path = NULL;
-    }
+    naula_memory_release(lock_path);
     return status;
 }
 
-void root_lock_release(char *lock_path) {
-    unsigned long holder = 0;
-    unsigned long error = 0;
-    if (lock_path != NULL && read_holder(lock_path, &holder) && holder == disk_process_id()) {
-        disk_file_remove(lock_path, &error);
-    }
-    naula_memory_release(lock_path);
+void root_lock_release(disk_owned_file *lock) {
+    disk_owned_file_remove(lock);
 }

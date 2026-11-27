@@ -9,6 +9,7 @@
 /** @implNote Counting is not thread safe: a test arms it on the thread that allocates. */
 static uint64_t countdown;
 static uint64_t attempts;
+static uint64_t live;
 
 static int fails_now(void) {
     attempts++;
@@ -28,23 +29,49 @@ uint64_t naula_memory_attempts(void) {
     return attempts;
 }
 
+uint64_t naula_memory_live_blocks(void) {
+    return live;
+}
+
+static void counted(const void *made, const void *was) {
+    live += made != NULL && was == NULL;
+}
+
+static void uncounted(const void *block) {
+    live -= block != NULL;
+}
+
 #else
 
 static int fails_now(void) {
     return 0;
 }
 
+static void counted(const void *made, const void *was) {
+    (void)made;
+    (void)was;
+}
+
+static void uncounted(const void *block) {
+    (void)block;
+}
+
 #endif
 
 void *naula_memory_allocate(size_t bytes) {
-    return fails_now() ? NULL : malloc(bytes);
+    void *block = fails_now() ? NULL : malloc(bytes);
+    counted(block, NULL);
+    return block;
 }
 
 void *naula_memory_reallocate(void *block, size_t bytes) {
-    return fails_now() ? NULL : realloc(block, bytes);
+    void *grown = fails_now() ? NULL : realloc(block, bytes);
+    counted(grown, block);
+    return grown;
 }
 
 void naula_memory_release(void *block) {
+    uncounted(block);
     free(block);
 }
 

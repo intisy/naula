@@ -24,7 +24,7 @@ typedef struct applier {
     void *context;
     journal journal;
     link_record record;
-    char *lock;
+    disk_owned_file *lock;
     int step_changed;
     naula_refusal *refusal;
 } applier;
@@ -731,7 +731,7 @@ static void end_applier(applier *applying, naula_status status) {
     journal_close(&applying->journal);
     link_record_release(&applying->record);
     if (is_simulated_death(status, applying->refusal)) {
-        naula_memory_release(applying->lock);
+        disk_owned_file_abandon(applying->lock);
     } else {
         root_lock_release(applying->lock);
     }
@@ -814,7 +814,11 @@ static naula_status check_journal_place(const char *root, const char *journal_fi
     }
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
-    if (disk_kind_of(journal_file, &kind, &error) != NAULA_OK || kind != DISK_FILE) {
+    naula_status read = disk_kind_of(journal_file, &kind, &error);
+    if (read == NAULA_OUT_OF_MEMORY) {
+        return read;
+    }
+    if (read != NAULA_OK || kind != DISK_FILE) {
         naula_refuse(refusal, "record-is-link", LINK_FIX, "%s is not a regular file", journal_file);
         return NAULA_REFUSED;
     }

@@ -54,9 +54,16 @@ naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, u
  */
 naula_status disk_file_replace(const char *path, const uint8_t *bytes, size_t length, unsigned long *error);
 
+/** A file this process created and will remove, its path kept ready so the removal allocates nothing. */
+typedef struct disk_owned_file disk_owned_file;
+
 /** Creates `path` holding `bytes` in one exclusive create, flushed; one already there refuses and sets `exists`. */
-naula_status disk_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
-                              unsigned long *error);
+naula_status disk_owned_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
+                                    disk_owned_file **owned, unsigned long *error);
+/** Removes the file and releases `owned`, allocating nothing. NULL does nothing. */
+void disk_owned_file_remove(disk_owned_file *owned);
+/** Releases `owned` and leaves the file where it is, as a process that dies would. */
+void disk_owned_file_abandon(disk_owned_file *owned);
 
 /** Removes the regular file `path`, never a folder or what a link points at. */
 naula_status disk_file_remove(const char *path, unsigned long *error);

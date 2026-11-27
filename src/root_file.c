@@ -368,9 +368,11 @@ naula_status naula_root_file_write(const char *root, const naula_root_file *file
         status = NAULA_OUT_OF_MEMORY;
     }
     unsigned long error = 0;
-    if (status == NAULA_OK &&
-        disk_file_replace(path, (const uint8_t *)terminated, strlen(terminated), &error) != NAULA_OK) {
-        status = apply_refuse_disk(refusal, "root-file-unwritable", ROOT_FILE_FIX, "cannot write", path, error);
+    if (status == NAULA_OK) {
+        status = disk_file_replace(path, (const uint8_t *)terminated, strlen(terminated), &error);
+        if (status == NAULA_REFUSED) {
+            status = apply_refuse_disk(refusal, "root-file-unwritable", ROOT_FILE_FIX, "cannot write", path, error);
+        }
     }
     naula_memory_release(terminated);
     cJSON_free(text);

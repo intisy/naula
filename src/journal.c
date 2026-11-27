@@ -99,28 +99,74 @@ static naula_status open_new(const char *folder, journal *journal, naula_refusal
     return NAULA_REFUSED;
 }
 
+typedef struct opening {
+    char *text;
+    size_t length;
+} opening;
+
+/** Adds `line` and its newline to the opening text, taking ownership of `line`. */
+static naula_status add_line(opening *built, cJSON *line) {
+    char *text = line == NULL ? NULL : cJSON_PrintUnformatted(line);
+    cJSON_Delete(line);
+    if (text == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    size_t length = strlen(text);
+    char *larger = naula_memory_reallocate(built->text, built->length + length + 2);
+    if (larger == NULL) {
+        cJSON_free(text);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    memcpy(larger + built->length, text, length);
+    larger[built->length + length] = '\n';
+    larger[built->length + length + 1] = '\0';
+    built->text = larger;
+    built->length += length + 1;
+    cJSON_free(text);
+    return NAULA_OK;
+}
+
+static cJSON *header_line(const char *root, const naula_layout_plan *plan) {
+    cJSON *header = cJSON_CreateObject();
+    int built = header != NULL && cJSON_AddNumberToObject(header, "journal", JOURNAL_FORMAT) != NULL &&
+                add_text(header, "root", root) &&
+                cJSON_AddNumberToObject(header, "steps", (double)plan->step_count) != NULL;
+    if (!built) {
+        cJSON_Delete(header);
+        return NULL;
+    }
+    return header;
+}
+
+/**
+ * The header and the whole plan go to the disk in one append, built before the file is made, so a journal holds
+ * either its whole plan or nothing; one that holds nothing never ran.
+ */
 naula_status journal_start(const char *root, const naula_layout_plan *plan, journal *journal, naula_refusal *refusal) {
     journal->appender = NULL;
     journal->path = NULL;
-    char *folder = layout_join(root, APPLY_JOURNAL_FOLDER);
-    if (folder == NULL) {
-        return NAULA_OUT_OF_MEMORY;
+    opening built = {NULL, 0};
+    naula_status status = add_line(&built, header_line(root, plan));
+    for (size_t index = 0; status == NAULA_OK && index < plan->step_count; index++) {
+        status = add_line(&built, planned_line(index, &plan->steps[index]));
     }
-    naula_status status = open_new(folder, journal, refusal);
-    naula_memory_release(folder);
-    cJSON *header = status == NAULA_OK ? cJSON_CreateObject() : NULL;
+    char *folder = status == NAULA_OK ? layout_join(root, APPLY_JOURNAL_FOLDER) : NULL;
+    if (status == NAULA_OK && folder == NULL) {
+        status = NAULA_OUT_OF_MEMORY;
+    }
     if (status == NAULA_OK) {
-        int built = header != NULL && cJSON_AddNumberToObject(header, "journal", JOURNAL_FORMAT) != NULL &&
-                    add_text(header, "root", root) &&
-                    cJSON_AddNumberToObject(header, "steps", (double)plan->step_count) != NULL;
-        status = built ? append_line(journal, header, refusal) : NAULA_OUT_OF_MEMORY;
-        if (!built) {
-            cJSON_Delete(header);
+        status = open_new(folder, journal, refusal);
+    }
+    naula_memory_release(folder);
+    unsigned long error = 0;
+    if (status == NAULA_OK) {
+        status = disk_append(journal->appender, built.text, built.length, &error);
+        if (status == NAULA_REFUSED) {
+            status = apply_refuse_disk(refusal, "journal-unwritable", JOURNAL_FIX, "cannot write", journal->path,
+                                       error);
         }
     }
-    for (size_t index = 0; status == NAULA_OK && index < plan->step_count; index++) {
-        status = append_line(journal, planned_line(index, &plan->steps[index]), refusal);
-    }
+    naula_memory_release(built.text);
     if (status != NAULA_OK) {
         journal_close(journal);
     }
@@ -346,7 +392,8 @@ static naula_status read_lines(const uint8_t *bytes, size_t length, const char *
         start = end + 1;
     }
     if (status == NAULA_OK && !seen_header) {
-        return refuse_journal(refusal, path, "holds no header");
+        contents->stopped = 1;
+        return NAULA_OK;
     }
     for (size_t index = 0; status == NAULA_OK && index < contents->plan.step_count; index++) {
         if (contents->plan.steps[index].size == 0) {

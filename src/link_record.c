@@ -70,8 +70,11 @@ naula_status apply_refuse_disk(naula_refusal *refusal, const char *code, const c
 static naula_status require_folder(const char *path, int make, const char *link_code, naula_refusal *refusal) {
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
-    if (disk_kind_of(path, &kind, &error) != NAULA_OK) {
-        return apply_refuse_disk(refusal, "root-unreadable", RECORD_FIX, "cannot read", path, error);
+    naula_status read = disk_kind_of(path, &kind, &error);
+    if (read != NAULA_OK) {
+        return read == NAULA_REFUSED ? apply_refuse_disk(refusal, "root-unreadable", RECORD_FIX, "cannot read", path,
+                                                         error)
+                                     : read;
     }
     if (kind == DISK_MISSING && make) {
         naula_status status = disk_folder_make(path, &error);
@@ -179,8 +182,11 @@ static naula_status read_entries(const cJSON *json, const char *path, link_recor
 static naula_status check_record_file(const char *path, naula_refusal *refusal) {
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
-    if (disk_kind_of(path, &kind, &error) != NAULA_OK) {
-        return apply_refuse_disk(refusal, "root-unreadable", RECORD_FIX, "cannot read", path, error);
+    naula_status read = disk_kind_of(path, &kind, &error);
+    if (read != NAULA_OK) {
+        return read == NAULA_REFUSED ? apply_refuse_disk(refusal, "root-unreadable", RECORD_FIX, "cannot read", path,
+                                                         error)
+                                     : read;
     }
     if (kind == DISK_MISSING) {
         return NAULA_NOT_FOUND;
@@ -259,8 +265,11 @@ static naula_status write_record(const char *root, const link_record *record, na
         status = NAULA_OUT_OF_MEMORY;
     }
     unsigned long error = 0;
-    if (status == NAULA_OK && disk_file_replace(path, (const uint8_t *)text, strlen(text), &error) != NAULA_OK) {
-        status = apply_refuse_disk(refusal, "record-unwritable", RECORD_FIX, "cannot write", path, error);
+    if (status == NAULA_OK) {
+        status = disk_file_replace(path, (const uint8_t *)text, strlen(text), &error);
+        if (status == NAULA_REFUSED) {
+            status = apply_refuse_disk(refusal, "record-unwritable", RECORD_FIX, "cannot write", path, error);
+        }
     }
     cJSON_free(text);
     cJSON_Delete(json);
@@ -343,13 +352,18 @@ static naula_status add_found_link(scan *scanning, const char *path, disk_kind k
     return status;
 }
 
-static int holds_a_checkout(const char *folder) {
+/** A `.git` that cannot be read counts as a checkout, so the scan never enters one by doubt. */
+static naula_status holds_a_checkout(const char *folder, int *holds) {
     char *dot_git = layout_join(folder, ".git");
+    if (dot_git == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
-    int holds = dot_git == NULL || disk_kind_of(dot_git, &kind, &error) != NAULA_OK || kind != DISK_MISSING;
+    naula_status status = disk_kind_of(dot_git, &kind, &error);
     naula_memory_release(dot_git);
-    return holds;
+    *holds = status != NAULA_OK || kind != DISK_MISSING;
+    return status == NAULA_OUT_OF_MEMORY ? status : NAULA_OK;
 }
 
 static naula_status scan_folder(scan *scanning, const char *folder, int depth);
@@ -367,8 +381,12 @@ static naula_status scan_entry(scan *scanning, const char *folder, const char *n
     } else if (kind == DISK_LINK || kind == DISK_OTHER) {
         status = add_found_link(scanning, child, kind);
     } else if (kind == DISK_FOLDER && depth < SCAN_DEPTH_LIMIT && strcmp(name, APPLY_JOURNAL_FOLDER) != 0 &&
-               strcmp(name, ".git") != 0 && !holds_a_checkout(child)) {
-        status = scan_folder(scanning, child, depth + 1);
+               strcmp(name, ".git") != 0) {
+        int holds = 0;
+        status = holds_a_checkout(child, &holds);
+        if (status == NAULA_OK && !holds) {
+            status = scan_folder(scanning, child, depth + 1);
+        }
     }
     naula_memory_release(child);
     return status;
@@ -453,7 +471,7 @@ static naula_status forget_vanished(const char *root, link_record *record, naula
     if (!any) {
         return NAULA_OK;
     }
-    char *lock = NULL;
+    disk_owned_file *lock = NULL;
     naula_status status = root_lock_take(root, &lock, refusal);
     journal journalling = {NULL, NULL};
     if (status == NAULA_OK) {

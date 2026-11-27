@@ -89,9 +89,12 @@ char *memory_bank_path(const char *banks, const char *real_path);
  * one root at once. A lock held by a running process refuses as `root-locked`; one whose process is gone refuses as
  * `stale-lock` and is never taken over, since the run it belonged to may have stopped halfway.
  */
-naula_status root_lock_take(const char *root, char **lock_path, naula_refusal *refusal);
-/** Removes the lock while it still names this process, and releases `lock_path`. NULL does nothing. */
-void root_lock_release(char *lock_path);
+naula_status root_lock_take(const char *root, disk_owned_file **lock, naula_refusal *refusal);
+/**
+ * Removes the lock this run made, allocating nothing, so a run that ran out of memory still leaves no lock. NULL
+ * does nothing.
+ */
+void root_lock_release(disk_owned_file *lock);
 
 #ifdef NAULA_TEST_HOOKS
 /**

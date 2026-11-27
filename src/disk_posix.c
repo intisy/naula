@@ -367,23 +367,57 @@ void disk_error_text(unsigned long error, char *text, size_t capacity) {
     }
 }
 
-naula_status disk_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
-                              unsigned long *error) {
+struct disk_owned_file {
+    char *path;
+};
+
+naula_status disk_owned_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
+                                    disk_owned_file **owned, unsigned long *error) {
+    *owned = NULL;
     *exists = 0;
     *error = 0;
+    disk_owned_file *made = naula_memory_allocate(sizeof *made);
+    char *copy = made == NULL ? NULL : copy_of(path, strlen(path));
+    if (copy == NULL) {
+        naula_memory_release(made);
+        return NAULA_OUT_OF_MEMORY;
+    }
     int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666);
+    naula_status status = NAULA_OK;
     if (descriptor < 0) {
         *exists = errno == EEXIST;
-        return refused(error);
-    }
-    naula_status status = write_all(descriptor, bytes, length) && fsync(descriptor) == 0 ? NAULA_OK : refused(error);
-    close(descriptor);
-    if (status != NAULA_OK) {
-        unlink(path);
+        status = refused(error);
     } else {
-        sync_parent(path);
+        status = write_all(descriptor, bytes, length) && fsync(descriptor) == 0 ? NAULA_OK : refused(error);
+        close(descriptor);
+        if (status != NAULA_OK) {
+            unlink(path);
+        } else {
+            sync_parent(path);
+        }
     }
-    return status;
+    if (status != NAULA_OK) {
+        naula_memory_release(copy);
+        naula_memory_release(made);
+        return status;
+    }
+    made->path = copy;
+    *owned = made;
+    return NAULA_OK;
+}
+
+void disk_owned_file_remove(disk_owned_file *owned) {
+    if (owned != NULL) {
+        unlink(owned->path);
+    }
+    disk_owned_file_abandon(owned);
+}
+
+void disk_owned_file_abandon(disk_owned_file *owned) {
+    if (owned != NULL) {
+        naula_memory_release(owned->path);
+        naula_memory_release(owned);
+    }
 }
 
 naula_status disk_file_remove(const char *path, unsigned long *error) {

@@ -15,6 +15,7 @@
 #include "check.h"
 #include "disk.h"
 #include "layout_apply_internal.h"
+#include "memory_testing.h"
 #include "naula/json.h"
 #include "naula/layout_apply.h"
 #include "naula/memory.h"
@@ -1287,6 +1288,61 @@ static void a_resume_after_a_crash_at_every_boundary_converges(void) {
     finish("crash");
 }
 
+/**
+ * Fails each allocation of a run in turn. A failed run leaves no block live and the disk either untouched or
+ * journalled, so the next run, a resume when the journal is unfinished, converges on the uninterrupted layout. An
+ * allocation failing while the lock is released leaves the lock naming this process, which the next run reports.
+ */
+static void survives_every_allocation_failure(void) {
+    lay_out_the_crash_scene();
+    naula_memory_fail_at(0);
+    CHECK(apply_plan() == NAULA_OK);
+    uint64_t attempts = naula_memory_attempts();
+    char *expected = snapshot("crash");
+    CHECK(attempts > 100);
+    for (uint64_t failing = 1; failing <= attempts; failing++) {
+        lay_out_the_crash_scene();
+        uint64_t live_before = naula_memory_live_blocks();
+        naula_memory_fail_at(failing);
+        naula_status status = apply_plan();
+        naula_memory_fail_at(0);
+        if (naula_memory_live_blocks() != live_before) {
+            fprintf(stderr, "allocation %llu failed: %llu blocks left live\n", (unsigned long long)failing,
+                    (unsigned long long)(naula_memory_live_blocks() - live_before));
+            check_failures++;
+        }
+        if (status != NAULA_OUT_OF_MEMORY) {
+            fprintf(stderr, "allocation %llu failed: status %d %s %s\n", (unsigned long long)failing, (int)status,
+                    refusal.code, refusal.detail);
+            check_failures++;
+            continue;
+        }
+        if (kind_at(at(".naula-journal/lock")) != 0) {
+            char held[32];
+            snprintf(held, sizeof held, "%lu\n", own_process_id());
+            CHECK(file_holds(at(".naula-journal/lock"), held));
+            remove_tree(at(".naula-journal/lock"));
+        }
+        char *journal_file = unfinished_journal();
+        naula_status converged = journal_file != NULL ? resume(journal_file) : apply_plan();
+        naula_memory_release(journal_file);
+        if (converged != NAULA_OK) {
+            fprintf(stderr, "after allocation %llu failed the next run answered %d %s %s\n",
+                    (unsigned long long)failing, (int)converged, refusal.code, refusal.detail);
+            check_failures++;
+        }
+        char *state = snapshot("crash");
+        if (strcmp(state, expected) != 0) {
+            fprintf(stderr, "after allocation %llu failed the disk differs:\n%s\n", (unsigned long long)failing,
+                    state);
+            check_failures++;
+        }
+        free(state);
+    }
+    free(expected);
+    finish("crash");
+}
+
 static void a_journal_elsewhere_or_for_another_root_is_refused(void) {
     fresh("journal-place");
     plan_start();
@@ -1460,6 +1516,7 @@ static const named_test TESTS[] = {
     {"root_file_round_trips", root_file_round_trips},
     {"a_resume_after_a_crash_at_every_boundary_converges", a_resume_after_a_crash_at_every_boundary_converges},
     {"a_journal_elsewhere_or_for_another_root_is_refused", a_journal_elsewhere_or_for_another_root_is_refused},
+    {"survives_every_allocation_failure", survives_every_allocation_failure},
     {"a_root_another_naula_holds_is_refused", a_root_another_naula_holds_is_refused},
     {"a_stale_lock_is_reported_and_never_taken", a_stale_lock_is_reported_and_never_taken},
     {"a_second_apply_waits_for_an_unfinished_journal", a_second_apply_waits_for_an_unfinished_journal},

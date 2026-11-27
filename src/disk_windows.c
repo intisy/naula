@@ -378,28 +378,55 @@ void disk_error_text(unsigned long error, char *text, size_t capacity) {
     snprintf(text, capacity, "%s (system error %lu)", length > 0 ? message : "unknown error", error);
 }
 
-naula_status disk_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
-                              unsigned long *error) {
+struct disk_owned_file {
+    wchar_t *wide;
+};
+
+naula_status disk_owned_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
+                                    disk_owned_file **owned, unsigned long *error) {
     wchar_t *wide = NULL;
+    *owned = NULL;
     *exists = 0;
     *error = 0;
     naula_status status = wide_path(path, &wide);
-    if (status != NAULA_OK) {
-        return status;
+    disk_owned_file *made = status == NAULA_OK ? naula_memory_allocate(sizeof *made) : NULL;
+    if (status == NAULA_OK && made == NULL) {
+        status = NAULA_OUT_OF_MEMORY;
     }
-    HANDLE file = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
+    HANDLE file = status == NAULA_OK ? CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL)
+                                     : INVALID_HANDLE_VALUE;
+    if (status == NAULA_OK && file == INVALID_HANDLE_VALUE) {
         status = refused(error);
         *exists = *error == ERROR_FILE_EXISTS || *error == ERROR_ALREADY_EXISTS;
-    } else {
+    } else if (status == NAULA_OK) {
         status = write_all(file, bytes, length) && FlushFileBuffers(file) ? NAULA_OK : refused(error);
         CloseHandle(file);
         if (status != NAULA_OK) {
             DeleteFileW(wide);
         }
     }
-    naula_memory_release(wide);
-    return status;
+    if (status != NAULA_OK) {
+        naula_memory_release(made);
+        naula_memory_release(wide);
+        return status;
+    }
+    made->wide = wide;
+    *owned = made;
+    return NAULA_OK;
+}
+
+void disk_owned_file_remove(disk_owned_file *owned) {
+    if (owned != NULL) {
+        DeleteFileW(owned->wide);
+    }
+    disk_owned_file_abandon(owned);
+}
+
+void disk_owned_file_abandon(disk_owned_file *owned) {
+    if (owned != NULL) {
+        naula_memory_release(owned->wide);
+        naula_memory_release(owned);
+    }
 }
 
 naula_status disk_file_remove(const char *path, unsigned long *error) {
