@@ -86,6 +86,16 @@ static int kind_at(const char *path) {
 #endif
 }
 
+#ifndef _WIN32
+/** Whether both names open one entry, never following a link: a file system Windows backs opens its aliases. */
+static int is_same_entry(const char *path, const char *other) {
+    struct stat found;
+    struct stat other_found;
+    return lstat(path, &found) == 0 && lstat(other, &other_found) == 0 && found.st_dev == other_found.st_dev &&
+           found.st_ino == other_found.st_ino;
+}
+#endif
+
 typedef struct names {
     char **items;
     size_t count;
@@ -1892,11 +1902,19 @@ static void a_step_naming_naulas_files_by_an_alias_is_refused_on_windows(void) {
     refused_as_input("NAU~1");
     refused_as_input("NA1B2C~1");
 #else
+    int aliased = is_same_entry(at("NAULA-~1"), at(".naula-journal")) ||
+                  is_same_entry(at(".naula-journal."), at(".naula-journal"));
     plan_start();
     plan_add(NAULA_MAKE_FOLDER, at("NAULA-~1"), NULL, NULL);
     plan_add(NAULA_MAKE_FOLDER, at(".naula-journal."), NULL, NULL);
-    CHECK(apply_plan() == NAULA_OK);
-    CHECK(kind_at(at("NAULA-~1")) == 1);
+    if (aliased) {
+        printf("a_step_naming_naulas_files_by_an_alias_is_refused_on_windows: this file system opens Windows' "
+               "aliases\n");
+        CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    } else {
+        CHECK(apply_plan() == NAULA_OK);
+        CHECK(kind_at(at("NAULA-~1")) == 1);
+    }
 #endif
     finish("alias");
 }
