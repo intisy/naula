@@ -66,6 +66,13 @@ typedef struct naula_apply_options {
  * - REMOVE_CLONE refuses a link at `path` and removes the real folder, never entering a link or other reparse point
  *   inside it: each is removed itself.
  * - REPORT changes nothing.
+ *
+ * What it does not guard: each step reads the disk and then changes it, so another program that swaps a folder for a
+ * link, or makes something at a target, between that check and that change is not caught. On POSIX a move checks
+ * that its target is missing and then renames, since rename(2) would replace an empty folder there; on Windows the
+ * move itself refuses an existing target. A REMOVE_CLONE opens each folder without following a link on POSIX, but on
+ * Windows a folder swapped for a junction after it is listed and before it is entered is not seen. The lock covers
+ * naula against itself only, never another program.
  */
 naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options, naula_refusal *refusal);
 
