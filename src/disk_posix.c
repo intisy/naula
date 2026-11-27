@@ -355,7 +355,18 @@ static void pop_frame(removal *removing) {
     naula_memory_release(top->listing.names);
 }
 
+#ifdef NAULA_TEST_HOOKS
+static size_t test_names_listed;
+
+size_t naula_disk_test_names_listed(void) {
+    return test_names_listed;
+}
+#endif
+
 static naula_status snapshot_append(listing_snapshot *taken, const char *name) {
+#ifdef NAULA_TEST_HOOKS
+    test_names_listed++;
+#endif
     size_t needed = strlen(name) + 1;
     if (taken->length + needed > taken->capacity) {
         size_t grown = taken->capacity == 0 ? 64 : taken->capacity * 2;

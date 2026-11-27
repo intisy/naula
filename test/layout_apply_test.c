@@ -2398,11 +2398,13 @@ static void a_folder_refilled_with_new_subfolders_stops_well_before_its_writers(
     CHECK(stopped);
 }
 
-#define WIDE_SUBFOLDERS 20000
-#define WIDE_SECONDS 60
+#define WIDE_SUBFOLDERS 4000
 
-/** Each folder's listing is read once and carried on after each subfolder, so the removal takes time linear in it. */
-static void twenty_thousand_subfolders_are_removed_in_linear_time(void) {
+/**
+ * Each folder's listing is read once and carried on after each subfolder, so the removal reads each name a bounded
+ * number of times; listing the folder again after every subfolder would read about WIDE_SUBFOLDERS squared over two.
+ */
+static void a_wide_folder_is_removed_in_linear_work(void) {
     fresh("wide");
     make_checkout(at("clone"), "wide");
     for (int index = 0; index < WIDE_SUBFOLDERS; index++) {
@@ -2412,14 +2414,16 @@ static void twenty_thousand_subfolders_are_removed_in_linear_time(void) {
     }
     plan_start();
     plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    size_t listed_before = naula_disk_test_names_listed();
     long long started = clock_milliseconds();
     naula_status status = apply_plan();
     long long took = clock_milliseconds() - started;
-    printf("twenty_thousand_subfolders_are_removed_in_linear_time: %d subfolders removed in %lld ms: %d %s\n",
-           WIDE_SUBFOLDERS, took, (int)status, status == NAULA_OK ? "" : refusal.code);
+    size_t listed = naula_disk_test_names_listed() - listed_before;
+    printf("a_wide_folder_is_removed_in_linear_work: %d subfolders removed in %lld ms, %zu names listed: %d %s\n",
+           WIDE_SUBFOLDERS, took, listed, (int)status, status == NAULA_OK ? "" : refusal.code);
     CHECK(status == NAULA_OK);
     CHECK(kind_at(at("clone")) == 0);
-    CHECK(took < WIDE_SECONDS * 1000);
+    CHECK(listed <= 2 * WIDE_SUBFOLDERS + 64);
     finish("wide");
 }
 
@@ -2957,7 +2961,7 @@ static const named_test TESTS[] = {
     {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
     {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
     {"a_folder_refilled_with_new_subfolders_stops_well_before_its_writers", a_folder_refilled_with_new_subfolders_stops_well_before_its_writers},
-    {"twenty_thousand_subfolders_are_removed_in_linear_time", twenty_thousand_subfolders_are_removed_in_linear_time},
+    {"a_wide_folder_is_removed_in_linear_work", a_wide_folder_is_removed_in_linear_work},
     {"a_file_held_without_read_sharing_is_removed", a_file_held_without_read_sharing_is_removed},
     {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
 #ifdef __linux__

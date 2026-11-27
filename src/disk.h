@@ -78,6 +78,16 @@ typedef enum disk_removal_refusal {
 naula_status disk_tree_remove(const char *root, const char *below, disk_removal_refusal *reason,
                               unsigned long *error);
 
+#ifdef NAULA_TEST_HOOKS
+/**
+ * How many names every removal's listings have read in this process, so a test bounds the walk's work by count, which
+ * no machine's speed can blur.
+ *
+ * @implNote Defined only when NAULA_TEST_HOOKS is set, which only the naula_test_hooks library does.
+ */
+size_t naula_disk_test_names_listed(void);
+#endif
+
 /** The whole regular file at `path`, never through a link: NAULA_NOT_FOUND when there is none. */
 naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, unsigned long *error);
 

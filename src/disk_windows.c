@@ -297,7 +297,18 @@ static naula_status take_entry(removal *removing, HANDLE folder, int listed_as_f
     return status;
 }
 
+#ifdef NAULA_TEST_HOOKS
+static size_t test_names_listed;
+
+size_t naula_disk_test_names_listed(void) {
+    return test_names_listed;
+}
+#endif
+
 static naula_status snapshot_append(listing_snapshot *taken, WCHAR mark, const WCHAR *name, size_t characters) {
+#ifdef NAULA_TEST_HOOKS
+    test_names_listed++;
+#endif
     size_t needed = characters + 2;
     if (taken->length + needed > taken->capacity) {
         size_t grown = taken->capacity == 0 ? 64 : taken->capacity * 2;
