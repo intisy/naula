@@ -2273,6 +2273,54 @@ static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
     free(after);
     finish("mount");
 }
+
+/**
+ * The clone's own folder is a mount point, a bind mount of a checkout outside the root and then a tmpfs holding one:
+ * nothing is removed, and once it is unmounted the resume removes the folder beneath.
+ */
+static void a_clone_that_is_itself_a_mount_point_is_never_emptied(void) {
+    fresh("mount-at");
+    char outside[PATH_SIZE];
+    char bind_arguments[PATH_SIZE * 2];
+    compose(outside, base, "/mount-at/outside", NULL);
+    make_checkout(outside, "outside checkout");
+    char *before = snapshot("mount-at/outside");
+    make_checkout(at("clone"), "beneath");
+    snprintf(bind_arguments, sizeof bind_arguments, "--bind '%s'", outside);
+    if (!mount_on(bind_arguments, at("clone"))) {
+        printf("a_clone_that_is_itself_a_mount_point_is_never_emptied: skipped, mounting needs root and "
+               "CAP_SYS_ADMIN\n");
+        free(before);
+        finish("mount-at");
+        return;
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "mount-inside"));
+    unmount(at("clone"));
+    char *after = snapshot("mount-at/outside");
+    CHECK(strcmp(before, after) == 0);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    if (mount_on("-t tmpfs tmpfs", at("clone"))) {
+        make_folder(at("clone/.git"));
+        write_text(at("clone/on-tmpfs.txt"), "tmpfs");
+        CHECK(journal_file != NULL && refused_with(resume(journal_file), "mount-inside"));
+        CHECK(kind_at(at("clone/.git")) == 1);
+        CHECK(file_holds(at("clone/on-tmpfs.txt"), "tmpfs"));
+        unmount(at("clone"));
+    }
+    CHECK(file_holds(at("clone/README.md"), "beneath"));
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    free(after);
+    after = snapshot("mount-at/outside");
+    CHECK(strcmp(before, after) == 0);
+    naula_memory_release(journal_file);
+    free(before);
+    free(after);
+    finish("mount-at");
+}
 #elif defined(_WIN32)
 /**
  * A volume mount point is a reparse point of the junction's own tag, and making one needs an elevated process, so
@@ -2615,6 +2663,9 @@ static const named_test TESTS[] = {
     {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
     {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
     {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
+#ifdef __linux__
+    {"a_clone_that_is_itself_a_mount_point_is_never_emptied", a_clone_that_is_itself_a_mount_point_is_never_emptied},
+#endif
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

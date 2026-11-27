@@ -81,7 +81,7 @@ typedef struct naula_apply_options {
  *   folder another program keeps filling, found refilled on 8 listings after its first whole one, with
  *   `folder-refills`; either leaves the journal to be resumed. On POSIX a folder inside the clone with another file
  *   system mounted on it, a bind mount included, is never entered: the run stops with `mount-inside`, to be resumed
- *   once it is unmounted. On Windows a mounted folder is a reparse point, removed itself.
+ *   once it is unmounted. So does a clone folder that is itself a mount point, before anything is removed. On Windows a mounted folder is a reparse point, removed itself.
  * - REPORT changes nothing.
  *
  * What it does not guard: each step but REMOVE_CLONE reads the disk and then changes it, so another program that swaps

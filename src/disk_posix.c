@@ -205,15 +205,24 @@ static naula_status refuse_mount_inside(removal *removing, unsigned long *error)
     return NAULA_REFUSED;
 }
 
-/** The clone's own mount is recorded; a folder below it on any other is refused before anything in it is touched. */
+/**
+ * The clone must be on its parent folder's mount, so a clone that is itself a mount point is refused; its mount is
+ * then recorded, and a folder below it on any other is refused before anything in it is touched.
+ */
 static naula_status check_mount(removal *removing, int folder, const struct stat *found, unsigned long *error) {
     mount_identity identity;
     mount_identity_of(folder, found, &identity);
-    if (removing->depth == 0) {
-        removing->clone = identity;
-        return NAULA_OK;
+    if (removing->depth > 0) {
+        return is_other_mount(&removing->clone, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
     }
-    return is_other_mount(&removing->clone, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
+    struct stat parent_found;
+    if (fstat(removing->parent, &parent_found) != 0) {
+        return refused(error);
+    }
+    mount_identity parent;
+    mount_identity_of(removing->parent, &parent_found, &parent);
+    removing->clone = identity;
+    return is_other_mount(&parent, &identity) ? refuse_mount_inside(removing, error) : NAULA_OK;
 }
 
 /** Takes ownership of `folder` and `name`, closing and releasing both when it cannot push them. */
