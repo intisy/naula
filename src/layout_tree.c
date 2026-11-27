@@ -16,6 +16,9 @@ static const char COLLISION_FIX[] = "rename the org or project so no two folders
 static const char ACCOUNT_FIX[] = "list each host account in the org member of one org only";
 static const char CYCLE_FIX[] = "point one of these orgs' parent at an org above them";
 
+static int holds_account(const layout_org *org, const naula_home *home);
+static const naula_home *primary_of(const naula_layout_input *input, const naula_id *id);
+
 static int declaration_holds_first_shape(const naula_org_declaration *org) {
     return org->size >= offsetof(naula_org_declaration, hold_count) + sizeof org->hold_count;
 }
@@ -72,6 +75,7 @@ static naula_status collect_held(const naula_layout_input *input, layout_tree *t
         return status;
     }
     tree->orgs[0].is_top = 1;
+    tree->orgs[0].declarer = input->top_repository == NULL ? NULL : primary_of(input, input->top_repository);
     for (size_t index = 0; index < input->org_count; index++) {
         const naula_org_declaration *org = &input->orgs[index];
         const naula_id *repository = input->org_repositories == NULL ? NULL : &input->org_repositories[index];
@@ -87,6 +91,7 @@ static naula_status collect_held(const naula_layout_input *input, layout_tree *t
         if (status != NAULA_OK) {
             return status;
         }
+        tree->orgs[tree->count - 1].declarer = repository == NULL ? NULL : primary_of(input, repository);
     }
     return NAULA_OK;
 }
@@ -112,19 +117,34 @@ static size_t org_declared_by(const naula_layout_input *input, const layout_tree
     return LAYOUT_NONE;
 }
 
-/** A parent this root does not hold leaves the org under the root, which is the top org's folder. */
-static naula_status resolve_parents(const naula_layout_input *input, layout_tree *tree, naula_refusal *refusal) {
-    for (size_t index = 1; index < tree->count; index++) {
-        const naula_reference *parent = tree->orgs[index].declaration->parent;
-        size_t found = parent == NULL ? LAYOUT_NONE : org_declared_by(input, tree, parent);
-        if (found == index) {
-            naula_refuse(refusal, "parent-cycle", CYCLE_FIX, "the org %s names itself as its parent",
-                         name_of(&tree->orgs[index]));
-            return NAULA_REFUSED;
+static int lists_suborg(const layout_org *parent, const char *name) {
+    for (size_t index = 0; index < parent->declaration->suborg_count && name != NULL; index++) {
+        const char *listed = parent->declaration->suborgs[index].name;
+        if (listed != NULL && layout_same_name(listed, name)) {
+            return 1;
         }
-        tree->orgs[index].parent = found == LAYOUT_NONE ? 0 : found;
     }
-    return NAULA_OK;
+    return 0;
+}
+
+/** Naming a parent proves nothing, since anyone can; the parent's own list or account has to agree. */
+static int parent_accepts(const layout_org *parent, const layout_org *org) {
+    return lists_suborg(parent, org->declaration->name) ||
+           (org->declarer != NULL && holds_account(parent, org->declarer));
+}
+
+/** A parent this root does not hold leaves the org under the root, which is the top org's folder. */
+static void resolve_parents(const naula_layout_input *input, layout_tree *tree) {
+    for (size_t index = 1; index < tree->count; index++) {
+        layout_org *org = &tree->orgs[index];
+        size_t found = org->declaration->parent == NULL ? LAYOUT_NONE
+                                                         : org_declared_by(input, tree, org->declaration->parent);
+        if (found != LAYOUT_NONE && found != 0 && found != index && !parent_accepts(&tree->orgs[found], org)) {
+            org->not_listing = 1;
+            found = LAYOUT_NONE;
+        }
+        org->parent = found == LAYOUT_NONE ? 0 : found;
+    }
 }
 
 static naula_status refuse_cycle_through(const layout_tree *tree, size_t start, naula_refusal *refusal) {
@@ -193,6 +213,7 @@ static naula_status add_suborgs(const naula_layout_input *input, layout_tree *tr
                 return status;
             }
             tree->orgs[tree->count - 1].rules_repository = rules_repository;
+            tree->orgs[tree->count - 1].declarer = tree->orgs[index].declarer;
         }
     }
     return NAULA_OK;
@@ -320,9 +341,14 @@ static int same_account(const naula_home *left, const naula_home *right) {
            layout_same_name(left->account, right->account);
 }
 
+static int owns_account(const layout_org *org, const naula_home *account) {
+    return org->declarer != NULL && same_account(org->declarer, account);
+}
+
 static int holds_account(const layout_org *org, const naula_home *home) {
     for (size_t index = 0; index < org->declaration->account_count; index++) {
-        if (same_account(&org->declaration->accounts[index], home)) {
+        const naula_home *account = &org->declaration->accounts[index];
+        if (owns_account(org, account) && same_account(account, home)) {
             return 1;
         }
     }
@@ -334,7 +360,7 @@ static naula_status check_accounts(const layout_tree *tree, naula_refusal *refus
         const naula_org_declaration *declaration = tree->orgs[index].declaration;
         for (size_t account = 0; account < declaration->account_count; account++) {
             const naula_home *home = &declaration->accounts[account];
-            for (size_t other = index + 1; other < tree->count; other++) {
+            for (size_t other = index + 1; other < tree->count && owns_account(&tree->orgs[index], home); other++) {
                 if (holds_account(&tree->orgs[other], home)) {
                     naula_refuse(refusal, "account-held-twice", ACCOUNT_FIX,
                                  "the account %s on %s is held by both %s and %s", home->account, home->provider,
@@ -345,6 +371,36 @@ static naula_status check_accounts(const layout_tree *tree, naula_refusal *refus
         }
     }
     return NAULA_OK;
+}
+
+static naula_status report_unowned_accounts(const layout_org *org, layout_builder *builder) {
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; index < org->declaration->account_count && status == NAULA_OK; index++) {
+        const naula_home *account = &org->declaration->accounts[index];
+        if (!owns_account(org, account)) {
+            status = layout_report(builder, "account-not-owned", org->folder, NULL,
+                                   "%s names the account %s on %s, but the repo declaring it is not under that "
+                                   "account, so the claim is ignored",
+                                   name_of(org), account->account == NULL ? "" : account->account,
+                                   account->provider == NULL ? "" : account->provider);
+        }
+    }
+    return status;
+}
+
+static naula_status report_claims(const layout_tree *tree, layout_builder *builder) {
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; index < tree->count && status == NAULA_OK; index++) {
+        const layout_org *org = &tree->orgs[index];
+        status = report_unowned_accounts(org, builder);
+        if (status == NAULA_OK && org->not_listing) {
+            status = layout_report(builder, "parent-not-listing", org->folder, NULL,
+                                   "%s names a parent that neither lists it nor holds its repo's account, so it is "
+                                   "laid out under the root",
+                                   name_of(org));
+        }
+    }
+    return status;
 }
 
 static naula_status report_stale_suborgs(const layout_tree *tree, layout_builder *builder) {
@@ -380,7 +436,7 @@ static char *normalized_root(const char *root) {
     for (size_t index = 0; index < length; index++) {
         copy[index] = copy[index] == '\\' ? '/' : copy[index];
     }
-    while (length > 0 && copy[length - 1] == '/') {
+    while (length > layout_filesystem_root_length(copy) && copy[length - 1] == '/') {
         copy[--length] = '\0';
     }
     return copy;
@@ -396,7 +452,7 @@ naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tre
     tree->root = normalized_root(input->root);
     naula_status status = tree->root == NULL ? NAULA_OUT_OF_MEMORY : collect_held(input, tree, refusal);
     if (status == NAULA_OK) {
-        status = resolve_parents(input, tree, refusal);
+        resolve_parents(input, tree);
     }
     if (status == NAULA_OK) {
         status = refuse_cycles(tree, refusal);
@@ -415,6 +471,9 @@ naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tre
     }
     if (status == NAULA_OK) {
         status = report_stale_suborgs(tree, builder);
+    }
+    if (status == NAULA_OK) {
+        status = report_claims(tree, builder);
     }
     return status;
 }

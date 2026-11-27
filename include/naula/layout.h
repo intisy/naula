@@ -3,7 +3,12 @@
 
 /**
  * The layout of a root, derived and never written: which folder every org and every repo becomes, as a plan of steps
- * that nothing here carries out. Every struct is read only up to its `size`; the caller sets it.
+ * that nothing here carries out. Every struct is read only up to its `size`; the caller sets it. An array of structs
+ * is read at the stride of this header's `sizeof`, whatever `size` its elements carry.
+ *
+ * Every path is absolute (`/`, or a drive letter and a separator) with no empty, `.` or `..` segment and no `:`
+ * past the drive, or the input is refused as `layout-input-invalid`. A checkout's `current_path` must name the real
+ * folder, never a link to it: the plan cannot see the disk, so the applier is what refuses a link.
  */
 
 #include <stddef.h>
@@ -20,7 +25,8 @@ extern "C" {
 
 /**
  * One repo the root may hold, as its host and its checkout show it. `primary` with `kind` 0, or a `local:` id, is a
- * repo with no home. `current_path` is where its checkout is now, NULL when it is not cloned. `clean_and_pushed` says
+ * repo with no home. `current_path` is where its checkout is now, NULL when it is not cloned; a held repo whose
+ * checkout is outside the root is left alone and reported `path-outside-root`. `clean_and_pushed` says
  * every commit of the checkout is on a home and nothing is uncommitted; only then may an archived clone be removed.
  * First shape ends at `current_path`; a struct without `adopted` is read as adopted.
  */
@@ -42,8 +48,21 @@ typedef struct naula_layout_repo {
  * root leaves out (the top org is never dropped). `top_repository` and `org_repositories[i]` are the ids of the repos
  * declaring `top` and `orgs[i]`, which is how an org's `parent` and its rules file are found. `extra` are single repos
  * kept from accounts no held org owns, `extra_orgs[i]` naming the org `extra[i]` is kept in, NULL meaning the top
- * org. First shape ends at `extra_orgs`.
+ * org. `existing_links` are the links found under the root, each `path` pointing at `target`; one whose target sits
+ * in a `repos` folder and that the plan does not make again is removed. First shape ends at `existing_link_count`.
+ *
+ * An org holds only the accounts its declaring repo's primary home sits under (for a sub-org entry, the repo that lists
+ * it); any other account it names is reported `account-not-owned` and ignored. An org nests under its `parent` only
+ * when the parent lists it in `suborgs` or its declaring repo sits under an account the parent holds; otherwise it is
+ * laid out under the root and reported `parent-not-listing`.
  */
+/** First shape ends at `target`. */
+typedef struct naula_layout_link {
+    uint32_t size;
+    char *path;
+    char *target;
+} naula_layout_link;
+
 typedef struct naula_layout_input {
     uint32_t size;
     const char *root;
@@ -59,6 +78,8 @@ typedef struct naula_layout_input {
     const naula_id *top_repository;
     const naula_id *org_repositories;
     const char *const *extra_orgs;
+    const naula_layout_link *existing_links;
+    size_t existing_link_count;
 } naula_layout_input;
 
 /** Enums append only. */
@@ -76,13 +97,15 @@ typedef enum naula_layout_step_kind {
  * One step, each meant to be compared with the disk before it changes anything, so a plan from a laid-out root
  * changes nothing:
  * - MAKE_FOLDER `path` makes the folder if it is missing.
- * - MOVE_CHECKOUT moves the checkout at `path` to `target`.
+ * - MOVE_CHECKOUT moves the checkout at `path` to `target`; the applier refuses when `path` is a link.
  * - REMOVE_LINK removes the link at `path` only while it is a link to `target`, never what it points at.
- * - REMOVE_CLONE removes the archived checkout at `path`.
+ * - REMOVE_CLONE removes the archived checkout at `path`, which is a real folder and never a link: the applier refuses
+ *   a link at `path` and never follows a link or other reparse point inside it, removing the link itself instead.
  * - WRITE_FILE gives the file at `path` exactly `content`.
  * - MAKE_LINK makes `path` a link to `target`, replacing only a link.
  * - REPORT names what the layout left alone: `code`, the repo or org at `path`, another one involved at `target` or
- *   NULL, and `content` saying why. `unadopted` and `not-held` are notes; every other code is a refusal.
+ *   NULL, and `content` saying why. `unadopted`, `not-held` and `path-outside-root` are notes; every other code is a
+ *   refusal.
  * First shape ends at `code`.
  */
 typedef struct naula_layout_step {

@@ -22,6 +22,8 @@ typedef struct scenario {
     naula_reference extra[4];
     const char *extra_orgs[4];
     size_t extra_count;
+    naula_layout_link links[8];
+    size_t link_count;
 } scenario;
 
 static naula_home intisy_accounts[] = {{sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "intisy", NULL, NULL}};
@@ -96,6 +98,13 @@ static naula_layout_repo repo_at(const char *hex, const char *name, const char *
     return repo;
 }
 
+static void add_link(scenario *world, const char *path, const char *target) {
+    naula_layout_link *link = &world->links[world->link_count++];
+    link->size = sizeof *link;
+    link->path = (char *)path;
+    link->target = (char *)target;
+}
+
 static naula_layout_repo *add_repo(scenario *world, naula_layout_repo repo) {
     world->repos[world->repo_count] = repo;
     return &world->repos[world->repo_count++];
@@ -158,6 +167,8 @@ static naula_layout_input input_of(const scenario *world) {
     input.extra = world->extra;
     input.extra_orgs = world->extra_orgs;
     input.extra_count = world->extra_count;
+    input.existing_links = world->links;
+    input.existing_link_count = world->link_count;
     return input;
 }
 
@@ -235,7 +246,8 @@ static void nests_a_suborg_under_its_parent(void) {
     CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor") != NULL);
     CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/forebay") != NULL);
     CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/forebay/repos") != NULL);
-    CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
+    CHECK(find_report(&plan, "account-not-owned", ROOT "/spisor/forebay") != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/forebay/host") == NULL);
     CHECK(step_index(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor") <
           step_index(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/forebay"));
     naula_layout_plan_release(&plan);
@@ -447,6 +459,7 @@ static void refuses_an_account_held_by_two_orgs(void) {
     scenario world;
     start_world(&world);
     world.orgs[2].accounts = shared_account;
+    world.repos[6].primary.account = "Spisor";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
@@ -455,16 +468,32 @@ static void refuses_an_account_held_by_two_orgs(void) {
     CHECK(plan.step_count == 0);
 }
 
+static naula_org_declaration cycle_entries[2];
+
 static void refuses_a_parent_cycle(void) {
     scenario world;
     start_world(&world);
     world.orgs[0].parent = &weivel_records_reference;
     world.orgs[1].parent = &spisor_docs_reference;
+    cycle_entries[0] = forebay_suborg;
+    cycle_entries[1] = declaration("weivel", NULL, weivel_accounts, NULL);
+    world.orgs[0].suborgs = cycle_entries;
+    world.orgs[0].suborg_count = 2;
+    naula_org_declaration spisor_entry = declaration("spisor", NULL, spisor_accounts, NULL);
+    world.orgs[1].suborgs = &spisor_entry;
+    world.orgs[1].suborg_count = 1;
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
     CHECK(check_text(refusal.code, "parent-cycle", "cycle"));
     CHECK(strstr(refusal.detail, "spisor") != NULL && strstr(refusal.detail, "weivel") != NULL);
+    start_world(&world);
+    world.orgs[0].parent = &weivel_records_reference;
+    world.orgs[1].parent = &spisor_docs_reference;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "parent-not-listing", ROOT "/spisor") != NULL);
+    CHECK(find_report(&plan, "parent-not-listing", ROOT "/weivel") != NULL);
+    naula_layout_plan_release(&plan);
     start_world(&world);
     world.orgs[0].parent = &spisor_docs_reference;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
@@ -474,16 +503,16 @@ static void refuses_a_parent_cycle(void) {
 static void plan_refuses_two_repos_with_one_id(void) {
     scenario world;
     start_world(&world);
-    add_repo(&world, repo_at(hex_of('e'), "shelf-data", "spisor", "T:/old/shelf-data"));
-    world.repos[3].current_path = "T:/old/library";
+    add_repo(&world, repo_at(hex_of('e'), "shelf-data", "spisor", ROOT "/old/shelf-data"));
+    world.repos[3].current_path = ROOT "/old/library";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-    const naula_layout_step *first = find_report(&plan, "id-collision", "T:/old/library");
-    const naula_layout_step *second = find_report(&plan, "id-collision", "T:/old/shelf-data");
+    const naula_layout_step *first = find_report(&plan, "id-collision", ROOT "/old/library");
+    const naula_layout_step *second = find_report(&plan, "id-collision", ROOT "/old/shelf-data");
     CHECK(first != NULL && second != NULL);
     if (first != NULL && second != NULL) {
-        CHECK(check_text(first->target, "T:/old/shelf-data", "first names the second"));
+        CHECK(check_text(first->target, ROOT "/old/shelf-data", "first names the second"));
         CHECK(strstr(first->content, "shelf-data") != NULL && strstr(first->content, "library") != NULL);
     }
     CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
@@ -497,17 +526,17 @@ static void plan_refuses_a_twelve_hex_collision_naming_both(void) {
     start_world(&world);
     add_repo(&world, repo_at("0123456789ab0000000000000000000000000000", "first", "spisor", NULL));
     add_repo(&world, repo_at("0123456789abffffffffffffffffffffffffffffffffffffffffffffffffffff", "second", "weivel",
-                             "T:/old/second"));
+                             ROOT "/old/second"));
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
     const naula_layout_step *first = find_report(&plan, "twelve-hex-collision", ROOT "/spisor/repos/0123456789ab");
-    const naula_layout_step *second = find_report(&plan, "twelve-hex-collision", "T:/old/second");
+    const naula_layout_step *second = find_report(&plan, "twelve-hex-collision", ROOT "/old/second");
     CHECK(first != NULL && second != NULL);
     if (first != NULL) {
         CHECK(strstr(first->content, "first") != NULL && strstr(first->content, "second") != NULL);
     }
-    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, "T:/old/second") == NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/second") == NULL);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/first") == NULL);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/weivel/second") == NULL);
     naula_layout_plan_release(&plan);
@@ -520,11 +549,14 @@ static void a_mirror_account_never_decides_the_org(void) {
     scenario world;
     start_world(&world);
     world.orgs[2].accounts = codeberg_spisor;
+    world.repos[6].primary.provider = "forgejo";
+    world.repos[6].primary.host = "codeberg.org";
+    world.repos[6].primary.account = "spisor";
     naula_layout_repo *mirrored = add_repo(&world, repo_at(hex_of('1'), "mirrored", "spisor", NULL));
     naula_layout_repo *on_codeberg = add_repo(&world, repo_at(hex_of('2'), "on-codeberg", "spisor", NULL));
     on_codeberg->primary.provider = "forgejo";
     on_codeberg->primary.host = "Codeberg.org";
-    naula_layout_repo *elsewhere = add_repo(&world, repo_at(hex_of('3'), "elsewhere", "spisor", "T:/old/elsewhere"));
+    naula_layout_repo *elsewhere = add_repo(&world, repo_at(hex_of('3'), "elsewhere", "spisor", ROOT "/old/elsewhere"));
     elsewhere->primary.provider = "forgejo";
     elsewhere->primary.host = "git.example.org";
     (void)mirrored;
@@ -533,29 +565,29 @@ static void a_mirror_account_never_decides_the_org(void) {
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
     CHECK(links_to(&plan, ROOT "/spisor/mirrored", ROOT "/spisor/repos/111111111111"));
     CHECK(links_to(&plan, ROOT "/pinaxis/on-codeberg", ROOT "/pinaxis/repos/222222222222"));
-    CHECK(find_report(&plan, "not-held", "T:/old/elsewhere") != NULL);
-    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, "T:/old/elsewhere") == NULL);
+    CHECK(find_report(&plan, "not-held", ROOT "/old/elsewhere") != NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/elsewhere") == NULL);
     naula_layout_plan_release(&plan);
 }
 
 static void plan_keeps_an_archived_clone_with_unpushed_commits(void) {
     scenario world;
     start_world(&world);
-    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", "T:/old/backend"));
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/old/backend"));
     old->archived = 1;
     old->clean_and_pushed = 0;
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-    CHECK(find_step(&plan, NAULA_REMOVE_CLONE, "T:/old/backend") == NULL);
-    const naula_layout_step *move = find_step(&plan, NAULA_MOVE_CHECKOUT, "T:/old/backend");
+    CHECK(find_step(&plan, NAULA_REMOVE_CLONE, ROOT "/old/backend") == NULL);
+    const naula_layout_step *move = find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/backend");
     CHECK(move != NULL && strcmp(move->target, ROOT "/spisor/repos/111111111111") == 0);
     CHECK(links_to(&plan, ROOT "/spisor/archive/backend", ROOT "/spisor/repos/111111111111"));
     CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/archive") != NULL);
     CHECK(find_report(&plan, "archived-kept-dirty", ROOT "/spisor/repos/111111111111") != NULL);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/backend") == NULL);
     const naula_layout_step *old_link = find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/backend");
-    CHECK(old_link != NULL && strcmp(old_link->target, "T:/old/backend") == 0);
+    CHECK(old_link != NULL && strcmp(old_link->target, ROOT "/old/backend") == 0);
     naula_layout_plan_release(&plan);
 }
 
@@ -586,17 +618,17 @@ static void plan_removes_a_clean_pushed_archived_clone(void) {
 static void never_removes_a_clone_holding_another_checkout(void) {
     scenario world;
     start_world(&world);
-    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "kendo", "spisor", "T:/store/kendo"));
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "kendo", "spisor", ROOT "/store/kendo"));
     old->archived = 1;
     old->clean_and_pushed = 1;
-    add_repo(&world, repo_at(hex_of('2'), "inner", "nobody", "T:/store/kendo/inner"));
+    add_repo(&world, repo_at(hex_of('2'), "inner", "nobody", ROOT "/store/kendo/inner"));
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-    CHECK(find_step(&plan, NAULA_REMOVE_CLONE, "T:/store/kendo") == NULL);
-    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, "T:/store/kendo") == NULL);
-    CHECK(find_report(&plan, "path-occupied", "T:/store/kendo") != NULL);
-    CHECK(find_report(&plan, "not-held", "T:/store/kendo/inner") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_CLONE, ROOT "/store/kendo") == NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/store/kendo") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/store/kendo") != NULL);
+    CHECK(find_report(&plan, "not-held", ROOT "/store/kendo/inner") != NULL);
     naula_layout_plan_release(&plan);
 }
 
@@ -637,7 +669,7 @@ static void a_dropped_org_is_not_laid_out(void) {
     world.dropped[0] = "Weivel";
     world.dropped[1] = "forebay";
     world.dropped_count = 2;
-    world.repos[5].current_path = "T:/old/records";
+    world.repos[5].current_path = ROOT "/old/records";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
@@ -647,8 +679,8 @@ static void a_dropped_org_is_not_laid_out(void) {
             CHECK(strstr(step->path, "weivel") == NULL && strstr(step->path, "forebay") == NULL);
         }
     }
-    CHECK(find_report(&plan, "not-held", "T:/old/records") != NULL);
-    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, "T:/old/records") == NULL);
+    CHECK(find_report(&plan, "not-held", ROOT "/old/records") != NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/records") == NULL);
     naula_layout_plan_release(&plan);
 }
 
@@ -724,21 +756,24 @@ static void two_repos_claiming_one_checkout_are_left_alone(void) {
 static void moves_a_checkout_out_of_its_link_path_before_linking(void) {
     scenario world;
     start_world(&world);
+    world.repos[0].current_path = ROOT "/docs";
     world.repos[2].current_path = ROOT "/spisor/docs";
-    world.repos[3].current_path = ROOT "/spisor/shared";
-    world.repos[4].current_path = ROOT "/spisor/shared/host";
+    world.repos[3].current_path = ROOT "/spisor/shared/library";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    size_t top_move = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/docs");
+    size_t top_link = step_index(&plan, NAULA_MAKE_LINK, ROOT "/docs");
     size_t docs_move = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/docs");
     size_t docs_link = step_index(&plan, NAULA_MAKE_LINK, ROOT "/spisor/docs");
-    size_t outer_move = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/shared");
-    size_t inner_move = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/shared/host");
+    size_t library_move = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/shared/library");
+    size_t library_link = step_index(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library");
     size_t project_folder = step_index(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/shared");
     size_t repos_folder = step_index(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/repos");
+    CHECK(top_move != (size_t)-1 && top_link != (size_t)-1 && top_move < top_link);
     CHECK(docs_move != (size_t)-1 && docs_link != (size_t)-1 && docs_move < docs_link);
-    CHECK(inner_move != (size_t)-1 && outer_move != (size_t)-1 && inner_move < outer_move);
-    CHECK(project_folder != (size_t)-1 && outer_move < project_folder);
+    CHECK(library_move != (size_t)-1 && project_folder != (size_t)-1 && library_link != (size_t)-1);
+    CHECK(library_move < project_folder && project_folder < library_link);
     CHECK(repos_folder < docs_move);
     naula_layout_plan_release(&plan);
 }
@@ -762,12 +797,12 @@ static void a_checkout_moves_out_of_the_way_before_one_moves_in(void) {
     scenario world;
     start_world(&world);
     world.repos[2].current_path = ROOT "/spisor/repos/eeeeeeeeeeee";
-    world.repos[3].current_path = "T:/old/library";
+    world.repos[3].current_path = ROOT "/old/library";
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
     size_t out = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/repos/eeeeeeeeeeee");
-    size_t in = step_index(&plan, NAULA_MOVE_CHECKOUT, "T:/old/library");
+    size_t in = step_index(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/library");
     CHECK(out != (size_t)-1 && in != (size_t)-1 && out < in);
     naula_layout_plan_release(&plan);
 }
@@ -850,12 +885,13 @@ static int first_contains_each_compared_step(const naula_layout_plan *first, con
 static void plan_is_stable_for_unchanged_input(void) {
     scenario world;
     start_world(&world);
-    world.repos[0].current_path = "T:/old/intisy-docs";
+    world.repos[0].current_path = ROOT "/old/intisy-docs";
+    add_link(&world, ROOT "/spisor/shared/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
     world.repos[2].current_path = ROOT "/spisor/docs";
     world.repos[3].current_path = ROOT "/spisor/shared/library";
-    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", "T:/old/backend"));
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/old/backend"));
     old->archived = 1;
-    naula_layout_repo *gone = add_repo(&world, repo_at(hex_of('2'), "argocd", "spisor", "T:/old/argocd"));
+    naula_layout_repo *gone = add_repo(&world, repo_at(hex_of('2'), "argocd", "spisor", ROOT "/old/argocd"));
     gone->archived = 1;
     gone->clean_and_pushed = 1;
     naula_layout_plan first;
@@ -867,11 +903,25 @@ static void plan_is_stable_for_unchanged_input(void) {
     CHECK(plans_equal(&first, &again));
     naula_layout_plan_release(&again);
 
+    CHECK(find_step(&first, NAULA_REMOVE_LINK, ROOT "/spisor/shared/lib") != NULL);
     lay_out(&world, &first);
+    world.link_count = 0;
+    for (size_t index = 0; index < first.step_count && world.link_count < 8; index++) {
+        if (first.steps[index].kind == NAULA_MAKE_LINK) {
+            add_link(&world, first.steps[index].path, first.steps[index].target);
+        }
+    }
     naula_layout_plan second;
     CHECK(plan_world(&world, &second, &refusal) == NAULA_OK);
     CHECK(count_kind(&second, NAULA_MOVE_CHECKOUT) == 0);
     CHECK(count_kind(&second, NAULA_REMOVE_CLONE) == 0);
+    for (size_t index = 0; index < second.step_count; index++) {
+        const naula_layout_step *step = &second.steps[index];
+        const naula_layout_step *made =
+            step->kind == NAULA_REMOVE_LINK ? find_step(&second, NAULA_MAKE_LINK, step->path) : NULL;
+        CHECK(made == NULL || strcmp(made->target, step->target) != 0);
+        CHECK(!(step->kind == NAULA_REMOVE_LINK && strcmp(step->path, ROOT "/spisor/shared/library") == 0));
+    }
     CHECK(first_contains_each_compared_step(&first, &second));
     CHECK(count_kind(&second, NAULA_MAKE_LINK) == count_kind(&first, NAULA_MAKE_LINK));
     CHECK(count_kind(&second, NAULA_WRITE_FILE) == count_kind(&first, NAULA_WRITE_FILE));
@@ -901,11 +951,395 @@ static void plan_does_not_depend_on_input_order(void) {
     naula_layout_plan_release(&backward);
 }
 
+
+static naula_status plan_with_root(scenario *world, const char *root, naula_layout_plan *plan, naula_refusal *refusal) {
+    memset(plan, 0, sizeof *plan);
+    plan->size = sizeof *plan;
+    memset(refusal, 0, sizeof *refusal);
+    refusal->size = sizeof *refusal;
+    naula_layout_input input = input_of(world);
+    input.root = root;
+    return naula_layout_plan_make(&input, plan, refusal);
+}
+
+static void refuses_an_unclean_root_or_current_path(void) {
+    const char *roots[] = {"", "relative/root", "root", "T:root", "T:/root/../x", "T:/root/./x", "T:/root//x",
+                           "T:/a:b", "/a/../b"};
+    for (size_t index = 0; index < sizeof roots / sizeof roots[0]; index++) {
+        scenario world;
+        start_world(&world);
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_with_root(&world, roots[index], &plan, &refusal) == NAULA_REFUSED);
+        CHECK(check_text(refusal.code, "layout-input-invalid", roots[index]));
+    }
+    const char *currents[] = {"relative/x", ROOT "/spisor/repos/../../../Users", ROOT "/x/./y", ROOT "//x",
+                              ROOT "/x:stream", ""};
+    for (size_t index = 0; index < sizeof currents / sizeof currents[0]; index++) {
+        scenario world;
+        start_world(&world);
+        add_repo(&world, repo_at(hex_of('1'), "stray", "nobody", currents[index]));
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+        CHECK(check_text(refusal.code, "layout-input-invalid", currents[index]));
+    }
+    scenario world;
+    start_world(&world);
+    add_link(&world, "relative/link", ROOT "/repos/aaaaaaaaaaaa");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "layout-input-invalid", "link path"));
+    start_world(&world);
+    add_link(&world, ROOT "/docs", ROOT "/repos/../../x");
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "layout-input-invalid", "link target"));
+}
+
+static void a_held_repo_outside_the_root_is_left_alone(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[1].current_path = "T:/old/naula";
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", "C:/Users/finn"));
+    old->archived = 1;
+    old->clean_and_pushed = 1;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, "T:/old/naula") == NULL);
+    CHECK(find_report(&plan, "path-outside-root", "T:/old/naula") != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/tools/naula") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_CLONE, "C:/Users/finn") == NULL);
+    CHECK(find_report(&plan, "path-outside-root", "C:/Users/finn") != NULL);
+    for (size_t index = 0; index < plan.step_count; index++) {
+        const naula_layout_step *step = &plan.steps[index];
+        if (step->kind == NAULA_MOVE_CHECKOUT || step->kind == NAULA_REMOVE_CLONE || step->kind == NAULA_REMOVE_LINK) {
+            CHECK(strncmp(step->path, ROOT "/", strlen(ROOT "/")) == 0);
+        }
+    }
+    naula_layout_plan_release(&plan);
+}
+
+static void a_filesystem_root_keeps_its_slash(void) {
+    const char *roots[] = {"/", "T:/", "T:\\"};
+    const char *expected[] = {"/", "T:/", "T:/"};
+    const char *repos[] = {"/repos", "T:/repos", "T:/repos"};
+    for (size_t index = 0; index < sizeof roots / sizeof roots[0]; index++) {
+        scenario world;
+        start_world(&world);
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_with_root(&world, roots[index], &plan, &refusal) == NAULA_OK);
+        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, expected[index]) != NULL);
+        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, repos[index]) != NULL);
+        for (size_t step = 0; step < plan.step_count; step++) {
+            const char *at = plan.steps[step].path;
+            CHECK(at == NULL || (at[0] != '\0' && strstr(at, "//") == NULL));
+        }
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static void never_removes_or_moves_a_clone_at_a_naula_made_path(void) {
+    const char *removed_at[] = {ROOT "/spisor/archive/backend", ROOT "/spisor/shared", ROOT "/spisor/backend",
+                                ROOT "/spisor/shared/library"};
+    for (size_t index = 0; index < sizeof removed_at / sizeof removed_at[0]; index++) {
+        scenario world;
+        start_world(&world);
+        naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", removed_at[index]));
+        old->archived = 1;
+        old->clean_and_pushed = 1;
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        if (find_step(&plan, NAULA_REMOVE_CLONE, removed_at[index]) != NULL) {
+            fprintf(stderr, "  the clone at %s was removed\n", removed_at[index]);
+            check_failures++;
+        }
+        CHECK(find_report(&plan, "path-occupied", removed_at[index]) != NULL);
+        naula_layout_plan_release(&plan);
+    }
+    const char *moved_from[] = {ROOT "/spisor/shared", ROOT "/spisor/archive/x", ROOT "/spisor/archive"};
+    for (size_t index = 0; index < sizeof moved_from / sizeof moved_from[0]; index++) {
+        scenario world;
+        start_world(&world);
+        add_repo(&world, repo_at(hex_of('1'), "mover", "spisor", moved_from[index]));
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        if (find_step(&plan, NAULA_MOVE_CHECKOUT, moved_from[index]) != NULL) {
+            fprintf(stderr, "  the checkout at %s was moved\n", moved_from[index]);
+            check_failures++;
+        }
+        CHECK(find_report(&plan, "path-occupied", moved_from[index]) != NULL);
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static void a_foreign_checkout_in_a_target_folder_blocks_the_repo(void) {
+    scenario world;
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('5'), "docs", "evil", ROOT "/repos/aaaaaaaaaaaa"));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/docs") == NULL);
+    CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/CLAUDE.md") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/repos/aaaaaaaaaaaa") != NULL);
+    naula_layout_plan_release(&plan);
+
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('5'), "inner", "evil", ROOT "/repos/dddddddddddd/inner"));
+    world.repos[1].current_path = ROOT "/old/naula";
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/naula") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/old/naula") != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/tools/naula") == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_checkout_nested_in_another_is_left_alone(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[2].current_path = ROOT "/spisor/repos/bbbbbbbbbbbb";
+    world.repos[3].current_path = ROOT "/spisor/repos/bbbbbbbbbbbb/siblings/library";
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
+    CHECK(find_report(&plan, "nested-checkout", ROOT "/spisor/repos/bbbbbbbbbbbb/siblings/library") != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library") == NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/docs", ROOT "/spisor/repos/bbbbbbbbbbbb"));
+    naula_layout_plan_release(&plan);
+
+    start_world(&world);
+    world.repos[3].current_path = ROOT "/old/library";
+    world.repos[2].current_path = ROOT "/old/library/docs";
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
+    CHECK(find_report(&plan, "nested-checkout", ROOT "/old/library/docs") != NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/old/library") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void removes_the_link_left_by_a_rename(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/spisor/shared/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_link(&world, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    const naula_layout_step *removal = find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/lib");
+    CHECK(removal != NULL && strcmp(removal->target, ROOT "/spisor/repos/eeeeeeeeeeee") == 0);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/library") == NULL);
+    CHECK(step_index(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/lib") <
+          step_index(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library"));
+    naula_layout_plan_release(&plan);
+}
+
+static void removes_the_link_left_by_a_topic_change(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/spisor/platform/library", ROOT "/spisor/repos/eeeeeeeeeeee");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/platform/library") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void removes_the_links_of_a_dropped_org(void) {
+    scenario world;
+    start_world(&world);
+    world.dropped[0] = "weivel";
+    world.dropped_count = 1;
+    add_link(&world, ROOT "/weivel/records", ROOT "/weivel/repos/cccccccccccc");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/weivel/records") != NULL);
+    CHECK(count_kind(&plan, NAULA_REMOVE_CLONE) == 0);
+    naula_layout_plan_release(&plan);
+}
+
+static void removes_the_links_of_a_renamed_org(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/oldspisor/docs", ROOT "/oldspisor/repos/bbbbbbbbbbbb");
+    add_link(&world, ROOT "/oldspisor/forebay/host", ROOT "/oldspisor/forebay/repos/local-host");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/oldspisor/docs") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/oldspisor/forebay/host") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void leaves_links_naula_did_not_make(void) {
+    scenario world;
+    start_world(&world);
+    add_link(&world, ROOT "/mine", "T:/somewhere/else");
+    add_link(&world, ROOT "/tools/thing", ROOT "/notrepos/thing");
+    add_link(&world, "T:/other/link", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_link(&world, ROOT "/r", ROOT "/repos");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(count_kind(&plan, NAULA_REMOVE_LINK) == 0);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_current_path_differing_only_in_case_is_in_place(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[2].current_path = "t:/ROOT/spisor/repos/BBBBBBBBBBBB";
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_checkout_inside_its_own_target_is_left_alone(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[1].current_path = ROOT "/repos/dddddddddddd/x";
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/repos/dddddddddddd/x") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void an_extra_naming_an_unknown_or_ambiguous_org_is_reported(void) {
+    const char *names[] = {"nosuch", "weivel"};
+    for (size_t index = 0; index < 2; index++) {
+        scenario world;
+        start_world(&world);
+        if (index == 1) {
+            forebay_suborg.name = "weivel";
+        }
+        add_repo(&world, repo_at(hex_of('5'), "SensibleToolbox", "Slimefun-Addon-Community", ROOT "/old/stb"));
+        world.extra[0] = sensible_reference;
+        world.extra_orgs[0] = names[index];
+        world.extra_count = 1;
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(find_report(&plan, "org-unknown", ROOT "/old/stb") != NULL);
+        CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/old/stb") == NULL);
+        naula_layout_plan_release(&plan);
+        forebay_suborg.name = "forebay";
+    }
+}
+
+static void a_held_org_named_like_a_top_link_takes_the_folder(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[2].name = "docs";
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/docs") == NULL);
+    CHECK(find_report(&plan, "name-collides", ROOT "/repos/aaaaaaaaaaaa") != NULL);
+    CHECK(writes(&plan, ROOT "/CLAUDE.md", "@repos/aaaaaaaaaaaa/RULES.md\n"));
+    naula_layout_plan_release(&plan);
+}
+
+static void a_sixty_four_hex_id_collides_on_twelve_hex(void) {
+    scenario world;
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('1'), "wide", "spisor", NULL));
+    char long_hex[65];
+    memset(long_hex, '1', 64);
+    long_hex[64] = '\0';
+    add_repo(&world, repo_at(long_hex, "long", "intisy", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "twelve-hex-collision", ROOT "/spisor/repos/111111111111") != NULL);
+    CHECK(find_report(&plan, "twelve-hex-collision", ROOT "/repos/111111111111") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void an_extra_may_name_the_top_org(void) {
+    scenario world;
+    start_world(&world);
+    world.extra[0] = sensible_reference;
+    world.extra_orgs[0] = "INTISY";
+    world.extra_count = 1;
+    add_repo(&world, repo_at(hex_of('5'), "fork", "evil", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(links_to(&plan, ROOT "/fork", ROOT "/repos/555555555555"));
+    naula_layout_plan_release(&plan);
+}
+
+static naula_home stranger_accounts[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "stranger", NULL, NULL},
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "spisor", NULL, NULL}};
+
+static void a_strangers_org_file_captures_nothing(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[world.org_count] = declaration("stranger", &intisy_docs_reference, stranger_accounts, NULL);
+    world.orgs[world.org_count].account_count = 2;
+    world.org_repositories[world.org_count++] = git_id(hex_of('8'));
+    add_repo(&world, repo_at(hex_of('8'), "docs", "stranger", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "account-not-owned", ROOT "/stranger") != NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/docs", ROOT "/spisor/repos/bbbbbbbbbbbb"));
+    CHECK(links_to(&plan, ROOT "/stranger/docs", ROOT "/stranger/repos/888888888888"));
+    for (size_t index = 0; index < plan.step_count; index++) {
+        CHECK(!(plan.steps[index].kind == NAULA_MAKE_LINK && strstr(plan.steps[index].path, "/stranger/") != NULL &&
+                strstr(plan.steps[index].path, "/stranger/docs") == NULL));
+    }
+    naula_layout_plan_release(&plan);
+}
+
+static naula_home lab_accounts[] = {{sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "lab", NULL, NULL}};
+
+static void a_self_declared_suborg_the_parent_does_not_list_lands_at_the_root(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[world.org_count] = declaration("lab", &spisor_docs_reference, lab_accounts, "RULES.md");
+    world.org_repositories[world.org_count++] = git_id(hex_of('8'));
+    add_repo(&world, repo_at(hex_of('8'), "docs", "lab", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "parent-not-listing", ROOT "/lab") != NULL);
+    CHECK(links_to(&plan, ROOT "/lab/docs", ROOT "/lab/repos/888888888888"));
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/lab") == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_self_declared_suborg_nests_when_its_repo_is_in_a_parent_account(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[world.org_count] = declaration("lab", &spisor_docs_reference, lab_accounts, NULL);
+    world.org_repositories[world.org_count++] = git_id(hex_of('8'));
+    add_repo(&world, repo_at(hex_of('8'), "lab-docs", "spisor", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/spisor/lab") != NULL);
+    CHECK(find_report(&plan, "parent-not-listing", NULL) == NULL);
+    CHECK(find_report(&plan, "account-not-owned", ROOT "/spisor/lab") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void refuses_input_smaller_than_its_first_shape(void) {
     scenario world;
     start_world(&world);
     naula_layout_input input = input_of(&world);
-    input.size = (uint32_t)offsetof(naula_layout_input, extra_orgs);
+    input.size = (uint32_t)offsetof(naula_layout_input, existing_link_count);
     naula_layout_plan plan;
     memset(&plan, 0, sizeof plan);
     plan.size = sizeof plan;
@@ -949,7 +1383,7 @@ static void survives_every_allocation_failure(void) {
     scenario world;
     start_world(&world);
     world.repos[2].current_path = ROOT "/spisor/docs";
-    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", "T:/old/backend"));
+    naula_layout_repo *old = add_repo(&world, repo_at(hex_of('1'), "backend", "spisor", ROOT "/old/backend"));
     old->archived = 1;
     add_repo(&world, repo_at(hex_of('2'), "Docs", "spisor", NULL));
     int finished = 0;
@@ -1006,6 +1440,26 @@ int main(void) {
     refuses_a_checkout_holding_an_org_folder();
     plan_is_stable_for_unchanged_input();
     plan_does_not_depend_on_input_order();
+    refuses_an_unclean_root_or_current_path();
+    a_held_repo_outside_the_root_is_left_alone();
+    a_filesystem_root_keeps_its_slash();
+    never_removes_or_moves_a_clone_at_a_naula_made_path();
+    a_foreign_checkout_in_a_target_folder_blocks_the_repo();
+    a_checkout_nested_in_another_is_left_alone();
+    removes_the_link_left_by_a_rename();
+    removes_the_link_left_by_a_topic_change();
+    removes_the_links_of_a_dropped_org();
+    removes_the_links_of_a_renamed_org();
+    leaves_links_naula_did_not_make();
+    a_current_path_differing_only_in_case_is_in_place();
+    a_checkout_inside_its_own_target_is_left_alone();
+    an_extra_naming_an_unknown_or_ambiguous_org_is_reported();
+    a_held_org_named_like_a_top_link_takes_the_folder();
+    a_sixty_four_hex_id_collides_on_twelve_hex();
+    an_extra_may_name_the_top_org();
+    a_strangers_org_file_captures_nothing();
+    a_self_declared_suborg_the_parent_does_not_list_lands_at_the_root();
+    a_self_declared_suborg_nests_when_its_repo_is_in_a_parent_account();
     refuses_input_smaller_than_its_first_shape();
     refuses_an_id_that_could_name_a_path();
     survives_every_allocation_failure();

@@ -45,20 +45,29 @@ char *layout_concatenate(const char *first, const char *second);
 /** Whether `inner` is `outer` or below it, case folded and either separator, so a doubt counts as a clash. */
 int layout_path_encloses(const char *outer, const char *inner);
 int layout_path_strictly_encloses(const char *outer, const char *inner);
-/** Equal but for which separator each uses. */
 int layout_path_equal(const char *left, const char *right);
+/** 1 for `/`, 3 for a drive letter, a colon and a separator, 0 for a path that is not absolute. */
+size_t layout_filesystem_root_length(const char *path);
+int layout_is_clean_absolute(const char *path);
 const char *layout_basename(const char *path);
 char *layout_relative(const char *from, const char *to);
 const char *layout_below_root(const char *root, const char *path);
 int layout_same_repository(const naula_id *left, const naula_id *right);
 int layout_reference_names(const naula_reference *reference, const naula_id *id, const naula_home *primary);
 
+/**
+ * `declarer` is the primary home of the repo that declares the org, the only account the org may hold; NULL when that
+ * repo is not among the root's repos. `not_listing` marks an org laid out under the root because its parent does not
+ * list it.
+ */
 typedef struct layout_org {
     const naula_org_declaration *declaration;
     const naula_id *repository;
     const naula_id *rules_repository;
+    const naula_home *declarer;
     size_t parent;
     int is_top;
+    int not_listing;
     char *folder;
     char *repos_folder;
 } layout_org;
@@ -81,7 +90,12 @@ size_t layout_tree_enclosing(const layout_tree *tree, const char *path);
 int layout_tree_is_folder(const layout_tree *tree, const char *path);
 int layout_org_has_project(const layout_org *org, const char *name);
 
-typedef enum layout_note { LAYOUT_NOTE_NAME_INVALID = 1u << 0, LAYOUT_NOTE_TWO_PROJECT_TOPICS = 1u << 1 } layout_note;
+typedef enum layout_note {
+    LAYOUT_NOTE_NAME_INVALID = 1u << 0,
+    LAYOUT_NOTE_TWO_PROJECT_TOPICS = 1u << 1,
+    LAYOUT_NOTE_OUTSIDE_ROOT = 1u << 2,
+    LAYOUT_NOTE_ORG_UNKNOWN = 1u << 3
+} layout_note;
 
 /**
  * Where one repo goes. `stays` means it is left exactly where it is: not moved, linked or removed. `stale_links` are
@@ -110,6 +124,8 @@ int layout_placement_moves(const layout_placement *placement);
 naula_status layout_place(const naula_layout_input *input, const layout_tree *tree, layout_placements *placements,
                           naula_refusal *refusal);
 naula_status layout_refuse_collisions(layout_placements *placements, layout_builder *builder);
+/** Leaves alone a checkout sitting where naula puts its own links and folders, since that path may be a link. */
+naula_status layout_guard_naula_paths(const layout_tree *tree, layout_placements *placements, layout_builder *builder);
 naula_status layout_order_moves(layout_placements *placements, layout_builder *builder);
 const char *layout_placement_name(const layout_placement *placement);
 /** Where a report names a repo: where it will be once the plan has run. */

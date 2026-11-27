@@ -38,25 +38,29 @@ const char *layout_placement_name(const layout_placement *placement) {
     return placement->repo->name == NULL ? "(unnamed)" : placement->repo->name;
 }
 
-static size_t extra_org(const naula_layout_input *input, const layout_tree *tree, const naula_layout_repo *repo) {
+static size_t extra_org(const naula_layout_input *input, const layout_tree *tree, const naula_layout_repo *repo,
+                        unsigned *notes) {
     for (size_t index = 0; index < input->extra_count; index++) {
         if (!layout_reference_names(&input->extra[index], &repo->id, &repo->primary)) {
             continue;
         }
         const char *name = input->extra_orgs == NULL ? NULL : input->extra_orgs[index];
         int ambiguous = 0;
-        return name == NULL ? 0 : layout_tree_named(tree, name, &ambiguous);
+        size_t org = name == NULL ? 0 : layout_tree_named(tree, name, &ambiguous);
+        *notes |= org == LAYOUT_NONE ? (unsigned)LAYOUT_NOTE_ORG_UNKNOWN : 0u;
+        return org;
     }
     return LAYOUT_NONE;
 }
 
-static size_t org_of(const naula_layout_input *input, const layout_tree *tree, const naula_layout_repo *repo) {
+static size_t org_of(const naula_layout_input *input, const layout_tree *tree, const naula_layout_repo *repo,
+                     unsigned *notes) {
     if (is_homeless(repo)) {
         int is_in_root = repo->current_path != NULL && layout_path_encloses(tree->root, repo->current_path);
         return is_in_root ? layout_tree_enclosing(tree, repo->current_path) : LAYOUT_NONE;
     }
     size_t owner = layout_tree_account_owner(tree, &repo->primary);
-    return owner != LAYOUT_NONE ? owner : extra_org(input, tree, repo);
+    return owner != LAYOUT_NONE ? owner : extra_org(input, tree, repo, notes);
 }
 
 static const char *project_of(const layout_org *org, const naula_layout_repo *repo, int *matches) {
@@ -186,7 +190,13 @@ static naula_status place_one(const naula_layout_input *input, const layout_tree
         return NAULA_REFUSED;
     }
     placement->homeless = is_homeless(repo);
-    placement->org = org_of(input, tree, repo);
+    placement->org = org_of(input, tree, repo, &placement->notes);
+    if (placement->org != LAYOUT_NONE && repo->current_path != NULL &&
+        !layout_path_encloses(tree->root, repo->current_path)) {
+        placement->notes |= LAYOUT_NOTE_OUTSIDE_ROOT;
+        placement->stays = 1;
+        return NAULA_OK;
+    }
     if (placement->org == LAYOUT_NONE || (repo->archived && repo->current_path == NULL) ||
         (placement->homeless && repo->current_path == NULL)) {
         placement->stays = 1;
@@ -280,59 +290,86 @@ naula_status layout_refuse_collisions(layout_placements *placements, layout_buil
     return NAULA_OK;
 }
 
-static naula_status block(layout_builder *builder, layout_placement *placement, const char *in_the_way,
-                          const char *why) {
+typedef struct layout_obstacle {
+    const char *code;
+    const char *why;
+    const char *at;
+} layout_obstacle;
+
+static naula_status block(layout_builder *builder, layout_placement *placement, const layout_obstacle *obstacle) {
+    const char *current = placement->repo->current_path;
     placement->stays = 1;
     placement->removes = 0;
-    return layout_report(builder, "path-occupied", placement->repo->current_path, in_the_way,
-                         "%s is left where it is: %s %s", layout_placement_name(placement), why,
-                         in_the_way == NULL ? "" : in_the_way);
+    return layout_report(builder, obstacle->code, current != NULL ? current : placement->checkout, obstacle->at,
+                         "%s is left where it is: %s %s", layout_placement_name(placement), obstacle->why,
+                         obstacle->at == NULL ? "" : obstacle->at);
 }
 
-/** The first stationary checkout a move or a removal of `placement` would land in or carry along. */
-static const char *obstacle_of(const layout_placements *placements, const layout_placement *placement,
-                               const char **why) {
+/** Whether `placement` still has to reach its checkout folder, by a move or by a clone. */
+static int wants_checkout(const layout_placement *placement) {
     const char *current = placement->repo->current_path;
+    return !placement->stays && !placement->removes && placement->checkout != NULL &&
+           (current == NULL || !layout_path_equal(current, placement->checkout));
+}
+
+static int found(layout_obstacle *obstacle, const char *code, const char *why, const char *at) {
+    obstacle->code = code;
+    obstacle->why = why;
+    obstacle->at = at;
+    return 1;
+}
+
+static int is_obstructed_by(const layout_placement *placement, const layout_placement *other,
+                            layout_obstacle *obstacle) {
+    const char *current = placement->repo->current_path;
+    const char *other_current = other->repo->current_path;
+    int moves = layout_placement_moves(placement);
+    if (placement->removes && layout_path_encloses(current, other_current)) {
+        return found(obstacle, "path-occupied", "removing it would remove the checkout at", other_current);
+    }
+    if (current != NULL && layout_path_equal(current, other_current)) {
+        return found(obstacle, "path-occupied", "another repo claims the same checkout at", other_current);
+    }
+    if (moves && layout_path_strictly_encloses(other_current, current)) {
+        return found(obstacle, "nested-checkout", "it sits inside the checkout at", other_current);
+    }
+    if (wants_checkout(placement) && is_stationary(other) &&
+        (layout_path_encloses(other_current, placement->checkout) ||
+         layout_path_encloses(placement->checkout, other_current))) {
+        return found(obstacle, "path-occupied", "its checkout folder is taken by the checkout at", other_current);
+    }
+    if (moves && is_stationary(other) && layout_path_strictly_encloses(current, other_current)) {
+        return found(obstacle, "path-occupied", "moving it would carry along the checkout at", other_current);
+    }
+    return 0;
+}
+
+static int is_obstructed(const layout_placements *placements, const layout_placement *placement,
+                         layout_obstacle *obstacle) {
+    if (layout_placement_moves(placement) &&
+        layout_path_strictly_encloses(placement->checkout, placement->repo->current_path)) {
+        return found(obstacle, "path-occupied", "it sits inside its own checkout folder", placement->checkout);
+    }
     for (size_t index = 0; index < placements->count; index++) {
         const layout_placement *other = &placements->items[index];
-        const char *other_current = other->repo->current_path;
-        if (other == placement || other_current == NULL) {
-            continue;
-        }
-        if (placement->removes && layout_path_encloses(current, other_current)) {
-            *why = "removing it would remove the checkout at";
-            return other_current;
-        }
-        if (layout_path_encloses(current, other_current) && layout_path_encloses(other_current, current)) {
-            *why = "another repo claims the same checkout at";
-            return other_current;
-        }
-        if (layout_placement_moves(placement) && is_stationary(other) &&
-            layout_path_encloses(other_current, placement->checkout)) {
-            *why = "its checkout folder is taken by the checkout at";
-            return other_current;
-        }
-        if (layout_placement_moves(placement) && is_stationary(other) &&
-            layout_path_strictly_encloses(current, other_current)) {
-            *why = "moving it would carry along the checkout at";
-            return other_current;
+        if (other != placement && other->repo->current_path != NULL && is_obstructed_by(placement, other, obstacle)) {
+            return 1;
         }
     }
-    return NULL;
+    return 0;
 }
 
 static naula_status block_obstructed(layout_placements *placements, layout_builder *builder, int *changed) {
     *changed = 0;
     for (size_t index = 0; index < placements->count; index++) {
         layout_placement *placement = &placements->items[index];
-        if (!layout_placement_moves(placement) && !(placement->removes && !placement->stays)) {
+        if (!wants_checkout(placement) && !(placement->removes && !placement->stays)) {
             continue;
         }
-        const char *why = NULL;
-        const char *in_the_way = obstacle_of(placements, placement, &why);
-        if (in_the_way != NULL) {
+        layout_obstacle obstacle;
+        if (is_obstructed(placements, placement, &obstacle)) {
             *changed = 1;
-            naula_status status = block(builder, placement, in_the_way, why);
+            naula_status status = block(builder, placement, &obstacle);
             if (status != NAULA_OK) {
                 return status;
             }
@@ -341,11 +378,109 @@ static naula_status block_obstructed(layout_placements *placements, layout_build
     return NAULA_OK;
 }
 
-/** Whether `first` has to move before `second`: it sits where `second` goes, or inside `second`. */
+static char lowered(char character) {
+    return character >= 'A' && character <= 'Z' ? (char)(character - 'A' + 'a') : character;
+}
+
+static int same_segment(const char *segment, const char *name) {
+    size_t length = strcspn(segment, "/\\");
+    size_t name_length = strlen(name);
+    if (length != name_length) {
+        return 0;
+    }
+    for (size_t index = 0; index < length; index++) {
+        if (lowered(segment[index]) != lowered(name[index])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int is_last_segment(const char *segment) {
+    const char *rest = segment + strcspn(segment, "/\\");
+    return rest[strspn(rest, "/\\")] == '\0';
+}
+
+/** Where `path` sits among the folders an org keeps for links: 2 under or at `archive`, 1 at a project folder. */
+static int link_folder_kind(const layout_tree *tree, const char *path, int *under_project) {
+    *under_project = 0;
+    for (size_t index = 0; index < tree->count; index++) {
+        const layout_org *org = &tree->orgs[index];
+        if (!layout_path_strictly_encloses(org->folder, path)) {
+            continue;
+        }
+        const char *rest = layout_below_root(org->folder, path);
+        if (same_segment(rest, "archive")) {
+            return 2;
+        }
+        for (size_t project = 0; project < org->declaration->project_count; project++) {
+            if (same_segment(rest, org->declaration->project_names[project])) {
+                *under_project = 1;
+                return is_last_segment(rest) ? 1 : 0;
+            }
+        }
+    }
+    return 0;
+}
+
+static const char *link_enclosing(const layout_placements *placements, const char *path) {
+    for (size_t index = 0; index < placements->count; index++) {
+        const layout_placement *placement = &placements->items[index];
+        const char *links[] = {placement->link, placement->stale_links[0], placement->stale_links[1]};
+        for (size_t link = 0; link < 3; link++) {
+            if (links[link] != NULL && layout_path_encloses(links[link], path)) {
+                return links[link];
+            }
+        }
+    }
+    return NULL;
+}
+
+/**
+ * A clone is removed only where naula never puts a link, since a link there would be removed with what it points at.
+ * A move is refused only from an archive or project folder itself: before the first layout the checkouts sit exactly
+ * where their links will go, and moving a link renames it without touching its target.
+ */
+static int is_at_naula_path(const layout_tree *tree, const layout_placements *placements,
+                            const layout_placement *placement, layout_obstacle *obstacle) {
+    const char *current = placement->repo->current_path;
+    int under_project = 0;
+    int kind = link_folder_kind(tree, current, &under_project);
+    if (placement->removes) {
+        const char *link = link_enclosing(placements, current);
+        if (link != NULL) {
+            return found(obstacle, "path-occupied", "it sits where naula keeps the link", link);
+        }
+        if (kind != 0 || under_project) {
+            return found(obstacle, "path-occupied", "it sits in a folder naula keeps for links", current);
+        }
+    }
+    if (layout_placement_moves(placement) && kind != 0) {
+        return found(obstacle, "path-occupied", "it sits in a folder naula keeps for links", current);
+    }
+    return 0;
+}
+
+naula_status layout_guard_naula_paths(const layout_tree *tree, layout_placements *placements,
+                                      layout_builder *builder) {
+    for (size_t index = 0; index < placements->count; index++) {
+        layout_placement *placement = &placements->items[index];
+        layout_obstacle obstacle;
+        if (placement->stays || placement->repo->current_path == NULL ||
+            !is_at_naula_path(tree, placements, placement, &obstacle)) {
+            continue;
+        }
+        naula_status status = block(builder, placement, &obstacle);
+        if (status != NAULA_OK) {
+            return status;
+        }
+    }
+    return NAULA_OK;
+}
+
+/** Whether `first` has to move before `second`: it sits where `second` goes. */
 static int must_precede(const layout_placement *first, const layout_placement *second) {
-    const char *current = first->repo->current_path;
-    return layout_path_encloses(second->checkout, current) ||
-           layout_path_strictly_encloses(second->repo->current_path, current);
+    return layout_path_encloses(second->checkout, first->repo->current_path);
 }
 
 static int is_ready(const layout_placements *placements, const layout_placement *candidate, const int *ordered) {
@@ -378,8 +513,9 @@ static naula_status block_unordered(layout_placements *placements, layout_builde
     for (size_t index = 0; index < placements->count; index++) {
         layout_placement *placement = &placements->items[index];
         if (!ordered[index] && layout_placement_moves(placement)) {
-            naula_status status = block(builder, placement, placement->checkout,
-                                        "it and other checkouts each sit where another must go, at");
+            layout_obstacle obstacle = {"path-occupied", "it and other checkouts each sit where another must go, at",
+                                        placement->checkout};
+            naula_status status = block(builder, placement, &obstacle);
             if (status != NAULA_OK) {
                 return status;
             }

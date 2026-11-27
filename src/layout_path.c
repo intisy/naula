@@ -35,13 +35,50 @@ int layout_is_reserved(const char *name) {
 char *layout_join(const char *parent, const char *name) {
     size_t parent_length = strlen(parent);
     size_t name_length = strlen(name);
-    char *joined = naula_memory_allocate(parent_length + name_length + 2);
+    size_t separator = parent_length > 0 && is_separator(parent[parent_length - 1]) ? 0 : 1;
+    char *joined = naula_memory_allocate(parent_length + separator + name_length + 1);
     if (joined != NULL) {
         memcpy(joined, parent, parent_length);
         joined[parent_length] = '/';
-        memcpy(joined + parent_length + 1, name, name_length + 1);
+        memcpy(joined + parent_length + separator, name, name_length + 1);
     }
     return joined;
+}
+
+size_t layout_filesystem_root_length(const char *path) {
+    if (is_separator(path[0])) {
+        return 1;
+    }
+    int is_drive = ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':';
+    return is_drive && is_separator(path[2]) ? 3 : 0;
+}
+
+static int is_clean_segment(const char *segment, size_t length) {
+    if (length == 0 || (length == 1 && segment[0] == '.') || (length == 2 && segment[0] == '.' && segment[1] == '.')) {
+        return 0;
+    }
+    return memchr(segment, ':', length) == NULL;
+}
+
+int layout_is_clean_absolute(const char *path) {
+    size_t start = layout_filesystem_root_length(path);
+    if (start == 0) {
+        return 0;
+    }
+    size_t end = strlen(path);
+    while (end > start && is_separator(path[end - 1])) {
+        end--;
+    }
+    size_t segment = start;
+    for (size_t index = start; index <= end; index++) {
+        if (index == end || is_separator(path[index])) {
+            if (end > start && !is_clean_segment(path + segment, index - segment)) {
+                return 0;
+            }
+            segment = index + 1;
+        }
+    }
+    return 1;
 }
 
 char *layout_concatenate(const char *first, const char *second) {
@@ -93,16 +130,7 @@ int layout_path_strictly_encloses(const char *outer, const char *inner) {
 }
 
 int layout_path_equal(const char *left, const char *right) {
-    size_t left_length = without_trailing_separators(left);
-    if (left_length != without_trailing_separators(right)) {
-        return 0;
-    }
-    for (size_t index = 0; index < left_length; index++) {
-        if (left[index] != right[index] && !(is_separator(left[index]) && is_separator(right[index]))) {
-            return 0;
-        }
-    }
-    return 1;
+    return encloses(left, right, 0) && encloses(right, left, 0);
 }
 
 const char *layout_basename(const char *path) {

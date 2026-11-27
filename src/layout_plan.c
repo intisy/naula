@@ -8,6 +8,7 @@
 #include "naula/memory.h"
 
 static const char INPUT_FIX[] = "set each struct's size to its sizeof and give the input a root and a top org";
+static const char PATH_FIX[] = "pass every path absolute and resolved, as the folder it names on disk";
 static const char OCCUPIED_FIX[] = "move that checkout out of the org folder's path, then lay the root out again";
 
 static char *copy_or_null(const char *text, int *failed) {
@@ -346,11 +347,20 @@ static naula_status report_notes(const layout_placement *placement, layout_build
     const char *name = layout_placement_name(placement);
     const char *at = layout_placement_subject(placement);
     naula_status status = NAULA_OK;
+    if (placement->notes & LAYOUT_NOTE_ORG_UNKNOWN) {
+        return layout_report(builder, "org-unknown", repo->current_path, NULL,
+                             "%s is kept in an org this root does not hold once by that name, so it is left alone",
+                             name);
+    }
     if (placement->org == LAYOUT_NONE) {
         return repo->current_path == NULL
                    ? NAULA_OK
                    : layout_report(builder, "not-held", repo->current_path, NULL,
                                    "%s belongs to no org this root holds, so its checkout is left alone", name);
+    }
+    if (placement->notes & LAYOUT_NOTE_OUTSIDE_ROOT) {
+        return layout_report(builder, "path-outside-root", repo->current_path, NULL,
+                             "the checkout of %s is outside the root, so it is left alone", name);
     }
     if (at == NULL) {
         return NAULA_OK;
@@ -370,6 +380,58 @@ static naula_status report_notes(const layout_placement *placement, layout_build
     if (status == NAULA_OK && !layout_repo_is_adopted(repo)) {
         status = layout_report(builder, "unadopted", at, NULL,
                                "%s has no repo.json and is placed from its host alone", name);
+    }
+    return status;
+}
+
+static int is_made(const layout_placements *placements, const naula_layout_link *link) {
+    for (size_t index = 0; index < placements->count; index++) {
+        const layout_placement *placement = &placements->items[index];
+        if (placement->link != NULL && !placement->stays && !placement->removes &&
+            layout_path_equal(placement->link, link->path) && layout_path_equal(placement->checkout, link->target)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** Whether `target` is a folder directly inside a `repos` folder under the root, which only naula's links point at. */
+static int points_into_repos(const char *root, const char *target) {
+    if (!layout_path_strictly_encloses(root, target)) {
+        return 0;
+    }
+    size_t end = strlen(target);
+    while (end > 0 && (target[end - 1] == '/' || target[end - 1] == '\\')) {
+        end--;
+    }
+    while (end > 0 && target[end - 1] != '/' && target[end - 1] != '\\') {
+        end--;
+    }
+    size_t parent_end = end > 0 ? end - 1 : 0;
+    size_t parent_start = parent_end;
+    while (parent_start > 0 && target[parent_start - 1] != '/' && target[parent_start - 1] != '\\') {
+        parent_start--;
+    }
+    static const char REPOS[] = "repos";
+    if (parent_end - parent_start != sizeof REPOS - 1) {
+        return 0;
+    }
+    char segment[sizeof REPOS];
+    memcpy(segment, target + parent_start, sizeof REPOS - 1);
+    segment[sizeof REPOS - 1] = '\0';
+    return layout_same_name(segment, REPOS);
+}
+
+static naula_status emit_stale_links(const naula_layout_input *input, const layout_tree *tree,
+                                     const layout_placements *placements, layout_builder *builder) {
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; index < input->existing_link_count && status == NAULA_OK; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        if (layout_path_strictly_encloses(tree->root, link->path) && points_into_repos(tree->root, link->target) &&
+            !is_made(placements, link)) {
+            status = layout_add(builder, LAYOUT_PHASE_LINK_REMOVALS, 0, NAULA_REMOVE_LINK, link->path, link->target,
+                                NULL);
+        }
     }
     return status;
 }
@@ -417,11 +479,43 @@ static naula_status finish(layout_builder *builder, naula_layout_plan *plan) {
 }
 
 static int input_holds_first_shape(const naula_layout_input *input) {
-    return input->size >= offsetof(naula_layout_input, extra_orgs) + sizeof input->extra_orgs;
+    return input->size >= offsetof(naula_layout_input, existing_link_count) + sizeof input->existing_link_count;
 }
 
 static int plan_holds_first_shape(const naula_layout_plan *plan) {
     return plan->size >= offsetof(naula_layout_plan, step_count) + sizeof plan->step_count;
+}
+
+static naula_status refuse_path(naula_refusal *refusal, const char *what, size_t index, const char *path) {
+    naula_refuse(refusal, "layout-input-invalid", PATH_FIX,
+                 "%s[%zu] \"%s\" is not an absolute path free of empty, . and .. segments", what, index,
+                 path == NULL ? "" : path);
+    return NAULA_REFUSED;
+}
+
+static naula_status check_paths(const naula_layout_input *input, naula_refusal *refusal) {
+    for (size_t index = 0; index < input->repo_count; index++) {
+        const naula_layout_repo *repo = &input->repos[index];
+        int holds_path = repo->size >= offsetof(naula_layout_repo, current_path) + sizeof repo->current_path;
+        if (holds_path && repo->current_path != NULL && !layout_is_clean_absolute(repo->current_path)) {
+            return refuse_path(refusal, "repos", index, repo->current_path);
+        }
+    }
+    for (size_t index = 0; index < input->existing_link_count; index++) {
+        const naula_layout_link *link = &input->existing_links[index];
+        if (link->size < offsetof(naula_layout_link, target) + sizeof link->target) {
+            naula_refuse(refusal, "layout-input-invalid", INPUT_FIX,
+                         "existing_links[%zu] is smaller than its first shape", index);
+            return NAULA_REFUSED;
+        }
+        if (link->path == NULL || !layout_is_clean_absolute(link->path)) {
+            return refuse_path(refusal, "existing_links path", index, link->path);
+        }
+        if (link->target == NULL || !layout_is_clean_absolute(link->target)) {
+            return refuse_path(refusal, "existing_links target", index, link->target);
+        }
+    }
+    return NAULA_OK;
 }
 
 static naula_status check_input(const naula_layout_input *input, naula_refusal *refusal) {
@@ -431,8 +525,11 @@ static naula_status check_input(const naula_layout_input *input, naula_refusal *
                           : (input->org_count > 0 && input->orgs == NULL) ||
                                   (input->repo_count > 0 && input->repos == NULL) ||
                                   (input->extra_count > 0 && input->extra == NULL) ||
-                                  (input->dropped_count > 0 && input->dropped == NULL)
+                                  (input->dropped_count > 0 && input->dropped == NULL) ||
+                                  (input->existing_link_count > 0 && input->existing_links == NULL)
                               ? "a count is set for a list that is NULL"
+                          : !layout_is_clean_absolute(input->root)
+                              ? "the root is not an absolute path free of empty, . and .. segments"
                               : NULL;
     if (missing != NULL) {
         naula_refuse(refusal, "layout-input-invalid", INPUT_FIX, "%s", missing);
@@ -445,7 +542,7 @@ static naula_status check_input(const naula_layout_input *input, naula_refusal *
             return NAULA_REFUSED;
         }
     }
-    return NAULA_OK;
+    return check_paths(input, refusal);
 }
 
 static naula_status plan_layout(const naula_layout_input *input, layout_tree *tree, layout_placements *placements,
@@ -461,6 +558,9 @@ static naula_status plan_layout(const naula_layout_input *input, layout_tree *tr
         status = layout_refuse_collisions(placements, builder);
     }
     if (status == NAULA_OK) {
+        status = layout_guard_naula_paths(tree, placements, builder);
+    }
+    if (status == NAULA_OK) {
         status = layout_order_moves(placements, builder);
     }
     if (status == NAULA_OK) {
@@ -474,6 +574,9 @@ static naula_status plan_layout(const naula_layout_input *input, layout_tree *tr
     }
     if (status == NAULA_OK) {
         status = emit_rules_files(tree, placements, builder);
+    }
+    if (status == NAULA_OK) {
+        status = emit_stale_links(input, tree, placements, builder);
     }
     return status;
 }
