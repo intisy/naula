@@ -58,7 +58,9 @@ int layout_reference_names(const naula_reference *reference, const naula_id *id,
 /**
  * `rules_repository` is the repo that declares the org: an account any input repo with that id is homed in is held
  * without confirmation, and a `memberOf` names that repo to confirm another account. `not_listing` marks an org laid
- * out under the root because its parent does not accept it; `replaces_entry` one that takes the place of its parent's
+ * out under the root because its parent does not accept it; `accepted` one that is the top org, a `suborgs` entry or
+ * nested by its parent's agreement, which outranks an org at the root by default; `replaces_entry` one that takes the
+ * place of its parent's
  * `suborgs` entry of the same name. `set_aside[i]`, once the tree is built, is why the claim on the declaration's
  * account `i` gave way to another org's, 0 while the claim stands.
  */
@@ -70,6 +72,7 @@ typedef struct layout_org {
     int is_top;
     int not_listing;
     int replaces_entry;
+    int accepted;
     unsigned char *set_aside;
     char *folder;
     char *repos_folder;
@@ -81,6 +84,12 @@ typedef struct layout_confirmation {
     const naula_id *declaring;
 } layout_confirmation;
 
+/** An org left out because an accepted org took its folder, reported against the folder of `winner`. */
+typedef struct layout_left_out {
+    const naula_org_declaration *declaration;
+    const naula_org_declaration *winner;
+} layout_left_out;
+
 typedef struct layout_tree {
     const naula_layout_repo *repos;
     size_t repo_count;
@@ -90,6 +99,8 @@ typedef struct layout_tree {
     size_t capacity;
     layout_confirmation *confirmations;
     size_t confirmation_count;
+    layout_left_out *left_out;
+    size_t left_out_count;
 } layout_tree;
 
 naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tree, layout_builder *builder,
@@ -147,6 +158,8 @@ naula_status layout_order_moves(layout_placements *placements, layout_builder *b
 const char *layout_placement_name(const layout_placement *placement);
 /** Where a report names a repo: where it will be once the plan has run. */
 const char *layout_placement_subject(const layout_placement *placement);
+/** layout_placement_subject, or the repo's name, or its id, so a report never names nothing. */
+const char *layout_placement_reported_at(const layout_placement *placement);
 void layout_placements_release(layout_placements *placements);
 
 #endif

@@ -38,6 +38,14 @@ const char *layout_placement_subject(const layout_placement *placement) {
     return placement->checkout;
 }
 
+const char *layout_placement_reported_at(const layout_placement *placement) {
+    const char *subject = layout_placement_subject(placement);
+    if (subject != NULL) {
+        return subject;
+    }
+    return placement->repo->name != NULL ? placement->repo->name : placement->repo->id.commit;
+}
+
 const char *layout_placement_name(const layout_placement *placement) {
     return placement->repo->name == NULL ? "(unnamed)" : placement->repo->name;
 }
@@ -236,7 +244,7 @@ naula_status layout_place(const naula_layout_input *input, const layout_tree *tr
 
 static naula_status report_pair_side(layout_builder *builder, const char *code, const layout_placement *reported,
                                      const layout_placement *other, const char *why) {
-    return layout_report(builder, code, layout_placement_subject(reported), layout_placement_subject(other),
+    return layout_report(builder, code, layout_placement_reported_at(reported), layout_placement_subject(other),
                          "%s (%s) and %s (%s) %s; neither is moved, linked or removed", layout_placement_name(reported),
                          reported->repo->id.commit, layout_placement_name(other), other->repo->id.commit, why);
 }

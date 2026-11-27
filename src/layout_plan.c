@@ -348,7 +348,7 @@ static naula_status report_notes(const layout_placement *placement, layout_build
     const char *at = layout_placement_subject(placement);
     naula_status status = NAULA_OK;
     if (placement->notes & LAYOUT_NOTE_ORG_UNKNOWN) {
-        return layout_report(builder, "org-unknown", repo->current_path, NULL,
+        return layout_report(builder, "org-unknown", layout_placement_reported_at(placement), NULL,
                              "%s is kept in an org this root does not hold once by that name, so it is left alone",
                              name);
     }
@@ -436,37 +436,43 @@ static int has_repos_segment(const char *path) {
     return 0;
 }
 
-static int declares_project(const naula_org_declaration *org, const char *org_name, const char *project) {
-    if (org->name != NULL && layout_same_name(org->name, org_name)) {
-        for (size_t index = 0; index < org->project_count; index++) {
-            if (org->project_names[index] != NULL && layout_same_name(org->project_names[index], project)) {
-                return 1;
-            }
-        }
+/** A checkout folder name naula makes: twelve lowercase hex digits, or `local-` and a folder for a homeless repo. */
+static int is_checkout_name(const char *name) {
+    if (strncmp(name, "local-", 6) == 0) {
+        return name[6] != '\0';
     }
-    for (size_t index = 0; index < org->suborg_count; index++) {
-        if (declares_project(&org->suborgs[index], org_name, project)) {
+    size_t length = strlen(name);
+    return length == 12 && strspn(name, "0123456789abcdef") == length;
+}
+
+static int is_laid_out_folder(const layout_tree *tree, const char *path) {
+    for (size_t index = 0; index < tree->count; index++) {
+        if (layout_path_equal(tree->orgs[index].folder, path)) {
             return 1;
         }
     }
     return 0;
 }
 
-/** A project folder of the org laid out at `folder`, or of a held or dropped org that would be named like it. */
-static int is_project_folder_of(const naula_layout_input *input, const layout_tree *tree, const char *folder,
-                                const char *project) {
-    for (size_t index = 0; index < tree->count; index++) {
-        if (layout_path_equal(tree->orgs[index].folder, folder)) {
-            return layout_org_has_project(&tree->orgs[index], project);
-        }
+/**
+ * Whether `segment` under `folder` may hold naula's links: `archive`, or any folder that is not reserved and is not a
+ * laid-out org, since a project folder that was renamed away, or belongs to an org no longer held, is named nowhere.
+ */
+static int may_hold_links(const layout_tree *tree, const char *folder, const char *segment, int *failed) {
+    if (layout_same_name(segment, "archive")) {
+        return 1;
     }
-    const char *name = layout_basename(folder);
-    for (size_t index = 0; index < input->org_count; index++) {
-        if (declares_project(&input->orgs[index], name, project)) {
-            return 1;
-        }
+    if (layout_is_reserved(segment)) {
+        return 0;
     }
-    return declares_project(input->top, name, project);
+    char *joined = layout_join(folder, segment);
+    if (joined == NULL) {
+        *failed = 1;
+        return 0;
+    }
+    int laid_out = is_laid_out_folder(tree, joined);
+    naula_memory_release(joined);
+    return !laid_out;
 }
 
 static int is_inside_a_checkout(const naula_layout_input *input, const char *path) {
@@ -480,12 +486,13 @@ static int is_inside_a_checkout(const naula_layout_input *input, const char *pat
 }
 
 /**
- * Whether naula could have made `link`: its target is a checkout directly in some org folder's `repos`, and the link
- * sits where that org folder keeps links, at its top, in a project folder or in `archive`, outside every checkout.
+ * Whether naula could have made `link`: its target is a checkout folder directly in some org folder's `repos`, and the
+ * link sits where that org folder keeps links, at its top or one folder down, outside every checkout.
  */
 static int is_naula_link_place(const naula_layout_input *input, const layout_tree *tree, char *folder,
                                const char *path) {
-    if (cut_last_segment(folder) == NULL) {
+    const char *checkout = cut_last_segment(folder);
+    if (checkout == NULL || !is_checkout_name(checkout)) {
         return 0;
     }
     const char *repos = cut_last_segment(folder);
@@ -499,12 +506,12 @@ static int is_naula_link_place(const naula_layout_input *input, const layout_tre
         return -1;
     }
     const char *name = cut_last_segment(rest);
-    int answer = name == NULL ? !layout_is_reserved(rest)
+    int failed = 0;
+    int answer = name == NULL                ? !layout_is_reserved(rest)
                  : strchr(rest, '/') != NULL ? 0
-                                             : layout_same_name(rest, "archive") ||
-                                                   is_project_folder_of(input, tree, folder, rest);
+                                             : may_hold_links(tree, folder, rest, &failed);
     naula_memory_release(rest);
-    return answer;
+    return failed ? -1 : answer;
 }
 
 static naula_status is_stale_link(const naula_layout_input *input, const layout_tree *tree,
@@ -542,7 +549,7 @@ static naula_status report_confirmation(const layout_tree *tree, const layout_pl
     const char *why = strcmp(problem, "member-of-unknown") == 0
                           ? "names no repo declaring an org this root holds"
                           : "names an org that does not list the account of its primary home";
-    return layout_report(builder, problem, layout_placement_subject(placement), NULL,
+    return layout_report(builder, problem, layout_placement_reported_at(placement), NULL,
                          "the memberOf of %s %s, so it confirms nothing", layout_placement_name(placement), why);
 }
 

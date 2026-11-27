@@ -22,7 +22,7 @@ typedef struct scenario {
     naula_reference extra[4];
     const char *extra_orgs[4];
     size_t extra_count;
-    naula_layout_link links[8];
+    naula_layout_link links[16];
     size_t link_count;
 } scenario;
 
@@ -1438,13 +1438,19 @@ static void removes_only_links_in_the_places_naula_links(void) {
     add_link(&world, ROOT "/spisor/shared/deep/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
     add_link(&world, ROOT "/spisor/archive/old", ROOT "/spisor/repos/111111111111");
     add_link(&world, ROOT "/tools/naula-old", ROOT "/repos/dddddddddddd");
-    add_link(&world, ROOT "/elsewhere/repos/k/x", ROOT "/elsewhere/repos/k/repos/y");
+    add_link(&world, ROOT "/elsewhere/repos/k/x", ROOT "/elsewhere/repos/k/repos/222222222222");
+    add_link(&world, ROOT "/spisor/forebay/lib", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_link(&world, ROOT "/spisor/shared/odd", ROOT "/spisor/repos/not-a-checkout");
+    add_link(&world, ROOT "/spisor/shared/upper", ROOT "/spisor/repos/EEEEEEEEEEEE");
     add_repo(&world, repo_at(hex_of('3'), "toolbox", "intisy", ROOT "/spisor/platform"));
     add_link(&world, ROOT "/spisor/platform/thing", ROOT "/spisor/repos/999999999999");
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/views/naula") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/views/naula") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/forebay/lib") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/odd") == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/upper") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/repos/aaaaaaaaaaaa/siblings/naula") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/some/repos/x") == NULL);
     CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/deep/lib") == NULL);
@@ -1663,6 +1669,138 @@ static void refuses_an_id_that_could_name_a_path(void) {
     CHECK(check_text(refusal.code, "layout-input-invalid", "kind 0"));
 }
 
+static void removes_a_link_left_in_a_renamed_project_folder(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    add_link(&world, ROOT "/spisor/old/library", ROOT "/spisor/repos/eeeeeeeeeeee");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/old/library") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void removes_the_project_links_of_a_released_org(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[0] = world.orgs[1];
+    world.org_repositories[0] = world.org_repositories[1];
+    world.orgs[1] = world.orgs[2];
+    world.org_repositories[1] = world.org_repositories[2];
+    world.org_count = 2;
+    add_link(&world, ROOT "/spisor/docs", ROOT "/spisor/repos/bbbbbbbbbbbb");
+    add_link(&world, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee");
+    add_link(&world, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/docs") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/library") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/forebay/host") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_sub_org_never_nests_through_a_claim_set_aside(void) {
+    for (int contested = 0; contested < 2; contested++) {
+        scenario world;
+        start_world(&world);
+        world.repos[4].member_of = &spisor_docs_reference;
+        if (contested) {
+            world.orgs[1].accounts = weivel_and_spisor_accounts;
+            world.orgs[1].account_count = 2;
+            world.repos[3].member_of = &weivel_records_reference;
+        }
+        world.orgs[world.org_count] = declaration("evilsub", &weivel_records_reference, only_stranger_account,
+                                                  "RULES.md");
+        world.org_repositories[world.org_count++] = git_id(hex_of('3'));
+        add_repo(&world, repo_at(hex_of('3'), "evil-docs", "spisor", NULL));
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/weivel/evilsub") == NULL);
+        CHECK(find_report(&plan, "parent-not-listing", ROOT "/evilsub") != NULL);
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static naula_home lab_entry_accounts[] = {{sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "lab", NULL, NULL}};
+static naula_org_declaration lab_entry;
+
+static void a_stranger_named_like_the_tops_entry_is_left_out(void) {
+    scenario world;
+    start_world(&world);
+    lab_entry = declaration("lab", NULL, lab_entry_accounts, NULL);
+    world.top.suborgs = &lab_entry;
+    world.top.suborg_count = 1;
+    world.orgs[world.org_count] = declaration("lab", &intisy_docs_reference, only_stranger_account, "RULES.md");
+    world.org_repositories[world.org_count++] = git_id(hex_of('3'));
+    add_repo(&world, repo_at(hex_of('3'), "records", "stranger", NULL));
+    add_repo(&world, repo_at(hex_of('4'), "bench", "lab", NULL))->member_of = &intisy_docs_reference;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "org-name-taken", ROOT "/lab") != NULL);
+    CHECK(links_to(&plan, ROOT "/lab/bench", ROOT "/lab/repos/444444444444"));
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/lab/records") == NULL);
+    CHECK(find_step(&plan, NAULA_WRITE_FILE, ROOT "/lab/CLAUDE.md") == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void two_orgs_of_equal_standing_with_one_folder_refuse_the_plan(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[1].name = "pinaxis";
+    world.orgs[1].parent = NULL;
+    world.orgs[2].parent = NULL;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "name-collides", "two orgs at the root by default"));
+}
+
+static void a_report_always_names_its_subject(void) {
+    scenario world;
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('2'), "claimer", "stranger", NULL))->member_of = &intisy_docs_reference;
+    world.extra_orgs[0] = "nobody";
+    world.extra[0] = (naula_reference){sizeof(naula_reference), "git:3333333333333333333333333333333333333333", NULL,
+                                       NULL, 0};
+    world.extra_count = 1;
+    add_repo(&world, repo_at(hex_of('3'), "kept", "elsewhere", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "member-of-unlisted", NULL) != NULL);
+    CHECK(find_report(&plan, "org-unknown", NULL) != NULL);
+    for (size_t index = 0; index < plan.step_count; index++) {
+        CHECK(plan.steps[index].kind != NAULA_REPORT || plan.steps[index].path != NULL);
+    }
+    naula_layout_plan_release(&plan);
+}
+
+static void two_different_declarations_from_one_repo_are_refused(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[world.org_count] = world.orgs[1];
+    world.org_repositories[world.org_count++] = world.org_repositories[1];
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(links_to(&plan, ROOT "/weivel/records", ROOT "/weivel/repos/cccccccccccc"));
+    naula_layout_plan_release(&plan);
+
+    world.orgs[world.org_count - 1].rules = "OTHER.md";
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "layout-input-invalid", "one repo, two declarations"));
+
+    start_world(&world);
+    world.orgs[world.org_count] = declaration("again", NULL, intisy_accounts, NULL);
+    world.org_repositories[world.org_count++] = world.top_repository;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "layout-input-invalid", "a declaration beside the top's"));
+}
+
 static void survives_every_allocation_failure(void) {
     scenario world;
     start_world(&world);
@@ -1759,6 +1897,13 @@ int main(void) {
     a_self_declared_suborg_nests_when_its_repo_is_in_a_parent_account();
     refuses_input_smaller_than_its_first_shape();
     refuses_an_id_that_could_name_a_path();
+    removes_a_link_left_in_a_renamed_project_folder();
+    removes_the_project_links_of_a_released_org();
+    a_sub_org_never_nests_through_a_claim_set_aside();
+    a_stranger_named_like_the_tops_entry_is_left_out();
+    two_orgs_of_equal_standing_with_one_folder_refuse_the_plan();
+    a_report_always_names_its_subject();
+    two_different_declarations_from_one_repo_are_refused();
     survives_every_allocation_failure();
     return check_summary("layout_plan_test");
 }
