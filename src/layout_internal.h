@@ -107,18 +107,14 @@ typedef struct layout_tree {
     size_t confirmation_count;
     layout_left_out *left_out;
     size_t left_out_count;
-    const naula_org_declaration *const *link_takers;
-    size_t link_taker_count;
     unsigned char *removable_links;
 } layout_tree;
 
 /**
- * `link_takers` are orgs, not accepted, whose folder an accepted org's repo has its link at; they are left out.
- * `removable_links[i]`, set once the tree is built, says this plan removes `existing_links[i]` before it makes any
- * folder.
+ * `removable_links[i]`, set by the plan once the tree is built, says the plan removes `existing_links[i]` before it
+ * makes any folder.
  */
-naula_status layout_tree_build(const naula_layout_input *input, const naula_org_declaration *const *link_takers,
-                               size_t link_taker_count, layout_tree *tree, layout_builder *builder,
+naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tree, layout_builder *builder,
                                naula_refusal *refusal);
 void layout_tree_release(layout_tree *tree);
 size_t layout_tree_account_owner(const layout_tree *tree, const naula_home *home);

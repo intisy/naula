@@ -1587,23 +1587,122 @@ static void an_extra_naming_an_unknown_or_ambiguous_org_is_reported(void) {
     }
 }
 
-static void an_unaccepted_org_never_takes_the_link_of_a_top_repo(void) {
-    const char *currents[] = {ROOT "/repos/aaaaaaaaaaaa", ROOT "/docs"};
-    for (size_t index = 0; index < 2; index++) {
-        scenario world;
-        start_world(&world);
-        world.orgs[2].name = "docs";
-        world.repos[0].current_path = (char *)currents[index];
-        naula_layout_plan plan;
-        naula_refusal refusal;
-        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-        CHECK(find_report(&plan, "org-name-taken", ROOT "/docs") != NULL);
-        CHECK(links_to(&plan, ROOT "/docs", ROOT "/repos/aaaaaaaaaaaa"));
-        CHECK(find_report(&plan, "name-collides", NULL) == NULL);
-        CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/docs/repos") == NULL);
-        CHECK(writes(&plan, ROOT "/CLAUDE.md", "@docs/RULES.md\n"));
-        naula_layout_plan_release(&plan);
-    }
+static void an_org_folder_always_takes_a_top_repos_link(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[2].name = "docs";
+    world.repos[0].current_path = ROOT "/repos/aaaaaaaaaaaa";
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/docs/repos") != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/docs") == NULL);
+    CHECK(find_report(&plan, "name-collides", ROOT "/repos/aaaaaaaaaaaa") != NULL);
+    CHECK(find_report(&plan, "org-name-taken", NULL) == NULL);
+    CHECK(writes(&plan, ROOT "/CLAUDE.md", "@repos/aaaaaaaaaaaa/RULES.md\n"));
+    naula_layout_plan_release(&plan);
+
+    world.repos[0].current_path = ROOT "/docs";
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "path-occupied", "a checkout holding the org folder"));
+}
+
+static naula_reference fork_reference = {sizeof(naula_reference), "git:4444444444444444444444444444444444444444", NULL,
+                                         NULL, 0};
+
+static void a_repo_named_like_an_org_never_evicts_it(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    world.repos[5].current_path = ROOT "/weivel/repos/cccccccccccc";
+    add_link(&world, ROOT "/weivel/records", ROOT "/weivel/repos/cccccccccccc");
+    add_repo(&world, repo_at(hex_of('2'), "weivel", "intisy", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "org-name-taken", NULL) == NULL);
+    CHECK(find_report(&plan, "not-held", NULL) == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/weivel/records") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/weivel") == NULL);
+    CHECK(find_report(&plan, "name-collides", ROOT "/repos/222222222222") != NULL);
+    CHECK(links_to(&plan, ROOT "/weivel/records", ROOT "/weivel/repos/cccccccccccc"));
+    naula_layout_plan_release(&plan);
+}
+
+static void start_world_with_a_fork_named_spisor(scenario *world) {
+    start_world(world);
+    world->repos[4].member_of = &spisor_docs_reference;
+    add_repo(world, repo_at(hex_of('4'), "spisor", "evil", NULL));
+    world->extra[0] = fork_reference;
+    world->extra_orgs[0] = NULL;
+    world->extra_count = 1;
+}
+
+static void an_extra_fork_named_like_an_org_never_evicts_it(void) {
+    scenario world;
+    start_world_with_a_fork_named_spisor(&world);
+    world.repos[2].current_path = ROOT "/spisor/repos/bbbbbbbbbbbb";
+    add_link(&world, ROOT "/spisor/docs", ROOT "/spisor/repos/bbbbbbbbbbbb");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "org-name-taken", NULL) == NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/docs") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor") == NULL);
+    CHECK(find_report(&plan, "name-collides", ROOT "/repos/444444444444") != NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
+    naula_layout_plan_release(&plan);
+}
+
+static void a_fork_named_like_an_org_never_hands_its_account_to_another(void) {
+    scenario world;
+    start_world_with_a_fork_named_spisor(&world);
+    world.orgs[1].accounts = weivel_and_spisor_accounts;
+    world.orgs[1].account_count = 2;
+    world.repos[3].member_of = &weivel_records_reference;
+    world.repos[3].current_path = ROOT "/spisor/repos/eeeeeeeeeeee";
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "org-name-taken", NULL) == NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/spisor/repos/eeeeeeeeeeee") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/weivel/library") == NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee"));
+    naula_layout_plan_release(&plan);
+}
+
+static void a_link_never_covers_a_checkout_that_stays(void) {
+    scenario world;
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('6'), "old", "intisy", NULL));
+    add_repo(&world, repo_at(hex_of('5'), "x", "evil", ROOT "/old/x"));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/old") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/repos/666666666666") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static void a_recorded_link_at_or_over_a_checkout_is_never_removed(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[0].current_path = ROOT "/docs";
+    add_link(&world, ROOT "/docs", ROOT "/repos/aaaaaaaaaaaa");
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/docs") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/docs") != NULL);
+    naula_layout_plan_release(&plan);
+
+    start_world(&world);
+    add_repo(&world, repo_at(hex_of('5'), "x", "evil", ROOT "/spisor/old/x"));
+    add_link(&world, ROOT "/spisor/old", ROOT "/spisor/repos/eeeeeeeeeeee");
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/old") == NULL);
+    CHECK(find_report(&plan, "path-occupied", ROOT "/spisor/old") != NULL);
+    naula_layout_plan_release(&plan);
 }
 
 static naula_home docs_entry_accounts[] = {
@@ -2237,7 +2336,12 @@ int main(void) {
     a_current_path_differing_only_in_case_is_in_place();
     a_checkout_inside_its_own_target_is_left_alone();
     an_extra_naming_an_unknown_or_ambiguous_org_is_reported();
-    an_unaccepted_org_never_takes_the_link_of_a_top_repo();
+    an_org_folder_always_takes_a_top_repos_link();
+    a_repo_named_like_an_org_never_evicts_it();
+    an_extra_fork_named_like_an_org_never_evicts_it();
+    a_fork_named_like_an_org_never_hands_its_account_to_another();
+    a_link_never_covers_a_checkout_that_stays();
+    a_recorded_link_at_or_over_a_checkout_is_never_removed();
     an_accepted_org_keeps_its_folder_and_the_repo_loses_its_link();
     a_sixty_four_hex_id_collides_on_twelve_hex();
     an_extra_may_name_the_top_org();

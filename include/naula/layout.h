@@ -79,9 +79,9 @@ typedef struct naula_layout_repo {
  * (a confirmation never counts here), or the parent lists its name and that repo is homed in an account the entry
  * names; otherwise it is laid out under the root and reported `parent-not-listing`, and the parent's entry stays. An
  * org at the root by default or refused by its parent never takes the folder of an entry or an accepted org, a project
- * of its parent, a folder naula keeps or the link of a repo an accepted org holds: it is left out and reported
- * `org-name-taken`; two orgs of equal standing refuse the plan as `name-collides`, and an accepted org's folder takes
- * a repo's link path, the repo getting no link, reported `name-collides`. Two `orgs` from one declaring repo with
+ * of its parent or a folder naula keeps: it is left out and reported `org-name-taken`; two orgs of equal standing
+ * refuse the plan as `name-collides`. An org folder always takes a repo's link path, whatever the org's standing, since
+ * a repo's name never decides the tree: the repo gets no link, reported `name-collides`. Two `orgs` from one declaring repo with
  * different declarations refuse the input as `layout-input-invalid`; an identical one is kept once. A listed sub-org
  * whose declaration the entry accepts is nested by the entry and takes its members from its own declaration, reported
  * `suborg-declares-itself`.
@@ -138,7 +138,8 @@ typedef enum naula_layout_step_kind {
  *   (`archive`, or any folder that is neither reserved nor a laid-out org, since a renamed project or a released
  *   org's projects are named nowhere),
  *   pointing at a checkout folder (twelve lowercase hex, or `local-...`) directly in that org folder's `repos`, and
- *   outside every checkout.
+ *   outside every checkout, never at or above a `current_path`. Task 14 removes it only after verifying that `path`
+ *   is a reparse point or symlink whose target is exactly the recorded one, and never falls back to removing a folder.
  * - REMOVE_CLONE removes the archived checkout at `path`, which is a real folder and never a link: the applier refuses
  *   a link at `path` and never follows a link or other reparse point inside it, removing the link itself instead.
  * - WRITE_FILE gives the file at `path` exactly `content`.
