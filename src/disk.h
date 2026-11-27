@@ -54,8 +54,9 @@ naula_status disk_move(const char *from, const char *to, int *held, unsigned lon
  * every component of `below` relative to the one before it, never following a link, so a link anywhere from `root`
  * down, `below` itself included, is refused rather than followed. A link or other reparse point found inside is
  * removed itself and never entered. The walk keeps its folders on its own stack, never the call stack, so depth is
- * bounded only by memory. A folder counts as empty only once a whole listing of it finds nothing; one that is found
- * refilled on DISK_REMOVAL_REFILL_PASSES listings after its first whole one stops the removal. On POSIX a folder or
+ * bounded only by memory, and each folder's listing with it, carried on past every subfolder it holds, so the time is
+ * linear in the entries. A folder counts as empty only once a whole listing of it finds nothing; one that is found
+ * holding entries on DISK_REMOVAL_REFILL_PASSES listings after its first whole one stops the removal. On POSIX a folder or
  * file inside on another file system or mount than the clone's, a bind mount included, is never entered or removed:
  * the removal stops there, and a clone that is itself a mount point stops it before anything is removed. On Linux a
  * bind mount is told apart only by its mount id, from statx or else a file handle; where neither gives one, the
