@@ -35,19 +35,38 @@ static char *copy_of(const char *text, size_t length) {
     return copy;
 }
 
-/** Flushes the folder holding `path`, so a name made or renamed there survives a power cut. */
-static void sync_parent(const char *path) {
-    const char *slash = strrchr(path, '/');
-    char *parent = slash == NULL ? copy_of(".", 1) : copy_of(path, slash == path ? 1 : (size_t)(slash - path));
-    if (parent == NULL) {
-        return;
+/** Flushes the folder holding `path`, cutting the writable `path` short while it opens it, so it allocates nothing. */
+static void sync_folder_of(char *path) {
+    char *slash = strrchr(path, '/');
+    char kept = '\0';
+    char *cut = NULL;
+    if (slash != NULL) {
+        cut = slash == path ? slash + 1 : slash;
+        kept = *cut;
+        *cut = '\0';
     }
-    int descriptor = open(parent, O_RDONLY | O_DIRECTORY);
-    naula_memory_release(parent);
+    int descriptor = open(slash == NULL ? "." : path, O_RDONLY | O_DIRECTORY);
+    if (cut != NULL) {
+        *cut = kept;
+    }
     if (descriptor >= 0) {
         fsync(descriptor);
         close(descriptor);
     }
+}
+
+/**
+ * Flushes the folder holding `path`, so a name made or renamed there survives a power cut. Out of memory is answered
+ * after the change it follows was made, which the journal's missing `done` line leaves to a resume to confirm.
+ */
+static naula_status sync_parent(const char *path) {
+    char *copy = copy_of(path, strlen(path));
+    if (copy == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    sync_folder_of(copy);
+    naula_memory_release(copy);
+    return NAULA_OK;
 }
 
 naula_status disk_folder_make(const char *path, unsigned long *error) {
@@ -55,8 +74,7 @@ naula_status disk_folder_make(const char *path, unsigned long *error) {
     if (mkdir(path, 0777) != 0) {
         return refused(error);
     }
-    sync_parent(path);
-    return NAULA_OK;
+    return sync_parent(path);
 }
 
 /** @implNote rename(2) replaces an empty folder at `to`, so the absence is checked first; the window is accepted. */
@@ -71,8 +89,7 @@ naula_status disk_move(const char *from, const char *to, int *held, unsigned lon
     if (rename(from, to) != 0) {
         return refused(error);
     }
-    sync_parent(to);
-    return NAULA_OK;
+    return sync_parent(to);
 }
 
 static naula_status remove_children(int folder, unsigned long *error);
@@ -138,7 +155,7 @@ naula_status disk_tree_remove(const char *path, unsigned long *error) {
         status = refused(error);
     }
     if (status == NAULA_OK) {
-        sync_parent(path);
+        status = sync_parent(path);
     }
     return status;
 }
@@ -247,7 +264,7 @@ naula_status disk_file_replace(const char *path, const uint8_t *bytes, size_t le
         unlink(temporary);
     }
     if (status == NAULA_OK) {
-        sync_parent(path);
+        sync_folder_of(temporary);
     }
     naula_memory_release(temporary);
     return status;
@@ -319,20 +336,25 @@ naula_status disk_names(const char *path, char ***names, size_t *count, unsigned
 naula_status disk_appender_open(const char *path, int create, disk_appender **appender, unsigned long *error) {
     *appender = NULL;
     *error = 0;
-    int flags = O_WRONLY | O_APPEND | O_NOFOLLOW | (create ? O_CREAT | O_EXCL : 0);
-    int descriptor = open(path, flags, 0666);
-    if (descriptor < 0) {
-        return refused(error);
-    }
-    if (create) {
-        sync_parent(path);
-    }
-    *appender = naula_memory_allocate(sizeof **appender);
-    if (*appender == NULL) {
-        close(descriptor);
+    disk_appender *made = naula_memory_allocate(sizeof *made);
+    if (made == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
-    (*appender)->descriptor = descriptor;
+    int flags = O_WRONLY | O_APPEND | O_NOFOLLOW | (create ? O_CREAT | O_EXCL : 0);
+    int descriptor = open(path, flags, 0666);
+    naula_status status = descriptor < 0 ? refused(error) : NAULA_OK;
+    if (status == NAULA_OK && create) {
+        status = sync_parent(path);
+    }
+    if (status != NAULA_OK) {
+        if (descriptor >= 0) {
+            close(descriptor);
+        }
+        naula_memory_release(made);
+        return status;
+    }
+    made->descriptor = descriptor;
+    *appender = made;
     return NAULA_OK;
 }
 
@@ -393,7 +415,7 @@ naula_status disk_owned_file_create(const char *path, const uint8_t *bytes, size
         if (status != NAULA_OK) {
             unlink(path);
         } else {
-            sync_parent(path);
+            sync_folder_of(copy);
         }
     }
     if (status != NAULA_OK) {
