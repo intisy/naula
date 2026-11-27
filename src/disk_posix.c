@@ -2,6 +2,9 @@
 #ifdef __linux__
 #define _GNU_SOURCE
 #endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 
 #include <dirent.h>
 #include <errno.h>
