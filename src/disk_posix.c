@@ -119,9 +119,8 @@ naula_status disk_move(const char *from, const char *to, int *held, unsigned lon
     return disk_sync_parent(to);
 }
 
-static naula_status remove_children(int folder, unsigned long *error);
-
 #define OWNER_ALL (S_IRUSR | S_IWUSR | S_IXUSR)
+#define OPEN_FOLDER_BUDGET 64
 
 /** A folder without the owner's write and search rights keeps its entries, so it gets them before it is emptied. */
 static naula_status let_owner_empty(int folder, unsigned long *error) {
@@ -140,92 +139,225 @@ static int open_folder_at(int folder, const char *name) {
     return openat(folder, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
 }
 
-/** Empties the folder `name` in `parent`, then removes it; takes ownership of nothing. */
-static naula_status remove_folder_at(int parent, const char *name, unsigned long *error) {
-    int child = open_folder_at(parent, name);
-    if (child < 0) {
-        return refused(error);
+/**
+ * One folder being emptied: its name in the folder below it on the stack, and its identity, so that when its
+ * descriptor was closed to stay within OPEN_FOLDER_BUDGET, the one reopened through `..` is proven the same folder.
+ */
+typedef struct removal_frame {
+    int folder;
+    dev_t device;
+    ino_t inode;
+    char *name;
+} removal_frame;
+
+typedef struct removal {
+    int parent;
+    removal_frame *frames;
+    size_t depth;
+    size_t capacity;
+} removal;
+
+/** Takes ownership of `folder` and `name`, closing and releasing both when it cannot push them. */
+static naula_status push_frame(removal *removing, int folder, char *name, unsigned long *error) {
+    struct stat found;
+    naula_status status = fstat(folder, &found) == 0 ? let_owner_empty(folder, error) : refused(error);
+    if (status == NAULA_OK && removing->depth == removing->capacity) {
+        size_t grown = removing->capacity == 0 ? 64 : removing->capacity * 2;
+        removal_frame *larger = naula_memory_reallocate(removing->frames, grown * sizeof *larger);
+        status = larger == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
+        if (larger != NULL) {
+            removing->frames = larger;
+            removing->capacity = grown;
+        }
     }
-    naula_status status = let_owner_empty(child, error);
     if (status != NAULA_OK) {
-        close(child);
+        close(folder);
+        naula_memory_release(name);
         return status;
     }
-    status = remove_children(child, error);
-    if (status == NAULA_OK && unlinkat(parent, name, AT_REMOVEDIR) != 0) {
-        status = refused(error);
+    removal_frame *frame = &removing->frames[removing->depth++];
+    frame->folder = folder;
+    frame->device = found.st_dev;
+    frame->inode = found.st_ino;
+    frame->name = name;
+    if (removing->depth > OPEN_FOLDER_BUDGET) {
+        removal_frame *resting = &removing->frames[removing->depth - 1 - OPEN_FOLDER_BUDGET];
+        close(resting->folder);
+        resting->folder = -1;
     }
-    return status;
+    return NAULA_OK;
 }
 
-static naula_status remove_child(int folder, const char *name, unsigned long *error) {
-    struct stat found;
-    if (fstatat(folder, name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
-        return refused(error);
-    }
-    if (!S_ISDIR(found.st_mode)) {
-        return unlinkat(folder, name, 0) == 0 ? NAULA_OK : refused(error);
-    }
-    return remove_folder_at(folder, name, error);
-}
-
-/** Takes ownership of `folder` and closes it. */
-static naula_status remove_children(int folder, unsigned long *error) {
-    DIR *listing = fdopendir(folder);
+/**
+ * Reads `folder` from its start, removing every entry that is not a real folder, until it meets one to descend into,
+ * handed back opened in `descend` with its name. `removed` says whether anything went, so a folder counts as empty
+ * only once a whole reading found nothing.
+ */
+static naula_status take_listing(int folder, int *descend, char **name, int *removed, unsigned long *error) {
+    *descend = -1;
+    *removed = 0;
+    int copy = dup(folder);
+    DIR *listing = copy < 0 ? NULL : fdopendir(copy);
     if (listing == NULL) {
         naula_status status = refused(error);
-        close(folder);
+        if (copy >= 0) {
+            close(copy);
+        }
         return status;
     }
+    rewinddir(listing);
     naula_status status = NAULA_OK;
     for (;;) {
         errno = 0;
         struct dirent *entry = readdir(listing);
         if (entry == NULL) {
-            if (errno != 0) {
-                status = refused(error);
-            }
+            status = errno != 0 ? refused(error) : NAULA_OK;
             break;
         }
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
-        status = remove_child(dirfd(listing), entry->d_name, error);
+        *removed = 1;
+        struct stat found;
+        if (fstatat(folder, entry->d_name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
+            status = errno == ENOENT ? NAULA_OK : refused(error);
+        } else if (!S_ISDIR(found.st_mode)) {
+            status = unlinkat(folder, entry->d_name, 0) == 0 || errno == ENOENT ? NAULA_OK : refused(error);
+        } else {
+            *name = copy_of(entry->d_name, strlen(entry->d_name));
+            *descend = *name == NULL ? -1 : open_folder_at(folder, entry->d_name);
+            status = *name == NULL ? NAULA_OUT_OF_MEMORY : (*descend < 0 ? refused(error) : NAULA_OK);
+            if (status != NAULA_OK) {
+                naula_memory_release(*name);
+                *name = NULL;
+            }
+            break;
+        }
         if (status != NAULA_OK) {
             break;
         }
-        rewinddir(listing);
     }
     closedir(listing);
     return status;
 }
 
-/** The parent folder of `path` opened, and where its last component starts; -1 with errno set when it cannot be. */
-static int open_parent(char *path, const char **name) {
-    char *slash = strrchr(path, '/');
-    if (slash == NULL) {
-        *name = path;
-        return open(".", O_RDONLY | O_DIRECTORY);
+/** The descriptor of the folder below the top of the stack, reopened through `..` when it was closed. */
+static naula_status parent_of_top(removal *removing, int *parent, unsigned long *error) {
+    if (removing->depth == 1) {
+        *parent = removing->parent;
+        return NAULA_OK;
     }
-    *name = slash + 1;
-    if (slash == path) {
-        return open("/", O_RDONLY | O_DIRECTORY);
+    removal_frame *below = &removing->frames[removing->depth - 2];
+    if (below->folder < 0) {
+        int reopened = openat(removing->frames[removing->depth - 1].folder, "..", O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        struct stat found;
+        if (reopened < 0 || fstat(reopened, &found) != 0) {
+            naula_status status = refused(error);
+            if (reopened >= 0) {
+                close(reopened);
+            }
+            return status;
+        }
+        if (found.st_dev != below->device || found.st_ino != below->inode) {
+            close(reopened);
+            *error = ESTALE;
+            return NAULA_REFUSED;
+        }
+        below->folder = reopened;
     }
-    *slash = '\0';
-    int parent = open(path, O_RDONLY | O_DIRECTORY);
-    *slash = '/';
-    return parent;
+    *parent = below->folder;
+    return NAULA_OK;
 }
 
-naula_status disk_tree_remove(const char *path, unsigned long *error) {
+static naula_status remove_top_folder(removal *removing, unsigned long *error) {
+    int parent = -1;
+    naula_status status = parent_of_top(removing, &parent, error);
+    removal_frame *top = &removing->frames[removing->depth - 1];
+    close(top->folder);
+    top->folder = -1;
+    if (status == NAULA_OK && unlinkat(parent, top->name, AT_REMOVEDIR) != 0) {
+        status = refused(error);
+    }
+    naula_memory_release(top->name);
+    removing->depth--;
+    return status;
+}
+
+/** Empties and removes the folder `name` in `parent`, depth first, on its own stack rather than the call stack. */
+static naula_status remove_tree_at(int parent, const char *name, unsigned long *error) {
+    removal removing;
+    memset(&removing, 0, sizeof removing);
+    removing.parent = parent;
+    char *own_name = copy_of(name, strlen(name));
+    int clone = own_name == NULL ? -1 : open_folder_at(parent, name);
+    naula_status status = own_name == NULL ? NAULA_OUT_OF_MEMORY : (clone < 0 ? refused(error) : NAULA_OK);
+    if (status == NAULA_OK) {
+        status = push_frame(&removing, clone, own_name, error);
+    } else {
+        naula_memory_release(own_name);
+    }
+    while (status == NAULA_OK && removing.depth > 0) {
+        int descend = -1;
+        char *child = NULL;
+        int removed = 0;
+        status = take_listing(removing.frames[removing.depth - 1].folder, &descend, &child, &removed, error);
+        if (status == NAULA_OK && descend >= 0) {
+            status = push_frame(&removing, descend, child, error);
+        } else if (status == NAULA_OK && !removed) {
+            status = remove_top_folder(&removing, error);
+        }
+    }
+    while (removing.depth > 0) {
+        removal_frame *frame = &removing.frames[--removing.depth];
+        if (frame->folder >= 0) {
+            close(frame->folder);
+        }
+        naula_memory_release(frame->name);
+    }
+    naula_memory_release(removing.frames);
+    return status;
+}
+
+/**
+ * Opens every component of `below` but the last relative to the folder before it, from `root` down, never through a
+ * link, and hands back the last folder and where the last component starts. Cuts `below` while it works.
+ */
+static naula_status walk_to_parent(const char *root, char *below, int *parent, const char **name,
+                                   unsigned long *error) {
+    int folder = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (folder < 0) {
+        return refused(error);
+    }
+    char *component = below;
+    for (char *slash = strchr(component, '/'); slash != NULL; slash = strchr(component, '/')) {
+        *slash = '\0';
+        int next = open_folder_at(folder, component);
+        *slash = '/';
+        close(folder);
+        if (next < 0) {
+            return refused(error);
+        }
+        folder = next;
+        component = slash + 1;
+    }
+    *parent = folder;
+    *name = component;
+    return NAULA_OK;
+}
+
+naula_status disk_tree_remove(const char *root, const char *below, int *held, unsigned long *error) {
+    *held = 0;
     *error = 0;
-    char *copy = copy_of(path, strlen(path));
+    char *copy = copy_of(below, strlen(below));
     if (copy == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
+    int parent = -1;
     const char *name = NULL;
-    int parent = open_parent(copy, &name);
-    naula_status status = parent < 0 ? refused(error) : remove_folder_at(parent, name, error);
+    naula_status status = walk_to_parent(root, copy, &parent, &name, error);
+    if (status == NAULA_OK) {
+        status = remove_tree_at(parent, name, error);
+    }
     if (status == NAULA_OK) {
         fsync(parent);
     }
@@ -233,6 +365,7 @@ naula_status disk_tree_remove(const char *path, unsigned long *error) {
         close(parent);
     }
     naula_memory_release(copy);
+    *held = status == NAULA_REFUSED && *error == EBUSY;
     return status;
 }
 

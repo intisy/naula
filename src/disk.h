@@ -40,10 +40,13 @@ naula_status disk_folder_make(const char *path, unsigned long *error);
 naula_status disk_move(const char *from, const char *to, int *held, unsigned long *error);
 
 /**
- * Removes the real folder `path` and everything in it. A link or other reparse point found inside is removed itself,
- * by a non-recursive call, and never entered; `path` itself is refused when it is one.
+ * Removes the real folder `below` names under the folder `root`, and everything in it. `root` is opened once and
+ * every component of `below` relative to the one before it, never following a link, so a link anywhere from `root`
+ * down, `below` itself included, is refused rather than followed. A link or other reparse point found inside is
+ * removed itself and never entered. The walk keeps its folders on its own stack, never the call stack, so depth is
+ * bounded only by memory. `held` is set when another process holds something inside.
  */
-naula_status disk_tree_remove(const char *path, unsigned long *error);
+naula_status disk_tree_remove(const char *root, const char *below, int *held, unsigned long *error);
 
 /** The whole regular file at `path`, never through a link: NAULA_NOT_FOUND when there is none. */
 naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, unsigned long *error);

@@ -67,13 +67,16 @@ typedef struct naula_apply_options {
  * - REMOVE_LINK removes only a link whose target is exactly the recorded one and which the record holds, by one
  *   non-recursive call, never falling back to removing a folder; the record forgets it once it is gone.
  * - REMOVE_CLONE refuses a link at `path` and removes the real folder, never entering a link or other reparse point
- *   inside it: each is removed itself. Every entry is opened through its folder's open handle and judged by its own
- *   handle, never by a listing or a path; on Windows each folder is held against rename while it is emptied, and
- *   read-only is ignored rather than cleared, since a file's attributes belong to all its hard links.
+ *   inside it: each is removed itself. The root is opened once and every folder from it down to and inside the clone
+ *   through the open handle of the one before it, judged by its own handle, never by a listing or a path, so a link
+ *   swapped in anywhere on the way is refused or removed, never followed. On Windows each folder is held against
+ *   rename while it is emptied, and read-only is ignored rather than cleared, since a file's attributes belong to all
+ *   its hard links. Any depth is removed. A file another process holds stops the run with `folder-held`.
  * - REPORT changes nothing.
  *
- * What it does not guard: each step reads the disk and then changes it, so another program that swaps a folder above
- * a step's path for a link, or makes something at a target, between that check and that change is not caught. A move
+ * What it does not guard: each step but REMOVE_CLONE reads the disk and then changes it, so another program that swaps
+ * a folder above a step's path for a link, or makes something at a target, between that check and that change is not
+ * caught. A move
  * never replaces its target on Windows and on Linux (renameat2 with RENAME_NOREPLACE); elsewhere, or on a Linux file
  * system without it, it checks that the target is missing and then renames, since rename(2) would replace an empty
  * folder there. The lock covers naula against itself only, never another program.

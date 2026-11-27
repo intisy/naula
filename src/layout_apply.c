@@ -565,6 +565,16 @@ static naula_status perform_make_link(applier *applying, const naula_layout_step
     return refuse_change(applying, status, "cannot make the link", step->path, error);
 }
 
+static naula_status perform_remove_clone(applier *applying, const naula_layout_step *step) {
+    unsigned long error = 0;
+    int held = 0;
+    naula_status status = disk_tree_remove(applying->root, apply_below(applying->root, step->path), &held, &error);
+    if (status == NAULA_REFUSED && held) {
+        return apply_refuse_disk(applying->refusal, "folder-held", HELD_FIX, "cannot remove", step->path, error);
+    }
+    return refuse_change(applying, status, "cannot remove", step->path, error);
+}
+
 /** The error is read only after the call that sets it has returned, never in the same argument list. */
 static naula_status perform(applier *applying, const naula_layout_step *step, const decision *decided) {
     unsigned long error = 0;
@@ -588,8 +598,7 @@ static naula_status perform(applier *applying, const naula_layout_step *step, co
         return refuse_change(applying, status, "cannot remove the link", step->path, error);
     case NAULA_REMOVE_CLONE:
         applying->step_changed = 1;
-        status = disk_tree_remove(step->path, &error);
-        return refuse_change(applying, status, "cannot remove", step->path, error);
+        return perform_remove_clone(applying, step);
     default:
         return NAULA_OK;
     }
