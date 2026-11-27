@@ -8,6 +8,10 @@
 static const char LOCAL_PREFIX[] = "local-";
 static const char REPO_FIX[] = "set each repo's size to its sizeof and its id from naula_id_parse";
 
+const naula_reference *layout_repo_member_of(const naula_layout_repo *repo) {
+    return repo->size >= offsetof(naula_layout_repo, member_of) + sizeof repo->member_of ? repo->member_of : NULL;
+}
+
 int layout_repo_is_adopted(const naula_layout_repo *repo) {
     return repo->size >= offsetof(naula_layout_repo, adopted) + sizeof repo->adopted ? repo->adopted : 1;
 }

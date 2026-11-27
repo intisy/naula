@@ -253,6 +253,117 @@ static void nests_a_suborg_under_its_parent(void) {
     naula_layout_plan_release(&plan);
 }
 
+static void a_suborg_holds_its_account_once_a_repo_there_confirms_it(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[4].member_of = &spisor_docs_reference;
+    add_repo(&world, repo_at(hex_of('1'), "proxy", "forebay", NULL));
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "account-not-owned", NULL) == NULL);
+    CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
+    CHECK(links_to(&plan, ROOT "/spisor/forebay/proxy", ROOT "/spisor/forebay/repos/111111111111"));
+    CHECK(find_report(&plan, "member-of-unknown", NULL) == NULL);
+    CHECK(find_report(&plan, "member-of-unlisted", NULL) == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static naula_home intisy_and_archive_accounts[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "intisy", NULL, NULL},
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "intisy-archive", NULL, NULL}};
+
+static void start_world_holding_the_archive(scenario *world) {
+    start_world(world);
+    world->top.accounts = intisy_and_archive_accounts;
+    world->top.account_count = 2;
+    add_repo(world, repo_at(hex_of('1'), "old-tool", "intisy-archive", NULL));
+}
+
+static void an_org_holds_an_extra_account_through_a_confirming_repo(void) {
+    scenario world;
+    start_world_holding_the_archive(&world);
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "account-not-owned", ROOT) != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/old-tool") == NULL);
+    naula_layout_plan_release(&plan);
+
+    world.repos[world.repo_count - 1].member_of = &intisy_docs_reference;
+    add_repo(&world, repo_at(hex_of('2'), "older-tool", "intisy-archive", NULL));
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "account-not-owned", ROOT) == NULL);
+    CHECK(links_to(&plan, ROOT "/old-tool", ROOT "/repos/111111111111"));
+    CHECK(links_to(&plan, ROOT "/older-tool", ROOT "/repos/222222222222"));
+    naula_layout_plan_release(&plan);
+}
+
+static void a_strangers_member_of_confirms_nothing(void) {
+    scenario world;
+    start_world_holding_the_archive(&world);
+    add_repo(&world, repo_at(hex_of('2'), "claimer", "stranger", ROOT "/claimer"))->member_of =
+        &intisy_docs_reference;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "account-not-owned", ROOT) != NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/old-tool") == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/claimer") == NULL);
+    CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/claimer") == NULL);
+    CHECK(find_report(&plan, "member-of-unlisted", ROOT "/claimer") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
+static naula_place unknown_docs_place = {sizeof(naula_place), NAULA_HOME_PROVIDER, "github", NULL, 4, NULL, NULL};
+static naula_reference unknown_docs_reference = {sizeof(naula_reference),
+                                                 "git:6666666666666666666666666666666666666666", NULL,
+                                                 &unknown_docs_place, 1};
+
+static void a_member_of_naming_an_org_nobody_holds_is_reported(void) {
+    const char *dropped[] = {NULL, "spisor"};
+    naula_reference *references[] = {&unknown_docs_reference, &spisor_docs_reference};
+    for (size_t index = 0; index < 2; index++) {
+        scenario world;
+        start_world(&world);
+        world.dropped[0] = dropped[index];
+        world.dropped_count = dropped[index] == NULL ? 0 : 1;
+        world.repos[4].member_of = references[index];
+        world.repos[4].current_path = ROOT "/host";
+        naula_layout_plan plan;
+        naula_refusal refusal;
+        CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+        const naula_layout_step *report = find_report(&plan, "member-of-unknown", ROOT "/host");
+        CHECK(report != NULL && strstr(report->content, "host") != NULL);
+        CHECK(find_step(&plan, NAULA_MOVE_CHECKOUT, ROOT "/host") == NULL);
+        naula_layout_plan_release(&plan);
+    }
+}
+
+static naula_home weivel_and_forebay_accounts[] = {
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "weivel", NULL, NULL},
+    {sizeof(naula_home), NAULA_HOME_PROVIDER, "github", NULL, "forebay", NULL, NULL}};
+
+static void two_orgs_confirmed_for_one_account_are_refused(void) {
+    scenario world;
+    start_world(&world);
+    world.orgs[1].accounts = weivel_and_forebay_accounts;
+    world.orgs[1].account_count = 2;
+    world.repos[4].member_of = &spisor_docs_reference;
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
+    CHECK(find_report(&plan, "account-not-owned", ROOT "/weivel") != NULL);
+    naula_layout_plan_release(&plan);
+
+    add_repo(&world, repo_at(hex_of('1'), "proxy", "forebay", NULL))->member_of = &weivel_records_reference;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "account-held-twice", "two confirmed orgs"));
+    CHECK(strstr(refusal.detail, "forebay") != NULL && strstr(refusal.detail, "weivel") != NULL);
+    CHECK(plan.step_count == 0);
+}
+
 static void places_a_held_org_without_its_parent_at_the_root(void) {
     scenario world;
     start_world(&world);
@@ -301,7 +412,7 @@ static void org_without_rules_gets_no_claude_file(void) {
     naula_layout_plan_release(&plan);
 }
 
-static void a_suborgs_own_declaration_wins_and_the_entry_is_reported_stale(void) {
+static void a_listed_suborg_declaring_itself_takes_its_members_from_its_own_declaration(void) {
     scenario world;
     start_world(&world);
     world.orgs[world.org_count] = declaration("forebay", &spisor_docs_reference, forebay_accounts, "RULES.md");
@@ -310,7 +421,10 @@ static void a_suborgs_own_declaration_wins_and_the_entry_is_reported_stale(void)
     naula_layout_plan plan;
     naula_refusal refusal;
     CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
-    CHECK(find_report(&plan, "suborg-entry-stale", ROOT "/spisor/forebay") != NULL);
+    const naula_layout_step *report = find_report(&plan, "suborg-declares-itself", ROOT "/spisor/forebay");
+    CHECK(report != NULL && strstr(report->content, "authorizes") != NULL &&
+          strstr(report->content, "supplies its members") != NULL && strstr(report->content, "deleted") == NULL);
+    CHECK(find_report(&plan, "suborg-entry-stale", NULL) == NULL);
     CHECK(writes(&plan, ROOT "/spisor/forebay/CLAUDE.md", "@records/RULES.md\n"));
     CHECK(links_to(&plan, ROOT "/spisor/forebay/host", ROOT "/spisor/forebay/repos/ffffffffffff"));
     naula_layout_plan_release(&plan);
@@ -1355,6 +1469,12 @@ static void refuses_input_smaller_than_its_first_shape(void) {
     input = input_of(&world);
     input.top = NULL;
     CHECK(naula_layout_plan_make(&input, &plan, &refusal) == NAULA_REFUSED);
+    naula_reference short_reference = spisor_docs_reference;
+    short_reference.size = (uint32_t)offsetof(naula_reference, at_count);
+    world.repos[4].member_of = &short_reference;
+    input = input_of(&world);
+    CHECK(naula_layout_plan_make(&input, &plan, &refusal) == NAULA_REFUSED);
+    CHECK(check_text(refusal.code, "layout-input-invalid", "short memberOf"));
 }
 
 static void refuses_an_id_that_could_name_a_path(void) {
@@ -1406,11 +1526,16 @@ static void survives_every_allocation_failure(void) {
 
 int main(void) {
     nests_a_suborg_under_its_parent();
+    a_suborg_holds_its_account_once_a_repo_there_confirms_it();
+    an_org_holds_an_extra_account_through_a_confirming_repo();
+    a_strangers_member_of_confirms_nothing();
+    a_member_of_naming_an_org_nobody_holds_is_reported();
+    two_orgs_confirmed_for_one_account_are_refused();
     places_a_held_org_without_its_parent_at_the_root();
     generates_one_import_line_per_org_with_rules();
     forebay_suborg_imports_through_its_parents_docs();
     org_without_rules_gets_no_claude_file();
-    a_suborgs_own_declaration_wins_and_the_entry_is_reported_stale();
+    a_listed_suborg_declaring_itself_takes_its_members_from_its_own_declaration();
     links_by_the_one_project_topic();
     links_at_the_org_top_with_no_project_topic();
     two_project_topics_get_no_link();

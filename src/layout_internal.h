@@ -56,8 +56,9 @@ int layout_same_repository(const naula_id *left, const naula_id *right);
 int layout_reference_names(const naula_reference *reference, const naula_id *id, const naula_home *primary);
 
 /**
- * `declarer` is the primary home of the repo that declares the org, the only account the org may hold; NULL when that
- * repo is not among the root's repos. `not_listing` marks an org laid out under the root because its parent does not
+ * `declarer` is the primary home of the repo that declares the org, an account the org holds without confirmation;
+ * NULL when that repo is not among the root's repos. `rules_repository` is that declaring repo, which a `memberOf`
+ * names to confirm another account. `not_listing` marks an org laid out under the root because its parent does not
  * list it.
  */
 typedef struct layout_org {
@@ -72,11 +73,19 @@ typedef struct layout_org {
     char *repos_folder;
 } layout_org;
 
+/** A repo's `memberOf`, `declaring` the held repo it names, NULL when it names none that declares a held org. */
+typedef struct layout_confirmation {
+    const naula_layout_repo *repo;
+    const naula_id *declaring;
+} layout_confirmation;
+
 typedef struct layout_tree {
     char *root;
     layout_org *orgs;
     size_t count;
     size_t capacity;
+    layout_confirmation *confirmations;
+    size_t confirmation_count;
 } layout_tree;
 
 naula_status layout_tree_build(const naula_layout_input *input, layout_tree *tree, layout_builder *builder,
@@ -88,6 +97,8 @@ size_t layout_tree_named(const layout_tree *tree, const char *name, int *ambiguo
 /** The deepest org whose folder holds `path`, the top org when none does. */
 size_t layout_tree_enclosing(const layout_tree *tree, const char *path);
 int layout_tree_is_folder(const layout_tree *tree, const char *path);
+/** `member-of-unknown` or `member-of-unlisted` when `repo`'s `memberOf` confirms nothing, NULL otherwise. */
+const char *layout_tree_confirmation_problem(const layout_tree *tree, const naula_layout_repo *repo);
 int layout_org_has_project(const layout_org *org, const char *name);
 
 typedef enum layout_note {
@@ -120,6 +131,7 @@ typedef struct layout_placements {
 } layout_placements;
 
 int layout_repo_is_adopted(const naula_layout_repo *repo);
+const naula_reference *layout_repo_member_of(const naula_layout_repo *repo);
 int layout_placement_moves(const layout_placement *placement);
 naula_status layout_place(const naula_layout_input *input, const layout_tree *tree, layout_placements *placements,
                           naula_refusal *refusal);

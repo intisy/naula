@@ -436,6 +436,19 @@ static naula_status emit_stale_links(const naula_layout_input *input, const layo
     return status;
 }
 
+static naula_status report_confirmation(const layout_tree *tree, const layout_placement *placement,
+                                        layout_builder *builder) {
+    const char *problem = layout_tree_confirmation_problem(tree, placement->repo);
+    if (problem == NULL) {
+        return NAULA_OK;
+    }
+    const char *why = strcmp(problem, "member-of-unknown") == 0
+                          ? "names no repo declaring an org this root holds"
+                          : "names an org that does not list the account of its primary home";
+    return layout_report(builder, problem, layout_placement_subject(placement), NULL,
+                         "the memberOf of %s %s, so it confirms nothing", layout_placement_name(placement), why);
+}
+
 static naula_status emit_placements(const layout_tree *tree, const layout_placements *placements,
                                     layout_builder *builder) {
     naula_status status = NAULA_OK;
@@ -443,6 +456,9 @@ static naula_status emit_placements(const layout_tree *tree, const layout_placem
         status = emit_placement(tree, &placements->items[index], builder);
         if (status == NAULA_OK) {
             status = report_notes(&placements->items[index], builder);
+        }
+        if (status == NAULA_OK) {
+            status = report_confirmation(tree, &placements->items[index], builder);
         }
     }
     return status;
@@ -499,6 +515,12 @@ static naula_status check_paths(const naula_layout_input *input, naula_refusal *
         int holds_path = repo->size >= offsetof(naula_layout_repo, current_path) + sizeof repo->current_path;
         if (holds_path && repo->current_path != NULL && !layout_is_clean_absolute(repo->current_path)) {
             return refuse_path(refusal, "repos", index, repo->current_path);
+        }
+        const naula_reference *member_of = layout_repo_member_of(repo);
+        if (member_of != NULL && member_of->size < offsetof(naula_reference, at_count) + sizeof member_of->at_count) {
+            naula_refuse(refusal, "layout-input-invalid", INPUT_FIX,
+                         "repos[%zu].member_of is smaller than its first shape", index);
+            return NAULA_REFUSED;
         }
     }
     for (size_t index = 0; index < input->existing_link_count; index++) {

@@ -28,7 +28,9 @@ extern "C" {
  * repo with no home. `current_path` is where its checkout is now, NULL when it is not cloned; a held repo whose
  * checkout is outside the root is left alone and reported `path-outside-root`. `clean_and_pushed` says
  * every commit of the checkout is on a home and nothing is uncommitted; only then may an archived clone be removed.
- * First shape ends at `current_path`; a struct without `adopted` is read as adopted.
+ * `member_of` is the `org.memberOf` of its repo.json, NULL when it states none: it confirms the account of `primary`,
+ * and no other, for the org the referenced repo declares. First shape ends at `current_path`; a struct without
+ * `adopted` is read as adopted, and one without `member_of` confirms nothing.
  */
 typedef struct naula_layout_repo {
     uint32_t size;
@@ -41,6 +43,7 @@ typedef struct naula_layout_repo {
     int clean_and_pushed;
     char *current_path;
     int adopted;
+    const naula_reference *member_of;
 } naula_layout_repo;
 
 /**
@@ -51,10 +54,14 @@ typedef struct naula_layout_repo {
  * org. `existing_links` are the links found under the root, each `path` pointing at `target`; one whose target sits
  * in a `repos` folder and that the plan does not make again is removed. First shape ends at `existing_link_count`.
  *
- * An org holds only the accounts its declaring repo's primary home sits under (for a sub-org entry, the repo that lists
- * it); any other account it names is reported `account-not-owned` and ignored. An org nests under its `parent` only
- * when the parent lists it in `suborgs` or its declaring repo sits under an account the parent holds; otherwise it is
- * laid out under the root and reported `parent-not-listing`.
+ * An org holds an account it names when its declaring repo's primary home sits under it (for a sub-org entry, the repo
+ * that lists it), or when a repo whose primary home sits under it names that declaring repo in `member_of`; any other
+ * account it names is reported `account-not-owned` and ignored. A `member_of` naming no repo that declares a held org
+ * is reported `member-of-unknown`, and one whose org does not name its account `member-of-unlisted`; neither confirms
+ * anything. Two orgs holding one account refuse the plan. An org nests under its `parent` only when the parent lists it
+ * in `suborgs` or its declaring repo sits under an account the parent holds; otherwise it is laid out under the root
+ * and reported `parent-not-listing`. A listed sub-org that also declares itself is nested by the entry and takes its
+ * members from its own declaration, reported `suborg-declares-itself`.
  */
 /** First shape ends at `target`. */
 typedef struct naula_layout_link {
@@ -104,8 +111,8 @@ typedef enum naula_layout_step_kind {
  * - WRITE_FILE gives the file at `path` exactly `content`.
  * - MAKE_LINK makes `path` a link to `target`, replacing only a link.
  * - REPORT names what the layout left alone: `code`, the repo or org at `path`, another one involved at `target` or
- *   NULL, and `content` saying why. `unadopted`, `not-held` and `path-outside-root` are notes; every other code is a
- *   refusal.
+ *   NULL, and `content` saying why. `unadopted`, `not-held`, `path-outside-root` and `suborg-declares-itself` are
+ *   notes; every other code is a refusal.
  * First shape ends at `code`.
  */
 typedef struct naula_layout_step {
