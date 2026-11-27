@@ -31,24 +31,36 @@ static void refuse_git_failed(naula_refusal *refusal, const char *what, const na
                  result->exit_code, result->error);
 }
 
-/** Runs git with `arguments` after the program name; a git that cannot start is the `git-missing` refusal. */
-static naula_status run_git(const char *repository, const char *const *arguments, naula_run_result *result,
-                            naula_refusal *refusal) {
-    const char *command[24];
+#define GIT_ARGUMENT_LIMIT 32
+
+naula_status naula_git_run(const char *repository, const char *const *arguments, const char *input,
+                           size_t input_length, naula_run_result *result, naula_refusal *refusal) {
+    const char *command[GIT_ARGUMENT_LIMIT + 2];
     size_t count = 0;
     command[count++] = git_program;
-    for (size_t index = 0; arguments[index] != NULL && count < 23; index++) {
+    for (size_t index = 0; arguments[index] != NULL; index++) {
+        if (count > GIT_ARGUMENT_LIMIT) {
+            naula_refuse(refusal, "git-arguments-too-many", "pass at most 32 arguments to git",
+                         "the git command has more than 32 arguments");
+            return NAULA_MALFORMED;
+        }
         command[count++] = arguments[index];
     }
     command[count] = NULL;
     naula_git_environment_entries environment;
     naula_git_environment(&environment);
-    naula_status status = naula_run(command, repository, environment.list, result, refusal);
+    naula_status status =
+        naula_run_with_input(command, repository, environment.list, input, input_length, result, refusal);
     if (status == NAULA_NOT_FOUND) {
         naula_refuse(refusal, "git-missing", "install git 2.24 or newer and put it on PATH", "no git program was found");
         return NAULA_REFUSED;
     }
     return status;
+}
+
+static naula_status run_git(const char *repository, const char *const *arguments, naula_run_result *result,
+                            naula_refusal *refusal) {
+    return naula_git_run(repository, arguments, NULL, 0, result, refusal);
 }
 
 static naula_status run_git_succeeding(const char *repository, const char *const *arguments, const char *what,

@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "naula/id.h"
+#include "naula/run.h"
 #include "naula/status.h"
 
 #ifdef __cplusplus
@@ -19,6 +20,14 @@ typedef struct naula_git_environment_entries {
 } naula_git_environment_entries;
 
 void naula_git_environment(naula_git_environment_entries *entries);
+
+/**
+ * Runs git with the NULL-terminated `arguments` after the program name, in `repository` (NULL keeps the caller's),
+ * with naula_git_environment and `input` on its standard input (NULL for none). A git that cannot start is the
+ * `git-missing` refusal; a git that ran and failed is NAULA_OK with its exit code, for the caller to read.
+ */
+naula_status naula_git_run(const char *repository, const char *const *arguments, const char *input,
+                           size_t input_length, naula_run_result *result, naula_refusal *refusal);
 
 /**
  * Refuses with `git-missing` when no `git` runs, and with `git-too-old` below 2.24, the first release that takes
