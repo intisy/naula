@@ -59,7 +59,14 @@ typedef struct disk_walk {
 naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error);
 void disk_walk_release(disk_walk *walk);
 
-/** Renames what `moving` holds to `name` in the folder `folder` holds, replacing what is there only when `replace`. */
+/**
+ * Renames what `moving` holds to `name` in the folder `folder` holds, replacing what is there only when `replace`.
+ *
+ * @implNote Nothing is flushed after the rename, unlike POSIX's fsync of both folders: MOVEFILE_WRITE_THROUGH matters
+ * only to a move Windows copies across volumes, which a rename by handle never is; NTFS logs its metadata changes in
+ * order, so once the journal's `done` line after it is flushed the rename is on the disk too; and a step whose `done`
+ * line never reached the disk is decided again from the disk on resume, so a rename the disk lost is made again.
+ */
 naula_status disk_rename_by_handle(const relative_opener *opener, HANDLE moving, HANDLE folder, const WCHAR *name,
                                    DWORD name_bytes, int replace, unsigned long *error);
 
