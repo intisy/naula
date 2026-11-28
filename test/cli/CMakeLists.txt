@@ -13,6 +13,10 @@ target_link_libraries(cli_test PRIVATE naula_git naula naula_allocator)
 target_compile_definitions(cli_test PRIVATE NAULA_PROGRAM="$<TARGET_FILE:naula_cli_test>"
     NAULA_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}" NAULA_CMAKE="${CMAKE_COMMAND}")
 naula_strict_warnings(cli_test)
+# The driver builds paths and JSON in fixed buffers sized for its own fixtures; GCC cannot see those bounds.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(cli_test PRIVATE -Wno-format-truncation -Wno-restrict)
+endif()
 
 set(NAULA_CLI_HOME "${CMAKE_CURRENT_BINARY_DIR}/home")
 file(MAKE_DIRECTORY "${NAULA_CLI_HOME}")
