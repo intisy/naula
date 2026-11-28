@@ -491,10 +491,19 @@ naula_status sync_run(cli_context *context, sync_request *request, naula_refusal
     if (status == NAULA_OK && !request->plan_only) {
         status = resume_unfinished(request, refusal);
     }
+    int incomplete = 0;
+    if (status == NAULA_OK && request->reconcile) {
+        status = sync_push_half(context, request, &incomplete);
+    }
     sync_model model;
     memset(&model, 0, sizeof model);
     if (status == NAULA_OK) {
         status = lay_out(context, request, &model, &held, refusal);
+    }
+    if (status == NAULA_OK && incomplete) {
+        naula_refuse(refusal, "reconcile-incomplete", "run naula sync again once the hosts answer",
+                     "the root is laid out, and the hosts of at least one repo do not match its repo.json yet");
+        status = NAULA_REFUSED;
     }
     if (status != NAULA_OK) {
         cli_print_questions(context);

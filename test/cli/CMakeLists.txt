@@ -31,7 +31,8 @@ file(MAKE_DIRECTORY "${NAULA_CLI_HOME}")
 # Git for Windows stops at MAX_PATH inside nested checkouts unless told otherwise; other systems ignore the key.
 # naula's own git children never see GIT_CONFIG_GLOBAL, so the same settings sit where git looks under HOME too.
 foreach(config IN ITEMS gitconfig .gitconfig)
-    file(WRITE "${NAULA_CLI_HOME}/${config}" "[core]\n\tlongpaths = true\n[init]\n\tdefaultBranch = main\n")
+    file(WRITE "${NAULA_CLI_HOME}/${config}"
+        "[core]\n\tlongpaths = true\n[init]\n\tdefaultBranch = main\n[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n")
 endforeach()
 set(NAULA_CLI_ENVIRONMENT "HOME=${NAULA_CLI_HOME};USERPROFILE=${NAULA_CLI_HOME};XDG_CONFIG_HOME=${NAULA_CLI_HOME}/xdg;GIT_CONFIG_GLOBAL=${NAULA_CLI_HOME}/gitconfig;GIT_CONFIG_NOSYSTEM=1")
 
@@ -53,7 +54,13 @@ foreach(name IN ITEMS check_refuses_a_rebased_root check_warns_on_a_narrow_at_an
         sync_keeps_a_linked_copys_checkout_from_a_fork_of_its_id sync_refuses_a_fork_taking_a_checkout_naula_linked
         sync_refuses_an_empty_repo_naula_linked release_keeps_an_edited_one_line_rules_file
         sync_refuses_a_fork_of_our_name_in_another_held_account
-        sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy)
+        sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy
+        sync_converges_after_a_home_refused_the_rename rename_is_refused_before_push_when_a_home_has_the_name
+        rename_is_refused_for_a_reusable_workflow_repo transfer_moves_the_checkout_only_across_orgs
+        planned_move_creates_the_new_home_and_pushes_every_ref retire_refuses_while_a_dependent_lacks_the_new_home
+        retire_refuses_while_the_old_home_times_out retire_archives_only_after_the_listing_commit_is_pushed
+        adopt_keeps_paths_and_repeats adopt_is_idempotent adopt_proposes_the_fork_exception_on_a_shared_root
+        adopt_drops_claims_and_place new_creates_every_home_and_the_link add_writes_id_at_importname_and_commit)
     add_test(NAME cli/${name} COMMAND cli_test ${name})
     set_tests_properties(cli/${name} PROPERTIES TIMEOUT 300 ENVIRONMENT "${NAULA_CLI_ENVIRONMENT}")
 endforeach()

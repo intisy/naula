@@ -15,11 +15,15 @@ static const char usage_text[] =
     "  init <folder> <top org home>         make a root and lay its orgs out\n"
     "  hold <org home>                      hold another org in this root, then sync\n"
     "  release <org>                        stop holding an org, then sync\n"
-    "  sync [<org>]                         clone what is missing, relink, regenerate CLAUDE.md\n"
+    "  sync [<org>]                         bring hosts to each repo.json, clone, relink\n"
     "  clone <home | id --at <place>...>    clone a repo into its repos/<12 hex> folder\n"
     "  resolve <id> --at <place>...         print the homes that speak for an id\n"
     "  check [--repo <dir>] [--previous <commit>]   the gate a repo passes before it is pushed\n"
     "  siblings [--repo <dir>]              clone every dependency at its commit into siblings/\n"
+    "  new <org> <name> [--project <p>]     create a repo with its file, every home and its link\n"
+    "  adopt [--repo <dir>] [--fork-id <hex>]   write repo.json format 2 for a repo in place\n"
+    "  add <home | url> [--repo <dir>]      add a dependency with its id, at, importName and commit\n"
+    "  retire <home> [--repo <dir>]         archive an old home once every dependent reaches the new one\n"
     "A home is a place: github:<number>, gitea@<host>:<number>, web:<domain> or a git url.\n"
     "Options: --root <folder>, --json (resolve, check), --offline, --accept-primary <place>,\n"
     "  --accept-number <number>. Exit 0 done, 1 refused, 2 usage.\n";
@@ -70,6 +74,8 @@ static const option_spec value_options[] = {
     {"--repo", CLI_ALLOW_REPO},
     {"--previous", CLI_ALLOW_PREVIOUS},
     {"--accept-primary", CLI_ALLOW_ACCEPT},
+    {"--project", CLI_ALLOW_PROJECT},
+    {"--fork-id", CLI_ALLOW_FORK_ID},
     {"--accept-number", CLI_ALLOW_ACCEPT},
 };
 
@@ -102,6 +108,10 @@ static int take_value(const char *command, const char *name, const char *value, 
         arguments->repo = value;
     } else if (strcmp(name, "--previous") == 0) {
         arguments->previous = value;
+    } else if (strcmp(name, "--project") == 0) {
+        arguments->project = value;
+    } else if (strcmp(name, "--fork-id") == 0) {
+        arguments->fork_id = value;
     } else if (strcmp(name, "--accept-primary") == 0) {
         stored = push(arguments->accept_primary, &arguments->accept_primary_count, value);
     } else {

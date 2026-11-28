@@ -106,7 +106,7 @@ static naula_status stated_id_of(cli_context *context, const naula_place *place,
 }
 
 /** The id of the repo at a provider place: its history's first-parent root, or the fork exception its file states. */
-static naula_status derive_id(cli_context *context, const naula_place *place, char **id_text, naula_refusal *refusal) {
+naula_status cli_derive_id(cli_context *context, const naula_place *place, char **id_text, naula_refusal *refusal) {
     naula_repository repository;
     naula_status status = cli_history_lookup(context->history, place, &repository, refusal);
     if (status != NAULA_OK) {
@@ -157,7 +157,7 @@ naula_status cli_reference_from_arguments(cli_context *context, const char *text
             status = NAULA_REFUSED;
         }
         if (status == NAULA_OK) {
-            status = derive_id(context, &reference->at[0], &reference->id, refusal);
+            status = cli_derive_id(context, &reference->at[0], &reference->id, refusal);
         }
     }
     if (status != NAULA_OK) {

@@ -48,6 +48,8 @@ typedef struct forge_repo {
     char path[1024];
     char topics[128];
     int archived;
+    int timed_out;
+    int refuse_rename;
 } forge_repo;
 
 /** Everything one case builds under its own folder, and the fake forge it serves to the naula program. */
@@ -58,6 +60,7 @@ typedef struct test_case {
     unsigned clock;
     naula_run_result last;
     const char *environment[4];
+    char log[TEXT_SIZE * 2];
 } test_case;
 
 static test_case here;
@@ -221,14 +224,93 @@ static void write_forge(void) {
         const forge_repo *repo = &here.repos[index];
         length += (size_t)snprintf(text + length, sizeof text - length,
                                    "%s{\"number\":%u,\"account\":\"%s\",\"name\":\"%s\",\"path\":\"%s\",\"archived\":%s,"
-                                   "\"topics\":[%s]}",
+                                   "\"timed_out\":%s,\"refuse_rename\":%s,\"topics\":[%s]}",
                                    index == 0 ? "" : ",", repo->number, repo->account, repo->name, repo->path,
-                                   repo->archived ? "true" : "false", repo->topics);
+                                   repo->archived ? "true" : "false", repo->timed_out ? "true" : "false",
+                                   repo->refuse_rename ? "true" : "false", repo->topics);
     }
-    snprintf(text + length, sizeof text - length, "]}");
+    snprintf(text + length, sizeof text - length, "],\"log\":%s}", here.log[0] == '\0' ? "[]" : here.log);
     char path[1024];
     path_in(path, "forge.json");
     write_text(path, text);
+}
+
+static forge_repo *find_served(unsigned number) {
+    for (size_t index = 0; index < here.repo_count; index++) {
+        if (here.repos[index].number == number) {
+            return &here.repos[index];
+        }
+    }
+    return NULL;
+}
+
+/** The served repo of that number; a case naming one the forge lacks fails, and gets a blank repo to read. */
+static forge_repo *served(unsigned number) {
+    static forge_repo nowhere;
+    forge_repo *found = find_served(number);
+    if (found == NULL) {
+        fprintf(stderr, "the forge serves no repo %u\n", number);
+        check_failures++;
+        memset(&nowhere, 0, sizeof nowhere);
+        return &nowhere;
+    }
+    return found;
+}
+
+/** Takes back what the program wrote into the forge, its log and every repo it created, renamed or moved. */
+static void read_forge(void) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/forge.json", here.folder);
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    unsigned long error = 0;
+    cJSON *json = NULL;
+    const char *reason = NULL;
+    if (disk_file_read(path, &bytes, &length, &error) != NAULA_OK ||
+        naula_json_parse(bytes, length, &json, &reason) != NAULA_OK) {
+        naula_memory_release(bytes);
+        return;
+    }
+    const cJSON *repo = NULL;
+    cJSON_ArrayForEach(repo, cJSON_GetObjectItemCaseSensitive(json, "repos")) {
+        unsigned number = (unsigned)cJSON_GetObjectItemCaseSensitive(repo, "number")->valuedouble;
+        forge_repo *known = find_served(number);
+        if (known == NULL && here.repo_count < FORGE_LIMIT) {
+            known = &here.repos[here.repo_count++];
+            memset(known, 0, sizeof *known);
+            known->number = number;
+            snprintf(known->path, sizeof known->path, "%s",
+                     cJSON_GetObjectItemCaseSensitive(repo, "path")->valuestring);
+        }
+        if (known == NULL) {
+            continue;
+        }
+        snprintf(known->account, sizeof known->account, "%s",
+                 cJSON_GetObjectItemCaseSensitive(repo, "account")->valuestring);
+        snprintf(known->name, sizeof known->name, "%s", cJSON_GetObjectItemCaseSensitive(repo, "name")->valuestring);
+        known->archived = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(repo, "archived"));
+        const cJSON *topics = cJSON_GetObjectItemCaseSensitive(repo, "topics");
+        char *text = topics == NULL ? NULL : cJSON_PrintUnformatted(topics);
+        if (text != NULL && strlen(text) >= 2) {
+            snprintf(known->topics, sizeof known->topics, "%.*s", (int)strlen(text) - 2, text + 1);
+        }
+        cJSON_free(text);
+    }
+    char *log = cJSON_PrintUnformatted(cJSON_GetObjectItemCaseSensitive(json, "log"));
+    snprintf(here.log, sizeof here.log, "%s", log == NULL ? "" : log);
+    cJSON_free(log);
+    cJSON_Delete(json);
+    naula_memory_release(bytes);
+}
+
+static size_t log_holds(const char *entry) {
+    char quoted[300];
+    snprintf(quoted, sizeof quoted, "\"%s\"", entry);
+    size_t count = 0;
+    for (const char *at = strstr(here.log, quoted); at != NULL; at = strstr(at + 1, quoted)) {
+        count++;
+    }
+    return count;
 }
 
 /** Runs the naula program with the case's forge and cache; the answer stays in `here.last` until the next run. */
@@ -258,6 +340,7 @@ static int naula(const char *first, ...) {
     if (!run_in(NULL, arguments, environment, &here.last)) {
         return -1;
     }
+    read_forge();
     return here.last.exit_code;
 }
 
@@ -1556,6 +1639,487 @@ static void sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a
     expect_checkout_where_it_was(root, "the tool keeps its checkout");
 }
 
+static void bare_clone(const char *from, const char *to) {
+    char source[1024];
+    char target[1024];
+    path_in(source, from);
+    path_in(target, to);
+    git(NULL, "clone", "--quiet", "--bare", source, target, NULL);
+    git(target, "config", "uploadpack.allowFilter", "true", NULL);
+}
+
+/** The url the test forge serves a fixture folder at, which a clone of it must carry to be recognised as that home. */
+static void forge_url(const char *folder, char *url) {
+    char path[1024];
+    path_in(path, folder);
+    snprintf(url, 1100, "file://%s%s", path[0] == '/' ? "" : "/", path);
+}
+
+static void read_text(const char *path, char *out, size_t capacity) {
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    unsigned long error = 0;
+    out[0] = '\0';
+    if (disk_file_read(path, &bytes, &length, &error) == NAULA_OK) {
+        snprintf(out, capacity, "%.*s", (int)length, (const char *)bytes);
+    }
+    naula_memory_release(bytes);
+}
+
+static void expect_text(const char *text, const char *wanted, int present, const char *label) {
+    if ((strstr(text, wanted) != NULL) != present) {
+        fprintf(stderr, "%s: the text %s \"%s\":\n%s\n", label, present ? "lacks" : "holds", wanted, text);
+        check_failures++;
+    }
+}
+
+static void homes_file(char *out, const char *name, const char *first, const char *second, const char *extra) {
+    char homes[256];
+    snprintf(homes, sizeof homes, "{\"provider\":\"forge\",\"account\":\"%s\"}", first);
+    if (second != NULL) {
+        size_t length = strlen(homes);
+        snprintf(homes + length, sizeof homes - length, ",{\"provider\":\"forge\",\"account\":\"%s\"}", second);
+    }
+    snprintf(out, TEXT_SIZE, "{\"format\":2,\"name\":\"%s\",\"importName\":\"%s\",\"homes\":[%s]%s}\n", name, name,
+             homes, extra == NULL ? "" : extra);
+}
+
+static void make_alpha_docs(const char *mirror_account) {
+    char file[TEXT_SIZE];
+    homes_file(file, "docs", "alpha", mirror_account,
+               ",\"org\":{\"name\":\"alpha\",\"accounts\":[{\"provider\":\"forge\",\"account\":\"alpha\"}],"
+               "\"rules\":\"RULES.md\",\"projects\":{\"tools\":\"Programs.\"}}");
+    const char *files[] = {"repo.json", file, "RULES.md", "alpha rules\n", NULL};
+    make_repo("alpha-docs", files);
+    serve(101, "alpha", "docs", "alpha-docs", NULL);
+    if (mirror_account != NULL) {
+        bare_clone("alpha-docs", "alpha-docs-mirror.git");
+        serve(111, mirror_account, "docs", "alpha-docs-mirror.git", NULL);
+    }
+}
+
+/** `app` of alpha, mirrored as a bare clone in account `mirror`, laid out in a root that holds alpha. */
+static void make_app_with_mirror(char *root) {
+    make_alpha_docs(NULL);
+    char file[TEXT_SIZE];
+    homes_file(file, "app", "alpha", "mirror", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    bare_clone("app", "app-mirror.git");
+    serve(501, "alpha", "app", "app", NULL);
+    serve(502, "mirror", "app", "app-mirror.git", NULL);
+    init_root(root);
+}
+
+static void sync_converges_after_a_home_refused_the_rename(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_app_with_mirror(root);
+    homes_file(file, "app2", "alpha", "mirror", NULL);
+    commit_file("app", "repo.json", file);
+    served(502)->refuse_rename = 1;
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a mirror refuses the rename");
+    expect_output("rename-refused", 1, "the refusing home is reported");
+    check_text(served(501)->name, "app2", "the primary is renamed");
+    check_text(served(502)->name, "app", "the refusing home keeps its name");
+    expect_path(root, "app2", 1, "the link follows the primary");
+    served(502)->refuse_rename = 0;
+    expect_exit(naula("sync", "--root", root, NULL), 0, "the next sync converges");
+    check_text(served(502)->name, "app2", "the mirror is renamed on the retry");
+    CHECK(log_holds("rename 501 app2") == 1);
+    CHECK(log_holds("rename 502 app2") == 1);
+    size_t written = strlen(here.log);
+    expect_exit(naula("sync", "--root", root, NULL), 0, "a converged repo");
+    CHECK(strlen(here.log) == written);
+}
+
+static void rename_is_refused_before_push_when_a_home_has_the_name(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    char other[TEXT_SIZE];
+    make_app_with_mirror(root);
+    app_file(other, "taken", "mirror", NULL);
+    const char *other_files[] = {"repo.json", other, "other.txt", "another repo\n", NULL};
+    make_repo("other", other_files);
+    serve(503, "mirror", "taken", "other", NULL);
+    homes_file(file, "taken", "alpha", "mirror", NULL);
+    commit_file("app", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a home holds the new name");
+    expect_output("name-taken", 1, "the taken name");
+    CHECK(log_holds("rename 501 taken") == 0);
+    CHECK(log_holds("rename 502 taken") == 0);
+    check_text(served(501)->name, "app", "nothing is renamed");
+}
+
+static void rename_is_refused_for_a_reusable_workflow_repo(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_alpha_docs(NULL);
+    homes_file(file, "workflows", "alpha", NULL, NULL);
+    const char *files[] = {"repo.json", file, ".github/workflows/check.yml",
+                           "on:\n  workflow_call:\n    inputs: {}\njobs: {}\n", NULL};
+    make_repo("workflows", files);
+    serve(501, "alpha", "workflows", "workflows", NULL);
+    init_root(root);
+    homes_file(file, "shared-workflows", "alpha", NULL, NULL);
+    commit_file("workflows", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a reusable workflow repo is renamed");
+    expect_output("literal-consumers", 1, "why the rename is refused");
+    expect_output(".github/workflows/check.yml", 1, "the workflow is named");
+    CHECK(log_holds("rename 501 shared-workflows") == 0);
+}
+
+static void transfer_moves_the_checkout_only_across_orgs(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char tool_root[65];
+    char before[128];
+    char after[128];
+    char docs[128];
+    char tool[1024];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    path_in(tool, "alpha-tool");
+    root_commit(tool, tool_root);
+    checkout_of(tool_root, before, NULL);
+    checkout_of(tool_root, after, "beta");
+    checkout_of(alpha, docs, NULL);
+    expect_path(root, before, 0, "the tool's checkout in alpha");
+    char file[TEXT_SIZE];
+    app_file(file, "tool", "beta", ",\"topics\":[\"tools\"]");
+    commit_file("alpha-tool", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 0, "the tool moves to beta");
+    expect_output("transfer forge:102 from alpha to beta", 1, "the home is transferred");
+    check_text(served(102)->account, "beta", "the host holds it under beta");
+    expect_path(root, after, 0, "the checkout moved into beta's repos");
+    expect_absent(root, before, "the checkout left alpha's repos");
+    expect_path(root, "beta/tool", 1, "the link under beta");
+    expect_path(root, docs, 0, "alpha's docs stay where they were");
+    expect_exit(naula("sync", "--root", root, NULL), 0, "a second sync");
+    expect_output("move ", 0, "a second sync moves nothing");
+    CHECK(log_holds("transfer 102 beta") == 1);
+}
+
+static void planned_move_creates_the_new_home_and_pushes_every_ref(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    char app[1024];
+    make_alpha_docs(NULL);
+    homes_file(file, "app", "alpha", NULL, NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    path_in(app, "app");
+    git(app, "branch", "feature", NULL);
+    git(app, "tag", "v1", NULL);
+    serve(501, "alpha", "app", "app", NULL);
+    init_root(root);
+    homes_file(file, "app", "fresh", "alpha", NULL);
+    commit_file("app", "repo.json", file);
+    naula("sync", "--root", root, NULL);
+    expect_output("create forge:900 fresh/app", 1, "the new home is created");
+    const forge_repo *created = find_served(900);
+    CHECK(created != NULL);
+    if (created != NULL) {
+        static const char *const refs[] = {"refs/heads/main", "refs/heads/feature", "refs/tags/v1"};
+        for (size_t index = 0; index < 3; index++) {
+            char wanted[65];
+            char pushed[65];
+            revision(app, refs[index], wanted);
+            revision(created->path, refs[index], pushed);
+            check_text(pushed, wanted, refs[index]);
+        }
+    }
+    naula("sync", "--root", root, "--accept-primary", "forge:900", NULL);
+    CHECK(log_holds("create 900 fresh/app") == 1);
+}
+
+/** `lib` moved from account old (601, a bare clone) to account new (602); `pushed` 0 leaves old on the first file. */
+static void make_moved_lib(int pushed, char *lib) {
+    char file[TEXT_SIZE];
+    homes_file(file, "lib", pushed ? "new" : "old", pushed ? "old" : NULL, NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("lib", files);
+    bare_clone("lib", "old.git");
+    if (!pushed) {
+        homes_file(file, "lib", "new", "old", NULL);
+        commit_file("lib", "repo.json", file);
+    }
+    serve(601, "old", "lib", "old.git", NULL);
+    serve(602, "new", "lib", "lib", NULL);
+    path_in(lib, "lib");
+}
+
+static void retire_refuses_while_a_dependent_lacks_the_new_home(void) {
+    start_case();
+    char root[1024];
+    char lib[1024];
+    char lib_root[65];
+    char head[65];
+    make_alpha_docs(NULL);
+    make_moved_lib(1, lib);
+    root_commit(lib, lib_root);
+    revision(lib, "HEAD", head);
+    char dependency[512];
+    char file[TEXT_SIZE];
+    snprintf(dependency, sizeof dependency,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:601\"],\"importName\":\"lib\",\"commit\":\"%s\"}]",
+             lib_root, head);
+    app_file(file, "app", "alpha", dependency);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    serve(501, "alpha", "app", "app", NULL);
+    init_root(root);
+    expect_exit(naula("retire", "forge:601", "--repo", lib, "--root", root, NULL), 1, "a dependent lacks the new home");
+    expect_output("dependent-lacks-home", 1, "the dependent is named");
+    CHECK(log_holds("archive 601") == 0);
+    char app_root[65];
+    char app[1024];
+    char checkout[128];
+    char dependent[1300];
+    path_in(app, "app");
+    root_commit(app, app_root);
+    checkout_of(app_root, checkout, NULL);
+    snprintf(dependent, sizeof dependent, "%s/%s/repo.json", root, checkout);
+    snprintf(dependency, sizeof dependency,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:601\",\"forge:602\"],\"importName\":\"lib\","
+             "\"commit\":\"%s\"}]",
+             lib_root, head);
+    app_file(file, "app", "alpha", dependency);
+    write_text(dependent, file);
+    expect_exit(naula("retire", "forge:601", "--repo", lib, "--root", root, NULL), 0, "every dependent has the new home");
+    CHECK(log_holds("archive 601") == 1);
+    CHECK(served(601)->archived);
+}
+
+static void retire_refuses_while_the_old_home_times_out(void) {
+    start_case();
+    char root[1024];
+    char lib[1024];
+    make_alpha_docs(NULL);
+    make_moved_lib(1, lib);
+    init_root(root);
+    served(601)->timed_out = 1;
+    expect_exit(naula("retire", "forge:601", "--repo", lib, "--root", root, NULL), 1, "the old home is slow");
+    expect_output("home-unheard", 1, "a slow home is never retired");
+    CHECK(log_holds("archive 601") == 0);
+    CHECK(!served(601)->archived);
+}
+
+static void retire_archives_only_after_the_listing_commit_is_pushed(void) {
+    start_case();
+    char root[1024];
+    char lib[1024];
+    char old[1024];
+    make_alpha_docs(NULL);
+    make_moved_lib(0, lib);
+    init_root(root);
+    expect_exit(naula("retire", "forge:601", "--repo", lib, "--root", root, NULL), 1, "the listing is not pushed");
+    expect_output("listing-not-pushed", 1, "why the old home stays");
+    CHECK(log_holds("archive 601") == 0);
+    path_in(old, "old.git");
+    git(lib, "push", "--quiet", old, "main", NULL);
+    expect_exit(naula("retire", "forge:601", "--repo", lib, "--root", root, "--accept-primary", "forge:602", NULL), 0,
+                "the listing is pushed");
+    CHECK(log_holds("archive 601") == 1);
+}
+
+/** `lib` of alpha served as 401 with two commits, and `app`, whose format 1 file depends on it twice, cloned locally. */
+static void make_format_one_app(const char *extra_members, char *local, char first[65], char second[65]) {
+    char lib_file[TEXT_SIZE];
+    char lib[1024];
+    app_file(lib_file, "lib", "alpha", NULL);
+    const char *lib_files[] = {"repo.json", lib_file, NULL};
+    make_repo("lib", lib_files);
+    commit_file("lib", "second.txt", "second\n");
+    serve(401, "alpha", "lib", "lib", NULL);
+    path_in(lib, "lib");
+    revision(lib, "HEAD~1", first);
+    revision(lib, "HEAD", second);
+    char file[TEXT_SIZE];
+    snprintf(file, sizeof file,
+             "{\"format\":1,\"importName\":\"app\",\"hosts\":[\"forge:alpha\"],\"dependencies\":["
+             "{\"id\":\"forge:401\",\"importName\":\"lib\",\"commit\":\"%s\",\"path\":\"siblings/x/siblings/lib\"},"
+             "{\"id\":\"forge:401\",\"importName\":\"lib\",\"commit\":\"%s\"}]%s}\n",
+             first, second, extra_members == NULL ? "" : extra_members);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    serve(501, "alpha", "app", "app", NULL);
+    char url[1100];
+    forge_url("app", url);
+    path_in(local, "app-local");
+    git(NULL, "clone", "--quiet", url, local, NULL);
+}
+
+static void adopt_keeps_paths_and_repeats(void) {
+    start_case();
+    char local[1024];
+    char first[65];
+    char second[65];
+    char lib_root[65];
+    char lib[1024];
+    make_format_one_app(NULL, local, first, second);
+    path_in(lib, "lib");
+    root_commit(lib, lib_root);
+    expect_exit(naula("adopt", "--repo", local, NULL), 0, "adopt a format 1 file");
+    char path[1100];
+    char text[TEXT_SIZE * 2];
+    char wanted[200];
+    snprintf(path, sizeof path, "%s/repo.json", local);
+    read_text(path, text, sizeof text);
+    expect_text(text, "\"format\": 2", 1, "format 2");
+    expect_text(text, "\"name\": \"app\"", 1, "the name from the host");
+    expect_text(text, "\"provider\": \"forge\"", 1, "the home");
+    snprintf(wanted, sizeof wanted, "\"id\": \"git:%s\"", lib_root);
+    expect_text(text, wanted, 1, "the dependency's id from its history");
+    expect_text(text, "\"forge:401\"", 1, "the dependency's at");
+    expect_text(text, "\"path\": \"siblings/x/siblings/lib\"", 1, "the path is kept");
+    expect_text(text, first, 1, "the first commit is kept");
+    expect_text(text, second, 1, "the repeated dependency is kept");
+    const char *at = strstr(text, wanted);
+    CHECK(at != NULL && strstr(at + 1, wanted) != NULL);
+}
+
+static void adopt_is_idempotent(void) {
+    start_case();
+    char local[1024];
+    char first[65];
+    char second[65];
+    make_format_one_app(",\"description\":\"An app.\",\"topics\":[\"tools\"]", local, first, second);
+    expect_exit(naula("adopt", "--repo", local, NULL), 0, "the first adopt");
+    char path[1100];
+    static char once[TEXT_SIZE * 2];
+    static char twice[TEXT_SIZE * 2];
+    snprintf(path, sizeof path, "%s/repo.json", local);
+    read_text(path, once, sizeof once);
+    expect_exit(naula("adopt", "--repo", local, NULL), 0, "a second adopt");
+    expect_output("kept repo.json", 1, "the second run writes nothing");
+    read_text(path, twice, sizeof twice);
+    check_text(twice, once, "a second run changes no byte");
+}
+
+static void adopt_proposes_the_fork_exception_on_a_shared_root(void) {
+    start_case();
+    const char *shelf_files[] = {"README.md", "shelf data\n", NULL};
+    make_repo("shelf", shelf_files);
+    char shelf[1024];
+    char inventree[1024];
+    path_in(shelf, "shelf");
+    path_in(inventree, "inventree");
+    git(NULL, "clone", "--quiet", shelf, inventree, NULL);
+    commit_file("inventree", "own.txt", "the copy's own work\n");
+    char own[65];
+    revision(inventree, "HEAD", own);
+    commit_file("inventree", "repo.json", "{\"format\":1,\"importName\":\"inventree\",\"hosts\":[\"forge:alpha\"]}\n");
+    serve(601, "alpha", "shelf", "shelf", NULL);
+    serve(602, "alpha", "inventree", "inventree", NULL);
+    char url[1100];
+    char local[1024];
+    forge_url("inventree", url);
+    path_in(local, "inventree-local");
+    git(NULL, "clone", "--quiet", url, local, NULL);
+    char path[1100];
+    char text[TEXT_SIZE];
+    snprintf(path, sizeof path, "%s/repo.json", local);
+    expect_exit(naula("adopt", "--repo", local, NULL), 1, "a root shelf shares");
+    expect_output("root-shared", 1, "the shared root");
+    expect_output(own, 1, "the proposed fork id");
+    read_text(path, text, sizeof text);
+    expect_text(text, "\"format\":1", 1, "nothing is written while it is undecided");
+    expect_exit(naula("adopt", "--repo", local, "--fork-id", own, NULL), 0, "the fork exception taken");
+    char wanted[100];
+    snprintf(wanted, sizeof wanted, "\"id\": \"git:%s\"", own);
+    read_text(path, text, sizeof text);
+    expect_text(text, wanted, 1, "the stated id");
+}
+
+static void adopt_drops_claims_and_place(void) {
+    start_case();
+    char local[1024];
+    char first[65];
+    char second[65];
+    make_format_one_app(",\"place\":\"tools/app\",\"claims\":[\"forge:beta\"]", local, first, second);
+    expect_exit(naula("adopt", "--repo", local, NULL), 0, "adopt drops what format 2 removed");
+    char path[1100];
+    char text[TEXT_SIZE * 2];
+    snprintf(path, sizeof path, "%s/repo.json", local);
+    read_text(path, text, sizeof text);
+    expect_text(text, "\"format\": 2", 1, "format 2");
+    expect_text(text, "claims", 0, "claims are dropped");
+    expect_text(text, "place", 0, "place is dropped");
+}
+
+static void new_creates_every_home_and_the_link(void) {
+    start_case();
+    char root[1024];
+    make_alpha_docs("alphamirror");
+    init_root(root);
+    expect_exit(naula("new", "alpha", "widget", "--project", "tools", "--root", root, NULL), 0, "a new repo");
+    CHECK(log_holds("create 900 alpha/widget") == 1);
+    CHECK(log_holds("create 901 alphamirror/widget") == 1);
+    CHECK(log_holds("topics 900 1") == 1);
+    expect_path(root, "tools/widget", 1, "the new repo's link");
+    const forge_repo *primary = find_served(900);
+    const forge_repo *mirror = find_served(901);
+    CHECK(primary != NULL && mirror != NULL);
+    if (primary != NULL && mirror != NULL) {
+        char main_tip[65];
+        char development[65];
+        char mirrored[65];
+        revision(primary->path, "refs/heads/main", main_tip);
+        revision(primary->path, "refs/heads/development", development);
+        revision(mirror->path, "refs/heads/development", mirrored);
+        CHECK(main_tip[0] != '\0');
+        check_text(development, main_tip, "both branches at the first commit");
+        check_text(mirrored, main_tip, "the mirror holds it too");
+    }
+    expect_exit(naula("new", "alpha", "widget", "--root", root, NULL), 1, "the name is taken now");
+    expect_output("name-taken", 1, "a second new refuses");
+}
+
+static void add_writes_id_at_importname_and_commit(void) {
+    start_case();
+    char lib_file[TEXT_SIZE];
+    char lib[1024];
+    char lib_root[65];
+    char head[65];
+    app_file(lib_file, "lib", "alpha", NULL);
+    const char *lib_files[] = {"repo.json", lib_file, NULL};
+    make_repo("lib", lib_files);
+    commit_file("lib", "second.txt", "second\n");
+    serve(401, "alpha", "lib", "lib", NULL);
+    path_in(lib, "lib");
+    root_commit(lib, lib_root);
+    revision(lib, "HEAD", head);
+    char file[TEXT_SIZE];
+    app_file(file, "app", "gamma", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char app[1024];
+    path_in(app, "app");
+    expect_exit(naula("add", "forge:401", "--repo", app, NULL), 0, "add a dependency");
+    char path[1100];
+    char text[TEXT_SIZE];
+    char wanted[200];
+    snprintf(path, sizeof path, "%s/repo.json", app);
+    read_text(path, text, sizeof text);
+    snprintf(wanted, sizeof wanted, "\"id\": \"git:%s\"", lib_root);
+    expect_text(text, wanted, 1, "the id from its history");
+    expect_text(text, "\"forge:401\"", 1, "at from the confirmed homes");
+    expect_text(text, "\"importName\": \"lib\"", 1, "the dependency's import name");
+    snprintf(wanted, sizeof wanted, "\"commit\": \"%s\"", head);
+    expect_text(text, wanted, 1, "the primary's tip");
+    expect_exit(naula("add", "forge:401", "--repo", app, NULL), 1, "a second add");
+    expect_output("dependency-present", 1, "the dependency is there already");
+}
+
 typedef struct test_entry {
     const char *name;
     void (*run)(void);
@@ -1605,6 +2169,20 @@ static const test_entry tests[] = {
      sync_refuses_a_fork_of_our_name_in_another_held_account},
     {"sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy",
      sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy},
+    {"sync_converges_after_a_home_refused_the_rename", sync_converges_after_a_home_refused_the_rename},
+    {"rename_is_refused_before_push_when_a_home_has_the_name", rename_is_refused_before_push_when_a_home_has_the_name},
+    {"rename_is_refused_for_a_reusable_workflow_repo", rename_is_refused_for_a_reusable_workflow_repo},
+    {"transfer_moves_the_checkout_only_across_orgs", transfer_moves_the_checkout_only_across_orgs},
+    {"planned_move_creates_the_new_home_and_pushes_every_ref", planned_move_creates_the_new_home_and_pushes_every_ref},
+    {"retire_refuses_while_a_dependent_lacks_the_new_home", retire_refuses_while_a_dependent_lacks_the_new_home},
+    {"retire_refuses_while_the_old_home_times_out", retire_refuses_while_the_old_home_times_out},
+    {"retire_archives_only_after_the_listing_commit_is_pushed", retire_archives_only_after_the_listing_commit_is_pushed},
+    {"adopt_keeps_paths_and_repeats", adopt_keeps_paths_and_repeats},
+    {"adopt_is_idempotent", adopt_is_idempotent},
+    {"adopt_proposes_the_fork_exception_on_a_shared_root", adopt_proposes_the_fork_exception_on_a_shared_root},
+    {"adopt_drops_claims_and_place", adopt_drops_claims_and_place},
+    {"new_creates_every_home_and_the_link", new_creates_every_home_and_the_link},
+    {"add_writes_id_at_importname_and_commit", add_writes_id_at_importname_and_commit},
 };
 
 int main(int count, char **values) {

@@ -7,6 +7,7 @@
 #include "naula/history.h"
 #include "naula/id.h"
 #include "naula/provider.h"
+#include "naula/reconcile.h"
 #include "naula/repo_file.h"
 #include "naula/resolve.h"
 #include "naula/run.h"
@@ -26,6 +27,8 @@
 #define CLI_ALLOW_JSON (1u << 4)
 #define CLI_ALLOW_OFFLINE (1u << 5)
 #define CLI_ALLOW_ACCEPT (1u << 6)
+#define CLI_ALLOW_PROJECT (1u << 7)
+#define CLI_ALLOW_FORK_ID (1u << 8)
 
 /** A command's words after its name. Every option value points into the process's own arguments. */
 typedef struct cli_arguments {
@@ -36,6 +39,8 @@ typedef struct cli_arguments {
     const char *root;
     const char *repo;
     const char *previous;
+    const char *project;
+    const char *fork_id;
     const char *accept_primary[CLI_LIST_LIMIT];
     size_t accept_primary_count;
     uint64_t accept_number[CLI_LIST_LIMIT];
@@ -170,6 +175,9 @@ naula_status cli_read_home_file(cli_context *context, const naula_place *place, 
 naula_status cli_reference_from_arguments(cli_context *context, const char *text, const char *const *at,
                                           size_t at_count, naula_reference *reference, naula_refusal *refusal);
 void cli_reference_release(naula_reference *reference);
+
+/** The id of the repo at a provider place: its history's first-parent root, or the fork id its repo.json states. */
+naula_status cli_derive_id(cli_context *context, const naula_place *place, char **id_text, naula_refusal *refusal);
 naula_status cli_reference_copy(const naula_reference *from, naula_reference *to);
 
 /** Resolves `reference` with the context's session; the resolution is the caller's to release. */
@@ -179,9 +187,32 @@ naula_status cli_resolve(cli_context *context, const naula_reference *reference,
 /** The verdicts of a resolution as lines on standard error, for a refused one. */
 void cli_print_verdicts(const naula_resolution *resolution);
 
+/** naula_reconcile for the checkout at `repository`, printing every change on standard output. */
+naula_status cli_reconcile(cli_context *context, const char *repository, naula_reconcile_report *report,
+                           naula_refusal *refusal);
+
+/** The checkout a command acts on: `--repo`, else the working folder, absolute. */
+char *cli_repository(const cli_arguments *arguments);
+
+/** The local branch work happens on: `development` where it exists, else the one checked out. */
+naula_status cli_working_branch(const char *repository, char **branch, naula_refusal *refusal);
+
+/** Writes `file` canonically as `<repository>/repo.json`, through a temporary beside it; `changed` 0 for same bytes. */
+naula_status cli_write_repo_file(const char *repository, const naula_repo_file *file, int *changed,
+                                 naula_refusal *refusal);
+
+/** The repo.json in the working tree of `repository`, format 2; NAULA_NOT_FOUND when there is none. */
+naula_status cli_read_repo_file(const char *repository, naula_repo_file *file, naula_refusal *refusal);
+
+/** The commit `url` holds at `refs/heads/<branch>`, or at its HEAD for a NULL `branch`, 40 or 64 hex. */
+naula_status cli_remote_tip(const char *url, const char *branch, char tip[65], naula_refusal *refusal);
+
 #if defined(NAULA_TEST_HOOKS)
 /** Registers the test forge `NAULA_TEST_FORGE` describes, and points no provider at any real host. */
 naula_status cli_test_forge_register(naula_providers *providers, naula_refusal *refusal);
+
+/** The forge account and name whose repo the clone `url` reaches, 0 when none does. */
+int cli_test_forge_repo_for_url(const char *url, char **account, char **name);
 #endif
 
 int cli_command_resolve(int count, char **values);
@@ -192,5 +223,9 @@ int cli_command_hold(int count, char **values);
 int cli_command_release(int count, char **values);
 int cli_command_sync(int count, char **values);
 int cli_command_clone(int count, char **values);
+int cli_command_new(int count, char **values);
+int cli_command_adopt(int count, char **values);
+int cli_command_add(int count, char **values);
+int cli_command_retire(int count, char **values);
 
 #endif

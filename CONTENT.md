@@ -32,7 +32,8 @@ A C library and command line that lays out, identifies and renames git repos fro
   `dead-skipped`, and a refusal it decides names "install a plugin that provides a resolver" as its `fix`.
 - **The command line** (`naula`, `src/cli`): `init`, `hold`, `release`, `sync` and `clone` lay a root out from the
   orgs it holds; `resolve` prints the homes that speak for an id; `check` is the gate a repo passes before a push;
-  `siblings` checks every dependency out at its commit. It reads history with the `git` it runs under (2.24 or newer,
+  `siblings` checks every dependency out at its commit; `new`, `adopt`, `add` and `retire` are the writing half,
+  below. It reads history with the `git` it runs under (2.24 or newer,
   refused below with the fix), fetching each home's commits once a run into `<cache>/history`, and takes a host's token
   from `git credential fill`. Every git it runs has the variables that would point it at another repository,
   configuration or program (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXEC_PATH`, `GIT_SSH` and the like) removed, so a hook or a
@@ -70,6 +71,29 @@ A C library and command line that lays out, identifies and renames git repos fro
   into) leaves the siblings already cloned. A link or reparse point anywhere in `siblings/<path>` below the repo, the
   `siblings` folder included, is refused, asked again right before each clone. Two paths that differ only in case are
   one path.
+- **Reconciliation** (`naula/reconcile.h`, in `naula_git`): `naula sync` first brings the hosts of every adopted
+  checkout under the root to the `repo.json` at the tip of the working branch of the home that serves it, never to
+  the local file: rename the primary, then every other home; transfer a home whose account changed; create a missing
+  home and push every branch and tag to it; push to every other home, never forcing; write the metadata the file
+  states. Each step compares first, so a rerun after a host refused one converges and changes nothing once the hosts
+  match. A home is written to only when its host shows it holds the id and, unless it serves the file, its own
+  `repo.json` lists the serving home, so a copy can neither take writes nor steer them. Refused before anything is
+  sent: a home that cannot be heard (`home-unheard`), a name another repo holds (`name-taken`), and a rename or
+  transfer of a repo others reach by its name (`literal-consumers`: a `workflow_call` workflow, or a Gradle build with
+  a release). Where each home was last found is kept as a hint in `<cache>/homes/<hex>.json`, trusted only once the
+  host confirms it again. A host's refusal is reported and the sync answers `reconcile-incomplete` after laying out.
+- **`new`, `adopt`, `add`, `retire`**: `new <org> <name> [--project p]` gives the repo the homes of its org's declaring
+  repo, refuses a name any of them holds before creating anything, makes the first commit (the `repo.json` alone, its
+  hash the id) without a working tree, creates and fills every home, and clones and links it. `adopt` writes format 2
+  in place and commits nothing: `name` from the primary host, `homes` from format 1 `hosts` or else from the remotes
+  by account, each forge-number dependency as `{ id, at }` with the id derived from that repo's own history and its
+  commit checked there, `claims` and `place` dropped, paths kept; a file already in format 2 is only rewritten
+  canonically, so a second run changes no byte. A first-parent root another repo of the primary's account shares is
+  refused (`root-shared`) with the proposed `--fork-id`, since which repo takes its own identity is a person's call.
+  `add` writes `{ id, at, importName, commit }`, `at` from every confirmed home and the commit from the primary's
+  working branch. `retire` archives an old home only once it is confirmed in that run (a slow one is `home-unheard`),
+  is not the primary, serves the file the primary serves (`listing-not-pushed`), and every dependent under the root
+  reaches another home by its `at`.
 - **`check`** refuses a shallow checkout (`fetch-depth: 0` in actions/checkout), takes a `--previous` of all zeros as
   no previous tip, and fails as `too-many-findings` rather than stop counting past 255 findings. A home that holds the
   name is this repo when the id confirms there, or, for a host repo with no format 2 `repo.json` yet, when its own

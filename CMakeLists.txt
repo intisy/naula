@@ -53,7 +53,7 @@ if(WIN32)
 else()
     set(naula_run_platform_source src/run_posix.c)
 endif()
-add_library(naula_git STATIC src/run.c ${naula_run_platform_source} src/git.c)
+add_library(naula_git STATIC src/run.c ${naula_run_platform_source} src/git.c src/reconcile.c)
 target_include_directories(naula_git PUBLIC include PRIVATE src)
 target_link_libraries(naula_git PUBLIC naula)
 set_target_properties(naula_git PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
@@ -62,7 +62,8 @@ naula_strict_warnings(naula_git)
 set(NAULA_CLI_SOURCES src/cli/main.c src/cli/cli_common.c src/cli/cli_platform.c src/cli/cli_context.c
     src/cli/credentials.c src/cli/history_git.c src/cli/reference.c src/cli/command_resolve.c src/cli/command_check.c
     src/cli/check_files.c src/cli/command_siblings.c src/cli/command_init.c src/cli/command_hold.c
-    src/cli/command_sync.c src/cli/command_clone.c src/cli/sync_gather.c src/cli/sync_run.c)
+    src/cli/command_sync.c src/cli/command_clone.c src/cli/sync_gather.c src/cli/sync_run.c src/cli/sync_push.c
+    src/cli/cli_repo.c src/cli/command_new.c src/cli/command_adopt.c src/cli/command_add.c src/cli/command_retire.c)
 list(TRANSFORM NAULA_CLI_SOURCES PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
 
 # The command line. Its own output folder keeps naula.exe and its pdb apart from the library of the same name.
