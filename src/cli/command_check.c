@@ -332,7 +332,7 @@ static repo_match compare_unadopted(check_run *run, cli_context *context, const 
         status = cli_history_id(context->history, repository.clone_url, repository.default_branch, run->file.id, &id,
                                 &branch, &refusal);
     }
-    repo_match match = is_unheard(status) ? MATCH_UNHEARD : MATCH_OTHER_REPO;
+    repo_match match = is_unheard(status) || status == NAULA_NOT_FOUND ? MATCH_UNHEARD : MATCH_OTHER_REPO;
     if (status == NAULA_OK && !adopted) {
         char text[80];
         snprintf(text, sizeof text, "git:%s", id.commit);

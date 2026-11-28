@@ -50,6 +50,14 @@ typedef struct sync_org {
     naula_id id;
 } sync_org;
 
+/** A listed repo a home it lists disowns, or a fork of the repo that holds the id: skipped unless naula linked it. */
+typedef struct sync_copy {
+    naula_id id;
+    char *place;
+    char code[64];
+    char detail[256];
+} sync_copy;
+
 typedef struct sync_model {
     sync_org *orgs;
     size_t org_count;
@@ -65,6 +73,8 @@ typedef struct sync_model {
     naula_layout_repo *layout_repos;
     size_t unread_count;
     naula_refusal first_unread;
+    sync_copy *copies;
+    size_t copy_count;
 } sync_model;
 
 /**

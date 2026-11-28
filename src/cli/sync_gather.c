@@ -121,6 +121,11 @@ void sync_model_release(sync_model *model) {
     naula_memory_release(model->declarations);
     naula_memory_release(model->org_ids);
     naula_memory_release(model->layout_repos);
+    for (size_t index = 0; index < model->copy_count; index++) {
+        naula_id_release(&model->copies[index].id);
+        naula_memory_release(model->copies[index].place);
+    }
+    naula_memory_release(model->copies);
     memset(model, 0, sizeof *model);
 }
 
@@ -417,6 +422,39 @@ static naula_status derive_listed_id(cli_context *context, sync_model *model, sy
     return status;
 }
 
+/** The verdict on the listed home itself when it is a definite copy: another home disowns it, or it forks the id. */
+static const naula_verdict *copy_verdict(const sync_repo *repo) {
+    for (size_t index = 0; index < repo->resolution.verdict_count; index++) {
+        const naula_verdict *verdict = &repo->resolution.verdicts[index];
+        if (same_place(&verdict->home, &repo->place) &&
+            (strcmp(verdict->code, "copy-of") == 0 || strcmp(verdict->code, "disowned-by") == 0)) {
+            return verdict;
+        }
+    }
+    return NULL;
+}
+
+static naula_status add_copy(sync_model *model, sync_repo *repo, const naula_verdict *verdict) {
+    sync_copy *grown = naula_memory_reallocate(model->copies, (model->copy_count + 1) * sizeof *grown);
+    if (grown == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    model->copies = grown;
+    sync_copy *copy = &model->copies[model->copy_count];
+    memset(copy, 0, sizeof *copy);
+    copy->place = naula_place_text(&repo->place);
+    if (copy->place == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    copy->id = repo->layout.id;
+    memset(&repo->layout.id, 0, sizeof repo->layout.id);
+    repo->layout.id.size = sizeof repo->layout.id;
+    snprintf(copy->code, sizeof copy->code, "%s", verdict->code);
+    snprintf(copy->detail, sizeof copy->detail, "%s", verdict->detail);
+    model->copy_count++;
+    return NAULA_OK;
+}
+
 static naula_status confirm_listed(cli_context *context, sync_model *model, sync_repo *repo, naula_refusal *refusal,
                                    int *skipped) {
     char *id_text = cli_format("git:%s", repo->layout.id.commit);
@@ -434,9 +472,13 @@ static naula_status confirm_listed(cli_context *context, sync_model *model, sync
     naula_memory_release(id_text);
     repo->resolved = status == NAULA_OK;
     if (status == NAULA_REFUSED || status == NAULA_NOT_FOUND) {
+        const naula_verdict *copy = copy_verdict(repo);
+        *skipped = 1;
+        if (copy != NULL) {
+            return add_copy(model, repo, copy);
+        }
         record_unread_place(model, "unconfirmed", &repo->place, &confirmed);
         cli_print_verdicts(&repo->resolution);
-        *skipped = 1;
         return NAULA_OK;
     }
     if (status != NAULA_OK && refusal != NULL) {
@@ -474,7 +516,13 @@ static naula_status gather_listed(cli_context *context, const sync_request *requ
         naula_refuse(&derived, "clone-url-refused", "ask the host for an https clone url",
                      "the host answered no clone url naula hands to git");
     }
-    if (status == NAULA_REFUSED) {
+    if (status == NAULA_NOT_FOUND) {
+        char *text = naula_place_text(&repo->place);
+        printf("note unadopted: %s: %s\n", text == NULL ? "(home)" : text, derived.detail);
+        naula_memory_release(text);
+        skipped = 1;
+        status = NAULA_OK;
+    } else if (status == NAULA_REFUSED) {
         record_unread_place(model, "unreadable", &repo->place, &derived);
         skipped = 1;
         status = NAULA_OK;
@@ -706,6 +754,42 @@ static naula_status gather_accounts(cli_context *context, const sync_request *re
     return status;
 }
 
+/** Whether a link naula recorded making points at the checkout a repo with this id is laid out in. */
+static int is_linked_by_naula(const sync_model *model, const naula_id *id) {
+    char folder[13];
+    char ending[24];
+    naula_id_folder(id, folder);
+    snprintf(ending, sizeof ending, "/repos/%s", folder);
+    size_t ending_length = strlen(ending);
+    for (size_t index = 0; folder[0] != '\0' && index < model->links.count; index++) {
+        const naula_layout_link *link = &model->links.links[index];
+        size_t length = link->target == NULL ? 0 : strlen(link->target);
+        if (link->made_by_naula && length >= ending_length &&
+            strcmp(link->target + length - ending_length, ending) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * A copy is skipped with a warning, unless naula linked a checkout of its id and no repo the root lays out holds that
+ * id: then the copy may be our own repo with a mistake in its homes, and skipping it would unlink it.
+ */
+static void judge_copies(sync_model *model) {
+    for (size_t index = 0; index < model->copy_count; index++) {
+        const sync_copy *copy = &model->copies[index];
+        if (!sync_model_holds(model, &copy->id) && is_linked_by_naula(model, &copy->id)) {
+            naula_refusal refusal = cli_fresh_refusal();
+            naula_refuse(&refusal, copy->code, "fix the homes in its repo.json, or remove the link by hand",
+                         "%s, and naula linked a checkout of its id", copy->detail);
+            record_unread(model, "copy-linked", copy->place, &refusal);
+        } else {
+            printf("warning copy-skipped: %s: %s: %s\n", copy->place, copy->code, copy->detail);
+        }
+    }
+}
+
 naula_status sync_gather(cli_context *context, const sync_request *request, sync_model *model,
                          naula_refusal *refusal) {
     memset(model, 0, sizeof *model);
@@ -725,6 +809,15 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
             *refusal = kept;
         }
     }
+    if (status == NAULA_OK && cli_is_folder(request->root)) {
+        status = scan_checkouts(model, request->root, 0);
+        if (status == NAULA_OK) {
+            status = naula_layout_links_scan(request->root, &model->links, refusal);
+        }
+    }
+    if (status == NAULA_OK) {
+        judge_copies(model);
+    }
     if (status == NAULA_OK && model->unread_count > 0) {
         if (refusal != NULL) {
             naula_refuse(refusal, "repos-unread", model->first_unread.fix,
@@ -732,12 +825,6 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
                          model->unread_count, model->first_unread.detail);
         }
         status = NAULA_REFUSED;
-    }
-    if (status == NAULA_OK && cli_is_folder(request->root)) {
-        status = scan_checkouts(model, request->root, 0);
-        if (status == NAULA_OK) {
-            status = naula_layout_links_scan(request->root, &model->links, refusal);
-        }
     }
     return status == NAULA_OK ? place_checkouts(model) : status;
 }

@@ -261,6 +261,23 @@ static naula_status on_a_branch(cli_history *history, const fetched_home *home, 
     return status;
 }
 
+static int has_any_branch(cli_history *history, const fetched_home *home) {
+    char *branches = cli_format("refs/naula/%s/", home->space);
+    if (branches == NULL) {
+        return 1;
+    }
+    const char *arguments[] = {"for-each-ref", "--count=1", "--format=%(refname)", branches, NULL};
+    naula_run_result result;
+    naula_refusal refusal = cli_fresh_refusal();
+    int any = 1;
+    if (cli_git(history->scratch[home->format], arguments, &result, &refusal) == NAULA_OK) {
+        any = result.output_length > 0;
+        naula_run_result_release(&result);
+    }
+    naula_memory_release(branches);
+    return any;
+}
+
 static naula_status has_commit(cli_history *history, const fetched_home *home, const char *commit, int *exists,
                                naula_refusal *refusal) {
     char *name = cli_format("%s^{commit}", commit);
@@ -367,6 +384,11 @@ naula_status cli_history_id(cli_history *history, const char *url, const char *d
         if (status != NAULA_OK) {
             return status;
         }
+    }
+    if (!exists && !has_any_branch(history, home)) {
+        naula_refuse(refusal, "repo-empty", "push a first commit to it",
+                     "%s has no branch yet, so it holds no history to read", url);
+        return NAULA_NOT_FOUND;
     }
     if (!is_safe_branch(branch) || !exists) {
         naula_refuse(refusal, "no-working-branch", "give the repo a development or default branch",

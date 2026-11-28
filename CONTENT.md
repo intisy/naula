@@ -44,7 +44,10 @@ A C library and command line that lays out, identifies and renames git repos fro
 - **What a refused layout command leaves:** `init`, `hold`, `release`, `sync` and `clone` read every home first, and
   a repo of a held account or kept in `extra` that gets no definite answer (unreachable, refused, without its branch,
   with an invalid `repo.json`, unconfirmed) refuses the whole run as `repos-unread`, naming each, before any link,
-  clone or file is touched, and so does a refused plan. From the first write on, the run holds the root's lock: it writes
+  clone or file is touched, and so does a refused plan. A repo a home it lists disowns, or a fork
+  of the repo holding its id, is a definite answer and skipped with a warning, unless naula linked a checkout of
+  that id and no repo laid out holds it, which may be our own repo with a mistake in its homes; an empty repo with no
+  branch is unadopted, a note. From the first write on, the run holds the root's lock: it writes
   `.naula.json`, clones what is missing straight into its `repos/<12 hex>` folder, then applies the plan journalled. A
   refusal after that point can leave `.naula.json` written and clones already in `repos/`, which the next run finds and
   keeps, and a journal the next run resumes; it never leaves a half-made link or move. `release` also removes the
