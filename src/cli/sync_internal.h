@@ -19,6 +19,7 @@ typedef struct sync_request {
     const naula_reference *clone;
     int plan_only;
     int root_held;
+    int reconcile;
     char **rules_files;
     char **rules_contents;
     size_t rules_file_count;
@@ -107,6 +108,16 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
 naula_status sync_gather_extra(cli_context *context, sync_model *model, const naula_reference *reference,
                                naula_refusal *refusal);
 
+/** Adds every checkout under `root` to the model, never entering a link, a checkout or naula's own files. */
+naula_status sync_scan_checkouts(sync_model *model, const char *root);
+
+/**
+ * The push half of `naula sync`: reconciles the hosts of every adopted checkout under the root to its primary's
+ * repo.json. A checkout whose hosts it could not bring there sets `incomplete` and is named on standard error; one
+ * without a repo.json of format 2 is left alone.
+ */
+naula_status sync_push_half(cli_context *context, const sync_request *request, int *incomplete);
+
 /** Whether the model holds a repo with this id. */
 int sync_model_holds(const sync_model *model, const naula_id *id);
 
@@ -126,7 +137,8 @@ void sync_model_release(sync_model *model);
  * Plans, clones what is missing, and applies, writing nothing when the plan is refused, all under the root's lock,
  * taken before the first write unless `root_held` says the command holds it already. `rules_files` ends holding every
  * org `CLAUDE.md` the final plan writes and `rules_contents` what it writes there; with `plan_only` the run stops
- * there, having applied and cloned nothing.
+ * there, having applied and cloned nothing. With `reconcile` the push half runs first, under the same lock, and a
+ * checkout whose hosts it left unmatched refuses the run as `reconcile-incomplete` once the root is laid out.
  */
 naula_status sync_run(cli_context *context, sync_request *request, naula_refusal *refusal);
 

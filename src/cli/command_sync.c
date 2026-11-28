@@ -34,6 +34,7 @@ int cli_command_sync(int count, char **values) {
         return cli_refused(status, &refusal);
     }
     request.org_filter = arguments.positional_count == 1 ? arguments.positional[0] : NULL;
+    request.reconcile = 1;
     status = sync_run(&context, &request, &refusal);
     sync_request_release(&request);
     cli_context_close(&context);

@@ -21,6 +21,8 @@ static const cli_command commands[] = {
     {"init", cli_command_init},       {"hold", cli_command_hold},   {"release", cli_command_release},
     {"sync", cli_command_sync},       {"clone", cli_command_clone}, {"resolve", cli_command_resolve},
     {"check", cli_command_check},     {"siblings", cli_command_siblings},
+    {"new", cli_command_new},         {"adopt", cli_command_adopt}, {"add", cli_command_add},
+    {"retire", cli_command_retire},
 };
 
 #if defined(_WIN32)

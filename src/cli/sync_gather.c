@@ -1069,3 +1069,7 @@ naula_status sync_input(const sync_request *request, sync_model *model, naula_la
     input->existing_link_count = model->links.count;
     return NAULA_OK;
 }
+
+naula_status sync_scan_checkouts(sync_model *model, const char *root) {
+    return scan_checkouts(model, root, 0);
+}
