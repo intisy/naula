@@ -10,8 +10,13 @@
 #include "check.h"
 #include "disk.h"
 #include "naula/json.h"
+#include "naula/layout_apply.h"
 #include "naula/memory.h"
 #include "naula/run.h"
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #ifndef NAULA_PROGRAM
 #error "NAULA_PROGRAM names the test build of the naula program"
@@ -21,6 +26,9 @@
 #endif
 #ifndef NAULA_CMAKE
 #error "NAULA_CMAKE names cmake, which removes a case's folder"
+#endif
+#ifndef NAULA_STOPPED_MOVE
+#error "NAULA_STOPPED_MOVE names the helper that leaves an unfinished move"
 #endif
 
 #define TEXT_SIZE 4096
@@ -43,6 +51,7 @@ typedef struct test_case {
     size_t repo_count;
     unsigned clock;
     naula_run_result last;
+    const char *environment[4];
 } test_case;
 
 static test_case here;
@@ -234,7 +243,11 @@ static int naula(const char *first, ...) {
     snprintf(forge, sizeof forge, "NAULA_TEST_FORGE=%s/forge.json", here.folder);
     snprintf(cache, sizeof cache, "NAULA_CACHE=%s/cache", here.folder);
     snprintf(banks, sizeof banks, "NAULA_MEMORY_BANKS=%s/banks", here.folder);
-    const char *environment[] = {forge, cache, banks, NULL};
+    const char *environment[8] = {forge, cache, banks, NULL};
+    for (size_t index = 0; index < 4 && here.environment[index] != NULL; index++) {
+        environment[3 + index] = here.environment[index];
+        environment[4 + index] = NULL;
+    }
     naula_run_result_release(&here.last);
     if (!run_in(NULL, arguments, environment, &here.last)) {
         return -1;
@@ -638,6 +651,7 @@ static void release_removes_an_orgs_links_but_never_a_dirty_clone(void) {
     expect_exit(naula("release", "beta", "--root", root, NULL), 0, "release beta");
     expect_absent(root, "beta/app", "beta's app link");
     expect_absent(root, "beta/docs", "beta's docs link");
+    expect_absent(root, "beta/CLAUDE.md", "beta's generated rules import");
     CHECK(exists(dirty));
     expect_path(root, "docs", 1, "alpha's docs link stays");
 }
@@ -670,6 +684,492 @@ static void clone_names_the_folder_by_twelve_hex(void) {
     expect_output("clone ", 0, "the kept repo is not cloned again");
 }
 
+static void make_folder(const char *path) {
+    const char *make[] = {NAULA_CMAKE, "-E", "make_directory", path, NULL};
+    naula_run_result result;
+    if (run_in(NULL, make, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
+}
+
+static void make_link(const char *path, const char *target) {
+    unsigned long error = 0;
+    CHECK(disk_link_make(path, target, &error) == NAULA_OK);
+}
+
+/** A repo `app` of account gamma depending on `lib` of alpha, served as forge:<number>, its dependency extra appended. */
+static void make_app_with_lib(unsigned number, const char *dependency_extra, char *app) {
+    char lib_file[TEXT_SIZE];
+    app_file(lib_file, "lib", "alpha", NULL);
+    const char *lib_files[] = {"repo.json", lib_file, "payload.txt", "written outside\n", NULL};
+    make_repo("lib", lib_files);
+    serve(number, "alpha", "lib", "lib", NULL);
+    char lib[1024];
+    char root[65];
+    char head[65];
+    path_in(lib, "lib");
+    root_commit(lib, root);
+    revision(lib, "HEAD", head);
+    char dependency[1024];
+    snprintf(dependency, sizeof dependency,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:%u\"],\"importName\":\"lib\",\"commit\":\"%s\"%s}]",
+             root, number, head, dependency_extra == NULL ? "" : dependency_extra);
+    char file[TEXT_SIZE];
+    app_file(file, "app", "gamma", dependency);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    path_in(app, "app");
+}
+
+static void siblings_refuses_a_link_in_its_own_siblings_folder(void) {
+    start_case();
+    char app[1024];
+    char escaped[1024];
+    char link[1100];
+    char written[1200];
+    make_app_with_lib(711, NULL, app);
+    path_in(escaped, "escaped");
+    make_folder(escaped);
+    snprintf(link, sizeof link, "%s/siblings", app);
+    make_link(link, escaped);
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "a linked siblings folder");
+    expect_output("path-linked", 1, "why the link was refused");
+    snprintf(written, sizeof written, "%s/lib", escaped);
+    CHECK(!exists(written));
+}
+
+#if !defined(_WIN32)
+static void siblings_refuses_a_link_a_dependency_tracks(void) {
+    start_case();
+    char escaped[1024];
+    path_in(escaped, "escaped");
+    make_folder(escaped);
+    char outer_file[TEXT_SIZE];
+    app_file(outer_file, "outer", "alpha", NULL);
+    const char *outer_files[] = {"repo.json", outer_file, NULL};
+    make_repo("outer", outer_files);
+    char outer[1024];
+    char link[1100];
+    path_in(outer, "outer");
+    snprintf(link, sizeof link, "%s/inner", outer);
+    CHECK(symlink(escaped, link) == 0);
+    git(outer, "add", "-A", NULL);
+    git(outer, "commit", "--quiet", "-m", "link", NULL);
+    char inner_file[TEXT_SIZE];
+    app_file(inner_file, "lib", "alpha", NULL);
+    const char *inner_files[] = {"repo.json", inner_file, "payload.txt", "written outside\n", NULL};
+    make_repo("lib", inner_files);
+    serve(701, "alpha", "outer", "outer", NULL);
+    serve(702, "alpha", "lib", "lib", NULL);
+    char lib[1024];
+    char outer_root[65];
+    char outer_head[65];
+    char lib_root[65];
+    char lib_head[65];
+    path_in(lib, "lib");
+    root_commit(outer, outer_root);
+    revision(outer, "HEAD", outer_head);
+    root_commit(lib, lib_root);
+    revision(lib, "HEAD", lib_head);
+    char dependencies[2048];
+    snprintf(dependencies, sizeof dependencies,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:701\"],\"importName\":\"outer\",\"commit\":\"%s\"},"
+             "{\"id\":\"git:%s\",\"at\":[\"forge:702\"],\"importName\":\"lib\",\"commit\":\"%s\","
+             "\"path\":\"siblings/outer/inner/x\"}]",
+             outer_root, outer_head, lib_root, lib_head);
+    char file[TEXT_SIZE];
+    app_file(file, "app", "gamma", dependencies);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char app[1024];
+    char written[1200];
+    path_in(app, "app");
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "a link the outer dependency tracks");
+    expect_output("path-linked", 1, "why the nested clone was refused");
+    snprintf(written, sizeof written, "%s/x", escaped);
+    CHECK(!exists(written));
+}
+#else
+static void siblings_refuses_a_link_a_dependency_tracks(void) {
+    fprintf(stderr, "git for Windows checks a tracked link out as a file, so no clone can follow one there\n");
+}
+#endif
+
+static void siblings_compares_paths_ignoring_case(void) {
+    start_case();
+    char lib_file[TEXT_SIZE];
+    app_file(lib_file, "lib", "alpha", NULL);
+    const char *lib_files[] = {"repo.json", lib_file, NULL};
+    make_repo("lib", lib_files);
+    serve(721, "alpha", "lib", "lib", NULL);
+    char lib[1024];
+    char root[65];
+    char head[65];
+    path_in(lib, "lib");
+    root_commit(lib, root);
+    revision(lib, "HEAD", head);
+    char dependencies[1024];
+    snprintf(dependencies, sizeof dependencies,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:721\"],\"importName\":\"lib\",\"commit\":\"%s\","
+             "\"path\":\"siblings/Lib\"},{\"id\":\"git:%s\",\"at\":[\"forge:721\"],\"importName\":\"other\","
+             "\"commit\":\"%s\",\"path\":\"siblings/lib\"}]",
+             root, head, root, head);
+    char file[TEXT_SIZE];
+    app_file(file, "app", "gamma", dependencies);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char app[1024];
+    path_in(app, "app");
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "two paths one case apart");
+    expect_output("sibling-path-repeated", 1, "the repeated path");
+}
+
+/**
+ * `lib`'s pinned commit exists only on a fork of it, which another dependency names and the run fetches first, so it
+ * sits in the shared history store; a branch of lib's own primary must hold it, and the refusal comes before any clone.
+ */
+static void siblings_checks_every_commit_on_its_own_primary_before_cloning(void) {
+    start_case();
+    char lib_file[TEXT_SIZE];
+    app_file(lib_file, "lib", "alpha", NULL);
+    const char *lib_files[] = {"repo.json", lib_file, NULL};
+    make_repo("lib", lib_files);
+    char lib[1024];
+    char fork[1024];
+    char url[1100];
+    char lib_root[65];
+    char own[65];
+    char fork_head[65];
+    path_in(lib, "lib");
+    path_in(fork, "fork");
+    root_commit(lib, lib_root);
+    snprintf(url, sizeof url, "file://%s", lib);
+    git(NULL, "clone", "--quiet", url, fork, NULL);
+    commit_file("fork", "own.txt", "the fork's own work\n");
+    revision(fork, "HEAD", own);
+    char fork_file[TEXT_SIZE];
+    char stated[100];
+    snprintf(stated, sizeof stated, ",\"id\":\"git:%s\"", own);
+    app_file(fork_file, "fork", "beta", stated);
+    commit_file("fork", "repo.json", fork_file);
+    revision(fork, "HEAD", fork_head);
+    serve(731, "alpha", "lib", "lib", NULL);
+    serve(732, "beta", "fork", "fork", NULL);
+    char dependencies[1024];
+    snprintf(dependencies, sizeof dependencies,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:732\"],\"importName\":\"fork\",\"commit\":\"%s\","
+             "\"path\":\"siblings/a-fork\"},{\"id\":\"git:%s\",\"at\":[\"forge:731\"],\"importName\":\"lib\","
+             "\"commit\":\"%s\"}]",
+             own, fork_head, lib_root, own);
+    char file[TEXT_SIZE];
+    app_file(file, "app", "gamma", dependencies);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char app[1024];
+    char siblings[1100];
+    path_in(app, "app");
+    snprintf(siblings, sizeof siblings, "%s/siblings", app);
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "a commit only a fork holds");
+    expect_output("commit-not-on-home", 1, "why the commit was refused");
+    CHECK(!exists(siblings));
+}
+
+static void siblings_stops_a_fetch_past_its_byte_limit(void) {
+    start_case();
+    char app[1024];
+    make_app_with_lib(741, NULL, app);
+    here.environment[0] = "NAULA_FETCH_BYTE_LIMIT=1";
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "a fetch past its byte limit");
+    expect_output("fetch-too-large", 1, "the byte limit");
+    here.environment[0] = "NAULA_FETCH_TIME_LIMIT_MS=1";
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "a fetch past its time limit");
+    expect_output("fetch-too-slow", 1, "the time limit");
+}
+
+static void sync_refuses_while_a_listed_repo_is_unread(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char tool[1024];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_path(root, "tools/tool", 1, "the tool link");
+    path_in(tool, "alpha-tool");
+    git(tool, "branch", "-m", "main", "trunk", NULL);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a listed repo without its branch");
+    expect_output("repos-unread", 1, "the refusal");
+    expect_output("no-working-branch", 1, "the cause");
+    expect_path(root, "tools/tool", 1, "the unread repo's link is kept");
+}
+
+static void read_whole(const char *path, char *out, size_t capacity) {
+    uint8_t *bytes = NULL;
+    size_t size = 0;
+    unsigned long error = 0;
+    out[0] = '\0';
+    if (disk_file_read(path, &bytes, &size, &error) == NAULA_OK) {
+        snprintf(out, capacity, "%.*s", (int)size, (const char *)bytes);
+        naula_memory_release(bytes);
+    }
+}
+
+static void clone_of_a_refused_repo_writes_nothing(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    make_orgs(alpha, beta_app, gamma);
+    char copy_file[TEXT_SIZE];
+    snprintf(copy_file, sizeof copy_file,
+             "{\"format\":2,\"name\":\"thing\",\"importName\":\"thing\",\"homes\":[{\"provider\":\"forge\",\"account\":"
+             "\"delta\"},{\"provider\":\"forge\",\"account\":\"gamma\"}]}\n");
+    char thing[1024];
+    char copy[1024];
+    char url[1100];
+    path_in(thing, "gamma-thing");
+    path_in(copy, "copy");
+    snprintf(url, sizeof url, "file://%s", thing);
+    git(NULL, "clone", "--quiet", url, copy, NULL);
+    commit_file("copy", "repo.json", copy_file);
+    serve(801, "delta", "thing", "copy", NULL);
+    init_root(root);
+    char file[1100];
+    static char before[TEXT_SIZE];
+    static char after[TEXT_SIZE];
+    snprintf(file, sizeof file, "%s/.naula.json", root);
+    read_whole(file, before, sizeof before);
+    expect_exit(naula("clone", "forge:801", "--root", root, NULL), 1, "a copy another home disowns");
+    read_whole(file, after, sizeof after);
+    check_text(after, before, "the root file after a refused clone");
+}
+
+static void check_passes_the_adoption_of_an_existing_repo(void) {
+    start_case();
+    const char *host_files[] = {"README.md", "an existing repo\n", NULL};
+    make_repo("host", host_files);
+    serve(901, "alpha", "app", "host", NULL);
+    char host[1024];
+    char local[1024];
+    char url[1100];
+    path_in(host, "host");
+    path_in(local, "local");
+    snprintf(url, sizeof url, "file://%s", host);
+    git(NULL, "clone", "--quiet", url, local, NULL);
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    commit_file("local", "repo.json", file);
+    expect_exit(naula("check", "--repo", local, NULL), 0, "adopting the repo the name already belongs to");
+    expect_output("name-taken", 0, "the name is this repo's own");
+}
+
+static void check_refuses_a_shallow_checkout(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("host", files);
+    commit_file("host", "second.txt", "2\n");
+    commit_file("host", "third.txt", "3\n");
+    serve(911, "alpha", "app", "host", NULL);
+    char host[1024];
+    char local[1024];
+    char url[1100];
+    path_in(host, "host");
+    path_in(local, "local");
+    snprintf(url, sizeof url, "file://%s", host);
+    git(NULL, "clone", "--quiet", "--depth", "1", url, local, NULL);
+    expect_exit(naula("check", "--repo", local, NULL), 1, "a shallow checkout");
+    expect_output("shallow-checkout", 1, "why it was refused");
+    expect_output("fetch-depth: 0", 1, "the fix");
+    expect_output("name-taken", 0, "no false name-taken");
+}
+
+static void check_fails_closed_past_its_finding_limit(void) {
+    start_case();
+    static char dependencies[TEXT_SIZE * 16];
+    size_t length = (size_t)snprintf(dependencies, sizeof dependencies, ",\"dependencies\":[");
+    for (int index = 0; index < 300; index++) {
+        length += (size_t)snprintf(dependencies + length, sizeof dependencies - length,
+                                   "%s{\"url\":\"https://example.org/x/l%d.git\",\"importName\":\"l%d\","
+                                   "\"commit\":\"0123456789abcdef0123456789abcdef01234567\"}",
+                                   index == 0 ? "" : ",", index, index);
+    }
+    snprintf(dependencies + length, sizeof dependencies - length, "]");
+    static char file[TEXT_SIZE * 16];
+    snprintf(file, sizeof file,
+             "{\"format\":2,\"name\":\"app\",\"importName\":\"app\",\"homes\":[{\"provider\":\"forge\",\"account\":"
+             "\"alpha\"}]%s}\n",
+             dependencies);
+    const char *files[] = {"repo.json", file, "README.md", "Build it beside alpha/other-tool.\n", NULL};
+    make_repo("app", files);
+    char app[1024];
+    path_in(app, "app");
+    expect_exit(naula("check", "--offline", "--repo", app, NULL), 1, "an error past the finding limit");
+    expect_output("too-many-findings", 1, "the overflow");
+}
+
+static void check_takes_zeros_as_no_previous(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char app[1024];
+    path_in(app, "app");
+    expect_exit(naula("check", "--offline", "--repo", app, "--previous", "0000000000000000000000000000000000000000",
+                      NULL),
+                0, "a new branch's before");
+}
+
+static void check_ignores_an_inherited_git_dir(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    commit_file("app", "second.txt", "2\n");
+    const char *other_files[] = {"README.md", "other\n", NULL};
+    make_repo("other", other_files);
+    char app[1024];
+    char other[1024];
+    char first[65];
+    char git_dir[1200];
+    path_in(app, "app");
+    path_in(other, "other");
+    revision(app, "HEAD~1", first);
+    snprintf(git_dir, sizeof git_dir, "GIT_DIR=%s/.git", other);
+    here.environment[0] = git_dir;
+    expect_exit(naula("check", "--offline", "--repo", app, "--previous", first, NULL), 0, "a GIT_DIR left by a hook");
+}
+
+static void check_prints_findings_as_json_with_the_verdict(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, "README.md", "Build it beside alpha/other-tool.\n", NULL};
+    make_repo("app", files);
+    char app[1024];
+    path_in(app, "app");
+    expect_exit(naula("check", "--offline", "--json", "--repo", app, NULL), 1, "a refused check as JSON");
+    expect_output("\"code\":\"owner-repo-literal\"", 1, "the finding");
+    expect_output("\"passed\":false", 1, "the verdict");
+}
+
+static void check_exempts_uses_only_as_a_step_key(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, ".github/workflows/test.yml",
+                           "jobs:\n  test:\n    steps:\n      - uses: alpha/workflows/.github/actions/x@main\n"
+                           "      - run: echo \"uses: alpha/secret-tool\"\n",
+                           NULL};
+    make_repo("app", files);
+    char app[1024];
+    path_in(app, "app");
+    expect_exit(naula("check", "--offline", "--repo", app, NULL), 1, "uses: inside a run line");
+    expect_output("alpha/secret-tool", 1, "the literal in the run line");
+    expect_output("alpha/workflows", 0, "the step's own uses key");
+}
+
+static void check_reads_a_repo_in_a_folder_named_outside_the_code_page(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("plain", files);
+    char plain[1024];
+    char named[1024];
+    path_in(plain, "plain");
+    path_in(named, "r\xc3\xa9po-\xe2\x82\xac");
+    const char *rename[] = {NAULA_CMAKE, "-E", "rename", plain, named, NULL};
+    naula_run_result result;
+    if (run_in(NULL, rename, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
+    expect_exit(naula("check", "--offline", "--repo", named, NULL), 0, "a folder name in UTF-8");
+    expect_output("note offline", 1, "its repo.json was read");
+    expect_output("unadopted", 0, "the repo was found");
+}
+
+/** The one entry in `folder`, empty when it holds none or several. */
+static void only_entry(const char *folder, char *name, size_t capacity) {
+    char **names = NULL;
+    size_t count = 0;
+    unsigned long error = 0;
+    name[0] = '\0';
+    if (disk_names(folder, &names, &count, &error) == NAULA_OK) {
+        if (count == 1) {
+            snprintf(name, capacity, "%s", names[0]);
+        }
+        disk_names_release(names, count);
+    }
+}
+
+/** Finds the boundary where the checkout has moved and its memory bank has not, leaving that journal unfinished. */
+static int stop_between_move_and_bank(const char *root, const char *from, const char *to, const char *banks) {
+    for (unsigned long stop = 1; stop <= 12; stop++) {
+        char key[400];
+        char bank[1500];
+        char text[16];
+        snprintf(text, sizeof text, "%lu", stop);
+        const char *remove[] = {NAULA_CMAKE, "-E", "remove_directory", root, NULL};
+        const char *clear[] = {NAULA_CMAKE, "-E", "remove_directory", banks, NULL};
+        naula_run_result result;
+        if (run_in(NULL, remove, NULL, &result)) {
+            naula_run_result_release(&result);
+        }
+        if (run_in(NULL, clear, NULL, &result)) {
+            naula_run_result_release(&result);
+        }
+        make_folder(from);
+        git(from, "init", "--quiet", "-b", "main", NULL);
+        naula_memory_bank_key(from, key, sizeof key);
+        snprintf(bank, sizeof bank, "%s/%s", banks, key);
+        make_folder(bank);
+        const char *arguments[] = {NAULA_STOPPED_MOVE, root, from, to, banks, text, NULL};
+        if (!run_in(NULL, arguments, NULL, &result)) {
+            return 0;
+        }
+        int stopped = result.exit_code == 0;
+        naula_run_result_release(&result);
+        if (stopped && exists(to) && exists(bank)) {
+            char lock[1100];
+            unsigned long error = 0;
+            snprintf(lock, sizeof lock, "%s/.naula-journal/lock", root);
+            disk_file_remove(lock, &error);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void sync_resumes_a_move_with_its_memory_bank(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char from[1100];
+    char to[1100];
+    char banks[1024];
+    char key[400];
+    char name[400];
+    make_orgs(alpha, beta_app, gamma);
+    path_in(root, "root");
+    path_in(banks, "banks");
+    snprintf(from, sizeof from, "%s/old-place", root);
+    snprintf(to, sizeof to, "%s/new-place", root);
+    CHECK(stop_between_move_and_bank(root, from, to, banks));
+    expect_exit(naula("init", root, "forge:101", NULL), 0, "init resumes the unfinished move");
+    expect_output("resume ", 1, "the resume");
+    naula_memory_bank_key(to, key, sizeof key);
+    only_entry(banks, name, sizeof name);
+    check_text(name, key, "the memory bank follows the resumed move");
+}
+
 typedef struct test_entry {
     const char *name;
     void (*run)(void);
@@ -687,6 +1187,24 @@ static const test_entry tests[] = {
     {"hold_adds_an_org_and_lays_it_out", hold_adds_an_org_and_lays_it_out},
     {"release_removes_an_orgs_links_but_never_a_dirty_clone", release_removes_an_orgs_links_but_never_a_dirty_clone},
     {"clone_names_the_folder_by_twelve_hex", clone_names_the_folder_by_twelve_hex},
+    {"siblings_refuses_a_link_in_its_own_siblings_folder", siblings_refuses_a_link_in_its_own_siblings_folder},
+    {"siblings_refuses_a_link_a_dependency_tracks", siblings_refuses_a_link_a_dependency_tracks},
+    {"siblings_compares_paths_ignoring_case", siblings_compares_paths_ignoring_case},
+    {"siblings_checks_every_commit_on_its_own_primary_before_cloning",
+     siblings_checks_every_commit_on_its_own_primary_before_cloning},
+    {"siblings_stops_a_fetch_past_its_byte_limit", siblings_stops_a_fetch_past_its_byte_limit},
+    {"sync_refuses_while_a_listed_repo_is_unread", sync_refuses_while_a_listed_repo_is_unread},
+    {"clone_of_a_refused_repo_writes_nothing", clone_of_a_refused_repo_writes_nothing},
+    {"check_passes_the_adoption_of_an_existing_repo", check_passes_the_adoption_of_an_existing_repo},
+    {"check_refuses_a_shallow_checkout", check_refuses_a_shallow_checkout},
+    {"check_fails_closed_past_its_finding_limit", check_fails_closed_past_its_finding_limit},
+    {"check_takes_zeros_as_no_previous", check_takes_zeros_as_no_previous},
+    {"check_ignores_an_inherited_git_dir", check_ignores_an_inherited_git_dir},
+    {"check_prints_findings_as_json_with_the_verdict", check_prints_findings_as_json_with_the_verdict},
+    {"check_exempts_uses_only_as_a_step_key", check_exempts_uses_only_as_a_step_key},
+    {"check_reads_a_repo_in_a_folder_named_outside_the_code_page",
+     check_reads_a_repo_in_a_folder_named_outside_the_code_page},
+    {"sync_resumes_a_move_with_its_memory_bank", sync_resumes_a_move_with_its_memory_bank},
 };
 
 int main(int count, char **values) {
