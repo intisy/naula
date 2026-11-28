@@ -80,7 +80,8 @@ naula_status root_lock_take(const char *root, disk_owned_file **lock, naula_refu
         char text[32];
         snprintf(text, sizeof text, "%lu\n", disk_process_id());
         int exists = 0;
-        status = disk_owned_file_create(lock_path, (const uint8_t *)text, strlen(text), &exists, lock, &error);
+        status = disk_owned_file_create(root, APPLY_JOURNAL_FOLDER "/" LOCK_NAME, (const uint8_t *)text, strlen(text),
+                                        &exists, lock, &error);
         if (status == NAULA_REFUSED) {
             status = exists ? refuse_held(lock_path, refusal)
                             : apply_refuse_disk(refusal, "root-unwritable", LOCKED_FIX, "cannot create", lock_path,

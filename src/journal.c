@@ -200,7 +200,7 @@ static naula_status largest_sequence(const char *folder, unsigned long long *lar
 }
 
 /** Named by a sequence one past the largest in the folder; the time in the name is only information. */
-static naula_status open_new(const char *folder, journal *journal, naula_refusal *refusal) {
+static naula_status open_new(const char *root, const char *folder, journal *journal, naula_refusal *refusal) {
     char stamp[17];
     disk_utc_stamp(stamp);
     unsigned long long largest = 0;
@@ -221,7 +221,7 @@ static naula_status open_new(const char *folder, journal *journal, naula_refusal
         disk_kind kind = DISK_MISSING;
         naula_status status = disk_kind_of(path, &kind, &error);
         if (status == NAULA_OK && kind == DISK_MISSING) {
-            status = disk_appender_open(path, 1, &journal->appender, &error);
+            status = disk_appender_open(root, apply_below(root, path), 1, &journal->appender, &error);
             if (status == NAULA_OK) {
                 journal->path = path;
                 return NAULA_OK;
@@ -296,7 +296,7 @@ naula_status journal_start(const char *root, const naula_layout_plan *plan, jour
         status = NAULA_OUT_OF_MEMORY;
     }
     if (status == NAULA_OK) {
-        status = open_new(folder, journal, refusal);
+        status = open_new(root, folder, journal, refusal);
     }
     naula_memory_release(folder);
     unsigned long error = 0;
@@ -361,13 +361,15 @@ void journal_close(journal *journal) {
     journal->path = NULL;
 }
 
-naula_status journal_reopen(const char *path, int ends_mid_line, journal *journal, naula_refusal *refusal) {
+naula_status journal_reopen(const char *root, const char *path, int ends_mid_line, journal *journal,
+                            naula_refusal *refusal) {
     journal->path = naula_memory_duplicate_text(path);
     if (journal->path == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
     unsigned long error = 0;
-    naula_status status = disk_appender_open(path, 0, &journal->appender, &error);
+    const char *below = apply_below(root, path);
+    naula_status status = below == NULL ? NAULA_REFUSED : disk_appender_open(root, below, 0, &journal->appender, &error);
     if (status == NAULA_OK && ends_mid_line) {
         status = disk_append(journal->appender, "\n", 1, &error);
     }

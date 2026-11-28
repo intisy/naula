@@ -128,7 +128,9 @@ typedef struct journal_contents {
  */
 naula_status journal_load(const char *path, journal_contents *contents, naula_refusal *refusal);
 /** Opens an existing journal to append to, first ending a line a crash cut short. */
-naula_status journal_reopen(const char *path, int ends_mid_line, journal *journal, naula_refusal *refusal);
+/** Reopens the journal `path` names below `root`, by a walk from the root. */
+naula_status journal_reopen(const char *root, const char *path, int ends_mid_line, journal *journal,
+                            naula_refusal *refusal);
 void journal_contents_release(journal_contents *contents);
 
 /** The memory bank folder of `real_path` under `banks`, NULL when memory runs out or the key does not fit. */

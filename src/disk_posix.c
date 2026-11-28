@@ -24,6 +24,10 @@
 
 #define FILE_LIMIT (16 * 1024 * 1024)
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 struct disk_appender {
     int descriptor;
 };
@@ -42,81 +46,186 @@ static char *copy_of(const char *text, size_t length) {
     return copy;
 }
 
-/** Flushes the folder holding `path`, cutting the writable `path` short while it opens it, so it allocates nothing. */
-static void sync_folder_of(char *path) {
-    char *slash = strrchr(path, '/');
-    char kept = '\0';
-    char *cut = NULL;
-    if (slash != NULL) {
-        cut = slash == path ? slash + 1 : slash;
-        kept = *cut;
-        *cut = '\0';
-    }
-    int descriptor = open(slash == NULL ? "." : path, O_RDONLY | O_DIRECTORY);
-    if (cut != NULL) {
-        *cut = kept;
-    }
-    if (descriptor >= 0) {
-        fsync(descriptor);
-        close(descriptor);
-    }
+#ifdef NAULA_TEST_HOOKS
+static disk_test_hook test_hook;
+static void *test_hook_context;
+
+void naula_disk_test_hook(disk_test_hook hook, void *context) {
+    test_hook = hook;
+    test_hook_context = context;
 }
 
-naula_status disk_sync_parent(const char *path) {
-    char *copy = copy_of(path, strlen(path));
-    if (copy == NULL) {
-        return NAULA_OUT_OF_MEMORY;
+void disk_test_reach(disk_test_point point, const char *name) {
+    if (test_hook != NULL) {
+        test_hook(point, name, test_hook_context);
     }
-    sync_folder_of(copy);
-    naula_memory_release(copy);
+}
+#endif
+
+/** Opens `name` in `folder` only when it is a real folder there, never through a link. */
+static int open_folder_at(int folder, const char *name) {
+    return openat(folder, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+}
+
+static int is_walkable_name(const char *name) {
+    return name[0] != '\0' && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+}
+
+/** Judges the root and every folder a walk opens on its way down, refusing one; NULL judges none. */
+typedef naula_status (*walk_judge)(void *context, int folder, unsigned long *error);
+
+static naula_status refuse_name(unsigned long *error) {
+    *error = EINVAL;
+    return NAULA_REFUSED;
+}
+
+/**
+ * Opens `root`, then every component of `below` but the last relative to the folder before it, never through a link,
+ * and hands back the last folder and where the last component starts. Cuts `below` while it works.
+ */
+static naula_status walk_from_root(const char *root, char *below, walk_judge judge, void *context, int *parent,
+                                   const char **name, unsigned long *error) {
+    *parent = -1;
+    disk_test_reach(DISK_TEST_BEFORE_WALK, below);
+    int folder = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (folder < 0) {
+        return refused(error);
+    }
+    naula_status status = judge == NULL ? NAULA_OK : judge(context, folder, error);
+    char *component = below;
+    for (char *slash = strchr(component, '/'); status == NAULA_OK && slash != NULL; slash = strchr(component, '/')) {
+        *slash = '\0';
+        int next = is_walkable_name(component) ? open_folder_at(folder, component) : -1;
+        status = next >= 0 ? NAULA_OK : is_walkable_name(component) ? refused(error) : refuse_name(error);
+        *slash = '/';
+        close(folder);
+        folder = next;
+        if (status == NAULA_OK && judge != NULL) {
+            status = judge(context, folder, error);
+        }
+        component = slash + 1;
+    }
+    if (status == NAULA_OK && !is_walkable_name(component)) {
+        status = refuse_name(error);
+    }
+    if (status != NAULA_OK) {
+        if (folder >= 0) {
+            close(folder);
+        }
+        return status;
+    }
+    *parent = folder;
+    *name = component;
     return NAULA_OK;
 }
 
-naula_status disk_folder_make(const char *path, unsigned long *error) {
-    *error = 0;
-    if (mkdir(path, 0777) != 0) {
-        return refused(error);
+naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error) {
+    walk->parent = -1;
+    walk->name = NULL;
+    walk->below = copy_of(below, strlen(below));
+    if (walk->below == NULL) {
+        return NAULA_OUT_OF_MEMORY;
     }
-    return disk_sync_parent(path);
+    return walk_from_root(root, walk->below, NULL, NULL, &walk->parent, &walk->name, error);
+}
+
+void disk_walk_release(disk_walk *walk) {
+    if (walk->parent >= 0) {
+        close(walk->parent);
+    }
+    naula_memory_release(walk->below);
+    walk->parent = -1;
+    walk->below = NULL;
+}
+
+naula_status disk_folder_make(const char *root, const char *below, unsigned long *error) {
+    *error = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    if (status == NAULA_OK && mkdirat(walk.parent, walk.name, 0777) != 0) {
+        status = refused(error);
+    }
+    if (status == NAULA_OK) {
+        fsync(walk.parent);
+    }
+    disk_walk_release(&walk);
+    return status;
 }
 
 /** 1 when the rename was made or refused, 0 when this system or file system cannot rename without replacing. */
-static int rename_without_replacing(const char *from, const char *to, int *renamed) {
+static int rename_without_replacing(const disk_walk *from, const disk_walk *to, int *renamed) {
+    *renamed = 0;
 #if defined(__linux__) && defined(RENAME_NOREPLACE)
-    if (renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE) == 0) {
+    if (renameat2(from->parent, from->name, to->parent, to->name, RENAME_NOREPLACE) == 0) {
         *renamed = 1;
         return 1;
     }
-    *renamed = 0;
     return errno != EINVAL && errno != ENOSYS;
+#elif defined(__APPLE__) && defined(RENAME_EXCL)
+    if (renameatx_np(from->parent, from->name, to->parent, to->name, RENAME_EXCL) == 0) {
+        *renamed = 1;
+        return 1;
+    }
+    return errno != EINVAL && errno != ENOTSUP;
 #else
     (void)from;
     (void)to;
-    *renamed = 0;
     return 0;
 #endif
 }
 
 /**
- * @implNote rename(2) replaces an empty folder at `to`, so where renameat2's RENAME_NOREPLACE is missing (outside
- * Linux, an old kernel, or a file system that answers EINVAL) the absence is checked first and the window accepted.
+ * @implNote renameat(2) replaces an empty folder at `to`, so where no rename refuses to replace (an old kernel, or a
+ * file system that answers EINVAL) the absence is checked first and the window accepted.
  */
-naula_status disk_move(const char *from, const char *to, int *held, unsigned long *error) {
-    struct stat found;
-    *held = 0;
-    *error = 0;
+static naula_status rename_walked(const disk_walk *from, const disk_walk *to, unsigned long *error) {
     int renamed = 0;
     if (rename_without_replacing(from, to, &renamed)) {
-        return renamed ? disk_sync_parent(to) : refused(error);
+        return renamed ? NAULA_OK : refused(error);
     }
-    if (lstat(to, &found) == 0) {
+    struct stat found;
+    if (fstatat(to->parent, to->name, &found, AT_SYMLINK_NOFOLLOW) == 0) {
         *error = EEXIST;
         return NAULA_REFUSED;
     }
-    if (rename(from, to) != 0) {
-        return refused(error);
+    return renameat(from->parent, from->name, to->parent, to->name) == 0 ? NAULA_OK : refused(error);
+}
+
+naula_status disk_move(const char *root, const char *from, const char *to, int *held, unsigned long *error) {
+    *held = 0;
+    *error = 0;
+    disk_walk source;
+    disk_walk target;
+    naula_status status = disk_walk_to_parent(root, from, &source, error);
+    target.parent = -1;
+    target.below = NULL;
+    if (status == NAULA_OK) {
+        status = disk_walk_to_parent(root, to, &target, error);
     }
-    return disk_sync_parent(to);
+    if (status == NAULA_OK) {
+        status = rename_walked(&source, &target, error);
+    }
+    if (status == NAULA_OK) {
+        fsync(target.parent);
+        fsync(source.parent);
+    }
+    disk_walk_release(&target);
+    disk_walk_release(&source);
+    return status;
+}
+
+#ifdef NAULA_TEST_HOOKS
+static size_t test_depth_limit;
+
+void naula_disk_test_depth_limit(size_t levels) {
+    test_depth_limit = levels;
+}
+#else
+#define test_depth_limit 0
+#endif
+
+size_t disk_removal_depth_limit(void) {
+    return test_depth_limit != 0 ? test_depth_limit : PATH_MAX / 2;
 }
 
 #define OWNER_ALL (S_IRUSR | S_IWUSR | S_IXUSR)
@@ -132,11 +241,6 @@ static naula_status let_owner_empty(int folder, unsigned long *error) {
         return NAULA_OK;
     }
     return fchmod(folder, (found.st_mode & 07777) | OWNER_ALL) == 0 ? NAULA_OK : refused(error);
-}
-
-/** Opens `name` in `folder` only when it is a real folder there, never through a link. */
-static int open_folder_at(int folder, const char *name) {
-    return openat(folder, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
 }
 
 /** The names of one listing, each ended by a NUL. */
@@ -260,7 +364,8 @@ typedef struct removal {
     removal_frame *frames;
     size_t depth;
     size_t capacity;
-    mount_identity clone;
+    mount_identity root_mount;
+    int root_judged;
     disk_removal_refusal reason;
 } removal;
 
@@ -291,30 +396,40 @@ static naula_status judge_mount(removal *removing, const mount_identity *expecte
     return NAULA_OK;
 }
 
-/**
- * The clone must be on its parent folder's mount, so a clone that is itself a mount point is refused; its mount is
- * then recorded, and a folder below it on any other is refused before anything in it is touched.
- */
+/** A folder of the clone, the clone included, must be on the root's mount before anything in it is touched. */
 static naula_status check_mount(removal *removing, int folder, const struct stat *found, unsigned long *error) {
     mount_identity identity;
     mount_identity_at(folder, "", found->st_dev, &identity);
-    if (removing->depth > 0) {
-        return judge_mount(removing, &removing->clone, &identity, error);
-    }
-    struct stat parent_found;
-    if (fstat(removing->parent, &parent_found) != 0) {
+    return judge_mount(removing, &removing->root_mount, &identity, error);
+}
+
+/** Records the root's mount from the first folder of the walk, and judges every later one against it. */
+static naula_status judge_walked_folder(void *context, int folder, unsigned long *error) {
+    removal *removing = context;
+    struct stat found;
+    if (fstat(folder, &found) != 0) {
         return refused(error);
     }
-    mount_identity parent;
-    mount_identity_at(removing->parent, "", parent_found.st_dev, &parent);
-    removing->clone = identity;
-    return judge_mount(removing, &parent, &identity, error);
+    if (removing->root_judged) {
+        return check_mount(removing, folder, &found, error);
+    }
+    removing->root_judged = 1;
+    mount_identity_at(folder, "", found.st_dev, &removing->root_mount);
+    return NAULA_OK;
+}
+
+static naula_status refuse_too_deep(removal *removing, unsigned long *error) {
+    removing->reason = DISK_REMOVAL_TOO_DEEP;
+    *error = ENAMETOOLONG;
+    return NAULA_REFUSED;
 }
 
 /** Takes ownership of `folder` and `name`, closing and releasing both when it cannot push them. */
 static naula_status push_frame(removal *removing, int folder, char *name, unsigned long *error) {
     struct stat found;
-    naula_status status = fstat(folder, &found) == 0 ? check_mount(removing, folder, &found, error) : refused(error);
+    naula_status status = removing->depth > disk_removal_depth_limit() ? refuse_too_deep(removing, error)
+                          : fstat(folder, &found) == 0             ? check_mount(removing, folder, &found, error)
+                                                                   : refused(error);
     if (status == NAULA_OK) {
         status = let_owner_empty(folder, error);
     }
@@ -424,7 +539,7 @@ static naula_status remove_entry(removal *removing, int folder, const char *name
     if (mount_identity_at(folder, name, found->st_dev, &identity) == ENOENT) {
         return NAULA_OK;
     }
-    naula_status status = judge_mount(removing, &removing->clone, &identity, error);
+    naula_status status = judge_mount(removing, &removing->root_mount, &identity, error);
     if (status != NAULA_OK) {
         return status;
     }
@@ -448,6 +563,7 @@ static naula_status take_entry(removal *removing, int folder, const char *name, 
     if (*descend_name == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
+    disk_test_reach(DISK_TEST_BEFORE_ENTRY_OPEN, name);
     *descend = open_folder_at(folder, name);
     if (*descend < 0) {
         naula_status status = refused(error);
@@ -555,54 +671,24 @@ static naula_status take_one_step(removal *removing, unsigned long *error) {
 }
 
 /** Empties and removes the folder `name` in `parent`, depth first, on its own stack rather than the call stack. */
-static naula_status remove_tree_at(int parent, const char *name, disk_removal_refusal *reason, unsigned long *error) {
-    removal removing;
-    memset(&removing, 0, sizeof removing);
-    removing.parent = parent;
+static naula_status remove_tree_at(removal *removing, int parent, const char *name, unsigned long *error) {
+    removing->parent = parent;
     char *own_name = copy_of(name, strlen(name));
     int clone = own_name == NULL ? -1 : open_folder_at(parent, name);
     naula_status status = own_name == NULL ? NAULA_OUT_OF_MEMORY : (clone < 0 ? refused(error) : NAULA_OK);
     if (status == NAULA_OK) {
-        status = push_frame(&removing, clone, own_name, error);
+        status = push_frame(removing, clone, own_name, error);
     } else {
         naula_memory_release(own_name);
     }
-    while (status == NAULA_OK && removing.depth > 0) {
-        status = take_one_step(&removing, error);
+    while (status == NAULA_OK && removing->depth > 0) {
+        status = take_one_step(removing, error);
     }
-    while (removing.depth > 0) {
-        pop_frame(&removing);
+    while (removing->depth > 0) {
+        pop_frame(removing);
     }
-    naula_memory_release(removing.frames);
-    *reason = removing.reason;
+    naula_memory_release(removing->frames);
     return status;
-}
-
-/**
- * Opens every component of `below` but the last relative to the folder before it, from `root` down, never through a
- * link, and hands back the last folder and where the last component starts. Cuts `below` while it works.
- */
-static naula_status walk_to_parent(const char *root, char *below, int *parent, const char **name,
-                                   unsigned long *error) {
-    int folder = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-    if (folder < 0) {
-        return refused(error);
-    }
-    char *component = below;
-    for (char *slash = strchr(component, '/'); slash != NULL; slash = strchr(component, '/')) {
-        *slash = '\0';
-        int next = open_folder_at(folder, component);
-        *slash = '/';
-        close(folder);
-        if (next < 0) {
-            return refused(error);
-        }
-        folder = next;
-        component = slash + 1;
-    }
-    *parent = folder;
-    *name = component;
-    return NAULA_OK;
 }
 
 naula_status disk_tree_remove(const char *root, const char *below, disk_removal_refusal *reason,
@@ -613,11 +699,13 @@ naula_status disk_tree_remove(const char *root, const char *below, disk_removal_
     if (copy == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
+    removal removing;
+    memset(&removing, 0, sizeof removing);
     int parent = -1;
     const char *name = NULL;
-    naula_status status = walk_to_parent(root, copy, &parent, &name, error);
+    naula_status status = walk_from_root(root, copy, judge_walked_folder, &removing, &parent, &name, error);
     if (status == NAULA_OK) {
-        status = remove_tree_at(parent, name, reason, error);
+        status = remove_tree_at(&removing, parent, name, error);
     }
     if (status == NAULA_OK) {
         fsync(parent);
@@ -626,6 +714,7 @@ naula_status disk_tree_remove(const char *root, const char *below, disk_removal_
         close(parent);
     }
     naula_memory_release(copy);
+    *reason = removing.reason;
     if (status == NAULA_REFUSED && *reason == DISK_REMOVAL_REFUSED && *error == EBUSY) {
         *reason = DISK_REMOVAL_HELD;
     }
@@ -649,17 +738,21 @@ naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, u
     *bytes = NULL;
     *length = 0;
     *error = 0;
-    int descriptor = open(path, O_RDONLY | O_NOFOLLOW);
+    disk_test_reach(DISK_TEST_BEFORE_FILE_OPEN, path);
+    int descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     if (descriptor < 0) {
         *error = (unsigned long)errno;
         return errno == ENOENT ? NAULA_NOT_FOUND : NAULA_REFUSED;
     }
     struct stat found;
-    naula_status status = NAULA_OK;
-    if (fstat(descriptor, &found) != 0 || !S_ISREG(found.st_mode) || found.st_size < 0 ||
-        found.st_size > FILE_LIMIT) {
-        *error = errno != 0 ? (unsigned long)errno : EINVAL;
+    naula_status status = fstat(descriptor, &found) == 0 ? NAULA_OK : refused(error);
+    if (status == NAULA_OK && (!S_ISREG(found.st_mode) || found.st_size < 0 || found.st_size > FILE_LIMIT)) {
+        *error = EINVAL;
         status = NAULA_REFUSED;
+    }
+    int flags = status == NAULA_OK ? fcntl(descriptor, F_GETFL) : -1;
+    if (status == NAULA_OK && (flags < 0 || fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK) != 0)) {
+        status = refused(error);
     }
     size_t expected = status == NAULA_OK ? (size_t)found.st_size : 0;
     *bytes = status == NAULA_OK ? naula_memory_allocate(expected + 1) : NULL;
@@ -705,53 +798,59 @@ static int write_all(int descriptor, const uint8_t *bytes, size_t length) {
     return 1;
 }
 
-static naula_status clear_stale_temporary(const char *temporary, unsigned long *error) {
+static naula_status clear_stale_temporary(int folder, const char *temporary, unsigned long *error) {
     struct stat found;
-    if (lstat(temporary, &found) != 0) {
+    if (fstatat(folder, temporary, &found, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno == ENOENT ? NAULA_OK : refused(error);
     }
     if (!S_ISREG(found.st_mode)) {
         *error = EEXIST;
         return NAULA_REFUSED;
     }
-    return unlink(temporary) == 0 ? NAULA_OK : refused(error);
+    return unlinkat(folder, temporary, 0) == 0 ? NAULA_OK : refused(error);
 }
 
-static naula_status write_temporary(const char *temporary, const uint8_t *bytes, size_t length,
+static naula_status write_temporary(int folder, const char *temporary, const uint8_t *bytes, size_t length,
                                     unsigned long *error) {
-    int descriptor = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666);
+    int descriptor = openat(folder, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666);
     if (descriptor < 0) {
         return refused(error);
     }
     naula_status status = write_all(descriptor, bytes, length) && fsync(descriptor) == 0 ? NAULA_OK : refused(error);
     close(descriptor);
     if (status != NAULA_OK) {
-        unlink(temporary);
+        unlinkat(folder, temporary, 0);
     }
     return status;
 }
 
-naula_status disk_file_replace(const char *path, const uint8_t *bytes, size_t length, unsigned long *error) {
+naula_status disk_file_replace(const char *root, const char *below, const uint8_t *bytes, size_t length,
+                               unsigned long *error) {
     *error = 0;
-    size_t path_length = strlen(path);
-    char *temporary = naula_memory_allocate(path_length + 11);
-    if (temporary == NULL) {
-        return NAULA_OUT_OF_MEMORY;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    size_t name_length = status == NAULA_OK ? strlen(walk.name) : 0;
+    char *temporary = status == NAULA_OK ? naula_memory_allocate(name_length + 11) : NULL;
+    if (status == NAULA_OK && temporary == NULL) {
+        status = NAULA_OUT_OF_MEMORY;
     }
-    memcpy(temporary, path, path_length);
-    memcpy(temporary + path_length, ".naula-tmp", 11);
-    naula_status status = clear_stale_temporary(temporary, error);
     if (status == NAULA_OK) {
-        status = write_temporary(temporary, bytes, length, error);
+        memcpy(temporary, walk.name, name_length);
+        memcpy(temporary + name_length, ".naula-tmp", 11);
+        status = clear_stale_temporary(walk.parent, temporary, error);
     }
-    if (status == NAULA_OK && rename(temporary, path) != 0) {
+    if (status == NAULA_OK) {
+        status = write_temporary(walk.parent, temporary, bytes, length, error);
+    }
+    if (status == NAULA_OK && renameat(walk.parent, temporary, walk.parent, walk.name) != 0) {
         status = refused(error);
-        unlink(temporary);
+        unlinkat(walk.parent, temporary, 0);
     }
     if (status == NAULA_OK) {
-        sync_folder_of(temporary);
+        fsync(walk.parent);
     }
     naula_memory_release(temporary);
+    disk_walk_release(&walk);
     return status;
 }
 
@@ -818,19 +917,25 @@ naula_status disk_names(const char *path, char ***names, size_t *count, unsigned
     return status;
 }
 
-naula_status disk_appender_open(const char *path, int create, disk_appender **appender, unsigned long *error) {
+naula_status disk_appender_open(const char *root, const char *below, int create, disk_appender **appender,
+                                unsigned long *error) {
     *appender = NULL;
     *error = 0;
     disk_appender *made = naula_memory_allocate(sizeof *made);
     if (made == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
     int flags = O_WRONLY | O_APPEND | O_NOFOLLOW | (create ? O_CREAT | O_EXCL : 0);
-    int descriptor = open(path, flags, 0666);
-    naula_status status = descriptor < 0 ? refused(error) : NAULA_OK;
-    if (status == NAULA_OK && create) {
-        status = disk_sync_parent(path);
+    int descriptor = status == NAULA_OK ? openat(walk.parent, walk.name, flags, 0666) : -1;
+    if (status == NAULA_OK && descriptor < 0) {
+        status = refused(error);
     }
+    if (status == NAULA_OK && create) {
+        fsync(walk.parent);
+    }
+    disk_walk_release(&walk);
     if (status != NAULA_OK) {
         if (descriptor >= 0) {
             close(descriptor);
@@ -875,69 +980,65 @@ void disk_error_text(unsigned long error, char *text, size_t capacity) {
 }
 
 struct disk_owned_file {
-    char *path;
+    int folder;
+    char *name;
 };
 
-naula_status disk_owned_file_create(const char *path, const uint8_t *bytes, size_t length, int *exists,
-                                    disk_owned_file **owned, unsigned long *error) {
+naula_status disk_owned_file_create(const char *root, const char *below, const uint8_t *bytes, size_t length,
+                                    int *exists, disk_owned_file **owned, unsigned long *error) {
     *owned = NULL;
     *exists = 0;
     *error = 0;
     disk_owned_file *made = naula_memory_allocate(sizeof *made);
-    char *copy = made == NULL ? NULL : copy_of(path, strlen(path));
-    if (copy == NULL) {
-        naula_memory_release(made);
+    if (made == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
-    int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666);
-    naula_status status = NAULA_OK;
-    if (descriptor < 0) {
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    made->name = status == NAULA_OK ? copy_of(walk.name, strlen(walk.name)) : NULL;
+    if (status == NAULA_OK && made->name == NULL) {
+        status = NAULA_OUT_OF_MEMORY;
+    }
+    int descriptor = status == NAULA_OK ? openat(walk.parent, walk.name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666)
+                                        : -1;
+    if (status == NAULA_OK && descriptor < 0) {
         *exists = errno == EEXIST;
         status = refused(error);
-    } else {
+    } else if (status == NAULA_OK) {
         status = write_all(descriptor, bytes, length) && fsync(descriptor) == 0 ? NAULA_OK : refused(error);
         close(descriptor);
         if (status != NAULA_OK) {
-            unlink(path);
+            unlinkat(walk.parent, walk.name, 0);
         } else {
-            sync_folder_of(copy);
+            fsync(walk.parent);
         }
     }
     if (status != NAULA_OK) {
-        naula_memory_release(copy);
+        naula_memory_release(made->name);
         naula_memory_release(made);
+        disk_walk_release(&walk);
         return status;
     }
-    made->path = copy;
+    made->folder = walk.parent;
+    walk.parent = -1;
+    disk_walk_release(&walk);
     *owned = made;
     return NAULA_OK;
 }
 
 void disk_owned_file_remove(disk_owned_file *owned) {
     if (owned != NULL) {
-        unlink(owned->path);
+        unlinkat(owned->folder, owned->name, 0);
     }
     disk_owned_file_abandon(owned);
 }
 
 void disk_owned_file_abandon(disk_owned_file *owned) {
     if (owned != NULL) {
-        naula_memory_release(owned->path);
+        close(owned->folder);
+        naula_memory_release(owned->name);
         naula_memory_release(owned);
     }
-}
-
-naula_status disk_file_remove(const char *path, unsigned long *error) {
-    struct stat found;
-    *error = 0;
-    if (lstat(path, &found) != 0) {
-        return refused(error);
-    }
-    if (!S_ISREG(found.st_mode)) {
-        *error = EINVAL;
-        return NAULA_REFUSED;
-    }
-    return unlink(path) == 0 ? NAULA_OK : refused(error);
 }
 
 unsigned long disk_process_id(void) {

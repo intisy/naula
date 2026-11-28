@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -57,29 +58,40 @@ naula_status disk_link_target(const char *path, char **target, unsigned long *er
     return NAULA_REFUSED;
 }
 
-naula_status disk_link_make(const char *path, const char *target, unsigned long *error) {
+naula_status disk_link_make(const char *root, const char *below, const char *target, unsigned long *error) {
     *error = 0;
-    if (symlink(target, path) != 0) {
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    if (status == NAULA_OK && symlinkat(target, walk.parent, walk.name) != 0) {
         *error = (unsigned long)errno;
-        return NAULA_REFUSED;
+        status = NAULA_REFUSED;
     }
-    return disk_sync_parent(path);
+    if (status == NAULA_OK) {
+        fsync(walk.parent);
+    }
+    disk_walk_release(&walk);
+    return status;
 }
 
-naula_status disk_link_remove(const char *path, unsigned long *error) {
-    struct stat found;
+naula_status disk_link_remove(const char *root, const char *below, unsigned long *error) {
     *error = 0;
-    if (lstat(path, &found) != 0) {
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    struct stat found;
+    if (status == NAULA_OK && fstatat(walk.parent, walk.name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
         *error = (unsigned long)errno;
-        return NAULA_REFUSED;
-    }
-    if (!S_ISLNK(found.st_mode)) {
+        status = NAULA_REFUSED;
+    } else if (status == NAULA_OK && !S_ISLNK(found.st_mode)) {
         *error = EINVAL;
-        return NAULA_REFUSED;
+        status = NAULA_REFUSED;
     }
-    if (unlink(path) != 0) {
+    if (status == NAULA_OK && unlinkat(walk.parent, walk.name, 0) != 0) {
         *error = (unsigned long)errno;
-        return NAULA_REFUSED;
+        status = NAULA_REFUSED;
     }
-    return disk_sync_parent(path);
+    if (status == NAULA_OK) {
+        fsync(walk.parent);
+    }
+    disk_walk_release(&walk);
+    return status;
 }
