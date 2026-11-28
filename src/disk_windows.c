@@ -749,6 +749,59 @@ naula_status disk_identity_of(const char *path, disk_identity *identity, unsigne
     return status;
 }
 
+/** `\\?\C:\x` as `C:\x` and `\\?\UNC\host\share` as `\\host\share`, the forms Win32 opens without the prefix. */
+static naula_status narrow_final_path(wchar_t *final, char **real) {
+    static const wchar_t long_prefix[] = L"\\\\?\\";
+    static const wchar_t unc_prefix[] = L"\\\\?\\UNC\\";
+    size_t unc_length = wcslen(unc_prefix);
+    if (wcsncmp(final, unc_prefix, unc_length) == 0) {
+        final[unc_length - 2] = L'\\';
+        return narrow_text(final + unc_length - 2, real);
+    }
+    size_t long_length = wcslen(long_prefix);
+    return narrow_text(wcsncmp(final, long_prefix, long_length) == 0 ? final + long_length : final, real);
+}
+
+static naula_status final_path_of(HANDLE folder, char **real, unsigned long *error) {
+    DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    DWORD needed = GetFinalPathNameByHandleW(folder, NULL, 0, flags);
+    if (needed == 0) {
+        return refused(error);
+    }
+    wchar_t *final = naula_memory_allocate((size_t)needed * sizeof(wchar_t));
+    if (final == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    DWORD written = GetFinalPathNameByHandleW(folder, final, needed, flags);
+    naula_status status = written == 0 || written >= needed ? refused(error) : narrow_final_path(final, real);
+    naula_memory_release(final);
+    return status;
+}
+
+naula_status disk_real_folder(const char *path, char **real, unsigned long *error) {
+    *real = NULL;
+    *error = 0;
+    wchar_t *wide = NULL;
+    naula_status status = wide_path(path, &wide);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    HANDLE folder = CreateFileW(wide, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD code = GetLastError();
+    naula_memory_release(wide);
+    if (folder == INVALID_HANDLE_VALUE) {
+        *error = code;
+        return is_absent_error(code) ? NAULA_NOT_FOUND : NAULA_REFUSED;
+    }
+    status = refuse_not_a_folder(folder, error);
+    if (status == NAULA_OK) {
+        status = final_path_of(folder, real, error);
+    }
+    CloseHandle(folder);
+    return status;
+}
+
 static naula_status read_handle(HANDLE file, uint8_t **bytes, size_t *length, unsigned long *error) {
     BY_HANDLE_FILE_INFORMATION information;
     if (!GetFileInformationByHandle(file, &information)) {

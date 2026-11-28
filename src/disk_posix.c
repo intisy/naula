@@ -12,6 +12,7 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -732,6 +733,26 @@ naula_status disk_identity_of(const char *path, disk_identity *identity, unsigne
     identity->volume = (uint64_t)found.st_dev;
     identity->low = (uint64_t)found.st_ino;
     return NAULA_OK;
+}
+
+naula_status disk_real_folder(const char *path, char **real, unsigned long *error) {
+    *real = NULL;
+    *error = 0;
+    char resolved[PATH_MAX];
+    if (realpath(path, resolved) == NULL) {
+        *error = (unsigned long)errno;
+        return errno == ENOENT ? NAULA_NOT_FOUND : NAULA_REFUSED;
+    }
+    int folder = open(resolved, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    naula_status status = folder >= 0 ? NAULA_OK : refused(error);
+    if (folder >= 0) {
+        close(folder);
+    }
+    if (status == NAULA_OK) {
+        *real = copy_of(resolved, strlen(resolved));
+        status = *real == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
+    }
+    return status;
 }
 
 naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, unsigned long *error) {

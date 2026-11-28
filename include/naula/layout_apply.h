@@ -32,7 +32,10 @@ extern "C" {
 
 /**
  * `root` is the root the plan was made for; every step's paths must lie below it. `memory_banks` is the folder of
- * Claude Code's memory banks, NULL to leave banks alone. With `dry_run` nothing is read or written: each step is
+ * Claude Code's memory banks, NULL to leave banks alone: it is followed once, at the start of a run or a resume, to
+ * its real folder, a link on the way or at it included, and the banks are reached below that folder only, never
+ * through a link. None there leaves the banks alone; anything else but a folder refuses the run as
+ * `memory-banks-unreadable` before any change. With `dry_run` nothing is read or written: each step is
  * only checked for shape and passed to `report`. `report`, when set, is told each step once it is applied, with
  * NAULA_OK, or with the status of the refusal that stopped the run there. First shape ends at `context`.
  */

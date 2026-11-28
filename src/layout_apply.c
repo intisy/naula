@@ -25,9 +25,10 @@ static const char *const DEEP_FIX = "remove the folder by hand, or stop the prog
                                     "it, then run naula sync again to resume";
 static const char *const BANK_FIX = "merge or remove one of the two memory banks by hand, then run naula sync again";
 
+/** `memory_banks` is the real folder options->memory_banks names, NULL when there is none. */
 typedef struct applier {
     const char *root;
-    const char *memory_banks;
+    char *memory_banks;
     void (*report)(void *context, const naula_layout_step *step, naula_status status);
     void *context;
     journal journal;
@@ -894,10 +895,28 @@ static naula_status run_steps(applier *applying, const naula_layout_plan *plan, 
 static void start_applier(applier *applying, const naula_apply_options *options, naula_refusal *refusal) {
     memset(applying, 0, sizeof *applying);
     applying->root = options->root;
-    applying->memory_banks = options->memory_banks;
     applying->report = options->report;
     applying->context = options->context;
     applying->refusal = refusal;
+}
+
+/**
+ * Finds the real folder of the memory banks once, before any step is decided, so every bank a step decides to move is
+ * reached by the same folder its move walks from. The folder is the user's Claude Code's, outside the root, and may
+ * stand behind a link, which is followed here and nowhere below it; none there leaves no bank to move.
+ */
+static naula_status resolve_memory_banks(applier *applying, const char *memory_banks) {
+    if (memory_banks == NULL) {
+        return NAULA_OK;
+    }
+    unsigned long error = 0;
+    naula_status status = disk_real_folder(memory_banks, &applying->memory_banks, &error);
+    if (status == NAULA_NOT_FOUND) {
+        return NAULA_OK;
+    }
+    return status == NAULA_REFUSED ? apply_refuse_disk(applying->refusal, "memory-banks-unreadable", DISK_FIX,
+                                                       "cannot reach the memory banks folder", memory_banks, error)
+                                   : status;
 }
 
 static int is_simulated_death(naula_status status, const naula_refusal *refusal) {
@@ -908,6 +927,8 @@ static int is_simulated_death(naula_status status, const naula_refusal *refusal)
 static void end_applier(applier *applying, naula_status status) {
     journal_close(&applying->journal);
     link_record_release(&applying->record);
+    naula_memory_release(applying->memory_banks);
+    applying->memory_banks = NULL;
     if (is_simulated_death(status, applying->refusal)) {
         disk_owned_file_abandon(applying->lock);
     } else {
@@ -962,6 +983,9 @@ naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply
     }
     if (status == NAULA_OK) {
         status = link_record_read(options->root, &applying.record, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = resolve_memory_banks(&applying, options->memory_banks);
     }
     if (status == NAULA_OK) {
         status = journal_start(options->root, plan, &applying.journal, refusal);
@@ -1134,6 +1158,9 @@ naula_status naula_journal_resume(const char *journal_file, const naula_apply_op
         return status;
     }
     status = link_record_read(options->root, &applying.record, refusal);
+    if (status == NAULA_OK) {
+        status = resolve_memory_banks(&applying, options->memory_banks);
+    }
     if (status == NAULA_OK) {
         status = journal_reopen(options->root, journal_file, contents.ends_mid_line, &applying.journal, refusal);
     }

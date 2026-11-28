@@ -185,6 +185,13 @@ void disk_appender_close(disk_appender *appender);
 /** The time now in UTC as `yyyymmddThhmmssZ`. */
 void disk_utc_stamp(char stamp[17]);
 
+/**
+ * The real folder `path` names, as a path with no link in it: every link on the way to it, its last component
+ * included, is followed, for a folder outside the root that its owner may keep behind a link. NAULA_NOT_FOUND when
+ * nothing is there; anything but a folder is refused. Release with naula_memory_release.
+ */
+naula_status disk_real_folder(const char *path, char **real, unsigned long *error);
+
 /** The system's text for `error`, for a refusal's detail, cut to fit `text`. */
 void disk_error_text(unsigned long error, char *text, size_t capacity);
 

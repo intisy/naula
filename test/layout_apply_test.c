@@ -767,6 +767,60 @@ static void apply_refuses_an_existing_memory_bank_target(void) {
     finish("bank-taken");
 }
 
+/** A checkout moved with its bank, the run stopped between the two at `stop_at` when it is not 0, then resumed. */
+static void move_with_its_bank(const char *from, const char *to, unsigned long stop_at) {
+    char old_bank[PATH_SIZE];
+    char memory[PATH_SIZE];
+    compose(old_bank, bank_of(from), NULL);
+    make_folder(old_bank);
+    compose(memory, old_bank, "/MEMORY.md", NULL);
+    write_text(memory, "remembered");
+    plan_start();
+    plan_add(NAULA_MOVE_CHECKOUT, from, to, NULL);
+    naula_apply_test_stop_at(stop_at);
+    naula_status status = apply_plan();
+    if (stop_at != 0) {
+        CHECK(refused_with(status, "test-stopped"));
+        after_a_simulated_crash();
+        CHECK(kind_at(to) == 1);
+        CHECK(kind_at(old_bank) == 1);
+        char *journal_file = unfinished_journal();
+        CHECK(journal_file != NULL);
+        status = journal_file == NULL ? NAULA_REFUSED : resume(journal_file);
+        naula_memory_release(journal_file);
+    }
+    if (status != NAULA_OK) {
+        fprintf(stderr, "moving %s with its bank: %s %s\n", from, refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(from) == 0);
+    CHECK(kind_at(old_bank) == 0);
+    compose(memory, bank_of(to), "/MEMORY.md", NULL);
+    CHECK(file_holds(memory, "remembered"));
+}
+
+/**
+ * The memory banks folder is the user's Claude Code's, outside the root, and may be a link, as a symlinked
+ * ~/.claude/projects is: it is followed once to its real folder, so the bank moves with its checkout, on a run and on
+ * a resume after a crash between the two.
+ */
+static void a_memory_banks_folder_that_is_a_link_moves_each_bank(void) {
+    fresh("bank-link");
+    char real_banks[PATH_SIZE];
+    compose(real_banks, base, "/bank-link/real-banks", NULL);
+    make_folder(real_banks);
+    remove_tree(banks);
+    make_link(banks, real_banks);
+    make_folder(at("repos"));
+    make_checkout(at("old"), "checkout");
+    make_checkout(at("second"), "second checkout");
+    move_with_its_bank(at("old"), at("repos/" HEX), 0);
+    move_with_its_bank(at("second"), at("repos/bbbbbbbbbbbb"), 3);
+    CHECK(kind_at(banks) == 3);
+    unlink_link(banks);
+    finish("bank-link");
+}
+
 static void removing_a_link_leaves_its_target_intact(void) {
     fresh("unlink");
     make_folder(at("repos"));
@@ -3214,6 +3268,7 @@ static const named_test TESTS[] = {
     {"apply_stops_at_a_held_folder_and_resumes", apply_stops_at_a_held_folder_and_resumes},
     {"apply_renames_the_memory_bank_of_a_moved_checkout", apply_renames_the_memory_bank_of_a_moved_checkout},
     {"apply_refuses_an_existing_memory_bank_target", apply_refuses_an_existing_memory_bank_target},
+    {"a_memory_banks_folder_that_is_a_link_moves_each_bank", a_memory_banks_folder_that_is_a_link_moves_each_bank},
     {"removing_a_link_leaves_its_target_intact", removing_a_link_leaves_its_target_intact},
     {"remove_link_refuses_a_folder", remove_link_refuses_a_folder},
     {"remove_link_refuses_a_link_to_another_target", remove_link_refuses_a_link_to_another_target},
