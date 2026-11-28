@@ -13,6 +13,7 @@
 #include "naula/layout_apply.h"
 #include "naula/memory.h"
 #include "naula/run.h"
+#include "naula/sha256.h"
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -1824,6 +1825,9 @@ static void planned_move_creates_the_new_home_and_pushes_every_ref(void) {
     homes_file(file, "app", "fresh", "alpha", NULL);
     commit_file("app", "repo.json", file);
     naula("sync", "--root", root, NULL);
+    expect_output("home-unaccepted", 1, "an account no held org owns waits for acceptance");
+    CHECK(find_served(900) == NULL);
+    naula("sync", "--root", root, "--accept-home", "forge:fresh", NULL);
     expect_output("create forge:900 fresh/app", 1, "the new home is created");
     const forge_repo *created = find_served(900);
     CHECK(created != NULL);
@@ -1837,7 +1841,7 @@ static void planned_move_creates_the_new_home_and_pushes_every_ref(void) {
             check_text(pushed, wanted, refs[index]);
         }
     }
-    naula("sync", "--root", root, "--accept-primary", "forge:900", NULL);
+    naula("sync", "--root", root, "--accept-primary", "forge:900", "--accept-home", "forge:fresh", NULL);
     CHECK(log_holds("create 900 fresh/app") == 1);
 }
 
@@ -2120,6 +2124,141 @@ static void add_writes_id_at_importname_and_commit(void) {
     expect_output("dependency-present", 1, "the dependency is there already");
 }
 
+static void reconcile_refuses_a_home_no_held_org_owns(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_alpha_docs(NULL);
+    homes_file(file, "app", "alpha", NULL, NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    serve(501, "alpha", "app", "app", NULL);
+    init_root(root);
+    snprintf(file, sizeof file,
+             "{\"format\":2,\"name\":\"app\",\"importName\":\"app\",\"homes\":[{\"provider\":\"forge\",\"account\":"
+             "\"alpha\"},{\"provider\":\"forge\",\"host\":\"elsewhere.example\",\"account\":\"outsider\"}]}\n");
+    commit_file("app", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a home in an account no held org owns");
+    expect_output("home-unaccepted", 1, "the unaccepted home is refused");
+    expect_output("forge@elsewhere.example:outsider", 1, "the home is named as --accept-home takes it");
+    CHECK(log_holds("create 900 outsider/app") == 0);
+    CHECK(find_served(900) == NULL);
+    expect_exit(naula("sync", "--root", root, "--accept-home", "forge@elsewhere.example:outsider", NULL), 0,
+                "the home accepted for this run");
+    CHECK(log_holds("create 900 outsider/app") == 1);
+    const forge_repo *created = find_served(900);
+    if (created != NULL) {
+        char app[1024];
+        char wanted[65];
+        char pushed[65];
+        path_in(app, "app");
+        revision(app, "refs/heads/main", wanted);
+        revision(created->path, "refs/heads/main", pushed);
+        check_text(pushed, wanted, "the accepted home holds the branch");
+    }
+}
+
+static void reconcile_creates_in_a_held_account_without_acceptance(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    homes_file(file, "tool", "alpha", "beta", ",\"topics\":[\"tools\"]");
+    commit_file("alpha-tool", "repo.json", file);
+    naula("sync", "--root", root, NULL);
+    expect_output("home-unaccepted", 0, "a held account needs no acceptance");
+    CHECK(log_holds("create 900 beta/tool") == 1);
+}
+
+static void sync_of_an_org_reconciles_only_its_repos(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    app_file(file, "tool2", "alpha", ",\"topics\":[\"tools\"]");
+    commit_file("alpha-tool", "repo.json", file);
+    app_file(file, "app2", "beta", NULL);
+    commit_file("beta-app", "repo.json", file);
+    naula("sync", "beta", "--root", root, NULL);
+    CHECK(log_holds("rename 202 app2") == 1);
+    CHECK(log_holds("rename 102 tool2") == 0);
+    check_text(served(102)->name, "tool", "alpha's repo is left alone");
+}
+
+static void adopt_refuses_to_invent_an_org(void) {
+    start_case();
+    char local[1024];
+    char first[65];
+    char second[65];
+    make_format_one_app(",\"projects\":{\"tools\":\"Programs.\"}", local, first, second);
+    expect_exit(naula("adopt", "--repo", local, NULL), 1, "format 1 projects name no org");
+    expect_output("org-undeclared", 1, "the org is refused, never invented");
+    char path[1100];
+    char text[TEXT_SIZE * 2];
+    snprintf(path, sizeof path, "%s/repo.json", local);
+    read_text(path, text, sizeof text);
+    expect_text(text, "\"format\":1", 1, "nothing is written");
+}
+
+/**
+ * A hint naming an account the checkout's own repo.json never listed, as one another checkout of the id (a fork)
+ * would leave behind, is never taken as the serving home.
+ */
+static void sync_never_serves_from_a_hint_the_checkout_never_listed(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    char app[1024];
+    char app_root[65];
+    make_alpha_docs(NULL);
+    homes_file(file, "app", "alpha", NULL, NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    path_in(app, "app");
+    root_commit(app, app_root);
+    serve(501, "alpha", "app", "app", NULL);
+    init_root(root);
+    bare_clone("app", "fork.git");
+    char fork_file[TEXT_SIZE];
+    homes_file(fork_file, "app", "zeta", NULL, ",\"topics\":[\"stolen\"]");
+    char fork_work[1024];
+    char fork_bare[1024];
+    path_in(fork_work, "fork-work");
+    path_in(fork_bare, "fork.git");
+    git(NULL, "clone", "--quiet", fork_bare, fork_work, NULL);
+    commit_file("fork-work", "repo.json", fork_file);
+    git(fork_work, "push", "--quiet", "origin", "main", NULL);
+    serve(702, "zeta", "app", "fork.git", NULL);
+    snprintf(served(501)->name, sizeof served(501)->name, "%s", "renamed-by-hand");
+    naula_sha256 hash;
+    char key[NAULA_SHA256_HEX_SIZE];
+    naula_sha256_start(&hash);
+    naula_sha256_add(&hash, (const uint8_t *)"forge@:alpha", strlen("forge@:alpha"));
+    naula_sha256_hex(&hash, key);
+    char homes[1100];
+    char name[200];
+    static const char hint[] = "{\"homes\":[{\"provider\":\"forge\",\"account\":\"zeta\",\"number\":702}]}";
+    snprintf(homes, sizeof homes, "%s/cache/homes", here.folder);
+    snprintf(name, sizeof name, "%s-%s.json", app_root, key);
+    make_folder(homes);
+    unsigned long error = 0;
+    CHECK(disk_file_replace(homes, name, (const uint8_t *)hint, sizeof hint - 1, DISK_FOR_NAULA_FILE, &error) ==
+          NAULA_OK);
+    naula("sync", "--root", root, NULL);
+    expect_output("serving-unproven", 1, "the fork's hint is not taken");
+    CHECK(log_holds("topics 702 1") == 0);
+}
+
 typedef struct test_entry {
     const char *name;
     void (*run)(void);
@@ -2183,6 +2322,12 @@ static const test_entry tests[] = {
     {"adopt_drops_claims_and_place", adopt_drops_claims_and_place},
     {"new_creates_every_home_and_the_link", new_creates_every_home_and_the_link},
     {"add_writes_id_at_importname_and_commit", add_writes_id_at_importname_and_commit},
+    {"reconcile_refuses_a_home_no_held_org_owns", reconcile_refuses_a_home_no_held_org_owns},
+    {"reconcile_creates_in_a_held_account_without_acceptance", reconcile_creates_in_a_held_account_without_acceptance},
+    {"sync_of_an_org_reconciles_only_its_repos", sync_of_an_org_reconciles_only_its_repos},
+    {"adopt_refuses_to_invent_an_org", adopt_refuses_to_invent_an_org},
+    {"sync_never_serves_from_a_hint_the_checkout_never_listed",
+     sync_never_serves_from_a_hint_the_checkout_never_listed},
 };
 
 int main(int count, char **values) {

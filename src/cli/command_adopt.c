@@ -244,33 +244,19 @@ static naula_status convert_dependency(adoption *run, naula_dependency *dependen
     return status;
 }
 
-/** Format 1 `projects` named no org; the org takes the primary's account and its name, which adopt prints. */
-static naula_status name_the_org(adoption *run) {
-    naula_org_declaration *org = run->file.org;
-    if (org == NULL || org->name != NULL) {
+/**
+ * Format 1 `projects` named no org, and which org a repo declares is a person's decision, never one adopt derives:
+ * the file is refused until `org` is written by hand.
+ */
+static naula_status refuse_an_undeclared_org(const adoption *run, naula_refusal *refusal) {
+    if (run->file.org == NULL || run->file.org->name != NULL) {
         return NAULA_OK;
     }
-    const naula_home *primary = &run->file.homes[0];
-    org->name = naula_memory_duplicate_text(primary->account);
-    org->accounts = naula_memory_allocate(sizeof *org->accounts);
-    if (org->name == NULL || org->accounts == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    memset(org->accounts, 0, sizeof *org->accounts);
-    org->accounts[0].size = sizeof org->accounts[0];
-    org->accounts[0].kind = NAULA_HOME_PROVIDER;
-    org->accounts[0].provider = naula_memory_duplicate_text(primary->provider);
-    org->accounts[0].host = primary->host == NULL ? NULL : naula_memory_duplicate_text(primary->host);
-    org->accounts[0].account = naula_memory_duplicate_text(primary->account);
-    org->account_count = 1;
-    char *rules = cli_join(run->repository, "RULES.md");
-    if (rules != NULL && cli_exists(rules)) {
-        org->rules = naula_memory_duplicate_text("RULES.md");
-    }
-    naula_memory_release(rules);
-    printf("note org-derived: the org is named %s and holds %s account %s; check both before committing\n", org->name,
-           primary->provider, primary->account);
-    return NAULA_OK;
+    naula_refuse(refusal, "org-undeclared",
+                 "write the org member by hand (name, accounts, rules, projects, and parent unless it is the top org), "
+                 "then run naula adopt again",
+                 "the format 1 file declares projects, which format 2 holds in an org, and adopt never invents one");
+    return NAULA_REFUSED;
 }
 
 static const naula_history *history_reader(adoption *run) {
@@ -417,13 +403,13 @@ static naula_status convert(adoption *run, naula_refusal *refusal) {
     naula_status status = cli_context_open(run->arguments, &run->context, refusal);
     run->context_open = status == NAULA_OK;
     if (status == NAULA_OK) {
+        status = refuse_an_undeclared_org(run, refusal);
+    }
+    if (status == NAULA_OK) {
         status = take_homes_and_name(run, refusal);
     }
     for (size_t index = 0; status == NAULA_OK && index < run->file.dependency_count; index++) {
         status = convert_dependency(run, &run->file.dependencies[index], refusal);
-    }
-    if (status == NAULA_OK) {
-        status = name_the_org(run);
     }
     if (status == NAULA_OK && run->arguments->fork_id != NULL) {
         status = take_fork_id(run, refusal);

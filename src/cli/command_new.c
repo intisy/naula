@@ -104,6 +104,54 @@ static const char *token_of(creation *run, const naula_home *home) {
     return cli_credentials_token(run->context.credentials, home->provider, home->host);
 }
 
+/**
+ * A home is created only in an account where the declaring repo has a home its hosts confirm, or one the run accepted:
+ * whoever can push the declaring repo's file could otherwise name any account for every new repo.
+ */
+static naula_status refuse_an_unaccepted_home(creation *run, naula_refusal *refusal) {
+    naula_home confirmed[CLI_LIST_LIMIT];
+    char *accounts[CLI_LIST_LIMIT];
+    size_t count = 0;
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; status == NAULA_OK && index < run->declaring.home_count && count < CLI_LIST_LIMIT; index++) {
+        const naula_place *place = &run->declaring.homes[index];
+        if (place->kind != NAULA_HOME_PROVIDER) {
+            continue;
+        }
+        naula_repository repository;
+        naula_refusal ignored = cli_fresh_refusal();
+        if (cli_history_lookup(run->context.history, place, &repository, &ignored) != NAULA_OK) {
+            continue;
+        }
+        accounts[count] = repository.account;
+        repository.account = NULL;
+        naula_repository_release(&repository);
+        memset(&confirmed[count], 0, sizeof confirmed[count]);
+        confirmed[count].size = sizeof confirmed[count];
+        confirmed[count].kind = NAULA_HOME_PROVIDER;
+        confirmed[count].provider = place->provider;
+        confirmed[count].host = place->host;
+        confirmed[count].account = accounts[count];
+        count++;
+    }
+    for (size_t index = 0; status == NAULA_OK && index < run->file.home_count; index++) {
+        const naula_home *home = &run->file.homes[index];
+        if (home->kind == NAULA_HOME_PROVIDER && !cli_home_is_allowed(&run->context, home, confirmed, count)) {
+            naula_refuse(refusal, "home-unaccepted",
+                         "if that account is meant to hold the repo, run again with --accept-home <the home named>",
+                         "the org's declaring repo lists %s%s%s:%s, which none of its confirmed homes is under; "
+                         "nothing was created",
+                         home->provider, home->host == NULL ? "" : "@", home->host == NULL ? "" : home->host,
+                         home->account);
+            status = NAULA_REFUSED;
+        }
+    }
+    for (size_t index = 0; index < count; index++) {
+        naula_memory_release(accounts[index]);
+    }
+    return status;
+}
+
 /** Every home is asked before any is created, so a taken name creates nothing anywhere. */
 static naula_status refuse_a_taken_name(creation *run, naula_refusal *refusal) {
     for (size_t index = 0; index < run->file.home_count; index++) {
@@ -310,6 +358,9 @@ int cli_command_new(int count, char **values) {
     status = find_org(&run, arguments.positional[0], &refusal);
     if (status == NAULA_OK) {
         status = make_file(&run, arguments.positional[1], &refusal);
+    }
+    if (status == NAULA_OK) {
+        status = refuse_an_unaccepted_home(&run, &refusal);
     }
     if (status == NAULA_OK) {
         status = refuse_a_taken_name(&run, &refusal);

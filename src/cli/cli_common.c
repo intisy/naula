@@ -26,6 +26,7 @@ static const char usage_text[] =
     "  retire <home> [--repo <dir>]         archive an old home once every dependent reaches the new one\n"
     "A home is a place: github:<number>, gitea@<host>:<number>, web:<domain> or a git url.\n"
     "Options: --root <folder>, --json (resolve, check), --offline, --accept-primary <place>,\n"
+    "  --accept-home <provider>[@<host>]:<account> (sync, new: create or move a repo into an account no held org owns),\n"
     "  --accept-number <number>. Exit 0 done, 1 refused, 2 usage.\n";
 
 void cli_usage(void) {
@@ -74,6 +75,7 @@ static const option_spec value_options[] = {
     {"--repo", CLI_ALLOW_REPO},
     {"--previous", CLI_ALLOW_PREVIOUS},
     {"--accept-primary", CLI_ALLOW_ACCEPT},
+    {"--accept-home", CLI_ALLOW_ACCEPT},
     {"--project", CLI_ALLOW_PROJECT},
     {"--fork-id", CLI_ALLOW_FORK_ID},
     {"--accept-number", CLI_ALLOW_ACCEPT},
@@ -114,6 +116,8 @@ static int take_value(const char *command, const char *name, const char *value, 
         arguments->fork_id = value;
     } else if (strcmp(name, "--accept-primary") == 0) {
         stored = push(arguments->accept_primary, &arguments->accept_primary_count, value);
+    } else if (strcmp(name, "--accept-home") == 0) {
+        stored = push(arguments->accept_home, &arguments->accept_home_count, value);
     } else {
         uint64_t number = 0;
         if (!read_number(value, &number)) {

@@ -72,22 +72,30 @@ A C library and command line that lays out, identifies and renames git repos fro
   `siblings` folder included, is refused, asked again right before each clone. Two paths that differ only in case are
   one path.
 - **Reconciliation** (`naula/reconcile.h`, in `naula_git`): `naula sync` first brings the hosts of every adopted
-  checkout under the root to the `repo.json` at the tip of the working branch of the home that serves it, never to
+  checkout under the root (`naula sync <org>`: of that org's folder alone) to the `repo.json` at the tip of the working branch of the home that serves it, never to
   the local file: rename the primary, then every other home; transfer a home whose account changed; create a missing
   home and push every branch and tag to it; push to every other home, never forcing; write the metadata the file
   states. Each step compares first, so a rerun after a host refused one converges and changes nothing once the hosts
   match. A home is written to only when its host shows it holds the id and, unless it serves the file, its own
-  `repo.json` lists the serving home, so a copy can neither take writes nor steer them. Refused before anything is
-  sent: a home that cannot be heard (`home-unheard`), a name another repo holds (`name-taken`), and a rename or
-  transfer of a repo others reach by its name (`literal-consumers`: a `workflow_call` workflow, or a Gradle build with
-  a release). Where each home was last found is kept as a hint in `<cache>/homes/<hex>.json`, trusted only once the
-  host confirms it again. A host's refusal is reported and the sync answers `reconcile-incomplete` after laying out.
+  `repo.json` lists the serving home, so a copy can neither take writes nor steer them. A home is created, or a repo
+  transferred into an account, only where an org of the root holds that account (its declaring repo's primary lives
+  there) or the run names it with `--accept-home <provider>[@<host>]:<account>`, since whoever can push the file
+  could otherwise have every branch pushed to an account of their choosing. Refused before anything is sent: that
+  (`home-unaccepted`), a home that cannot be heard (`home-unheard`), a name another repo holds (`name-taken`), and a
+  rename or transfer of a repo others reach by its name (`literal-consumers`: a `workflow_call` workflow, or a Gradle
+  build with a release). Where each home was last found is kept as a hint in `<cache>/homes/<hex>-<anchor>.json`, the
+  anchor hashing the homes the checkout's own `repo.json` history listed, so a fork's checkout never shares it; a hint
+  is trusted only once the host confirms it again, and serves the file only for an account that history listed
+  (`serving-unproven` otherwise). A host's refusal is reported and the sync answers `reconcile-incomplete` after laying
+  out.
 - **`new`, `adopt`, `add`, `retire`**: `new <org> <name> [--project p]` gives the repo the homes of its org's declaring
-  repo, refuses a name any of them holds before creating anything, makes the first commit (the `repo.json` alone, its
+  repo, creates only in an account one of that repo's confirmed homes is under or one `--accept-home` names
+  (`home-unaccepted`), refuses a name any of them holds before creating anything, makes the first commit (the `repo.json` alone, its
   hash the id) without a working tree, creates and fills every home, and clones and links it. `adopt` writes format 2
   in place and commits nothing: `name` from the primary host, `homes` from format 1 `hosts` or else from the remotes
   by account, each forge-number dependency as `{ id, at }` with the id derived from that repo's own history and its
-  commit checked there, `claims` and `place` dropped, paths kept; a file already in format 2 is only rewritten
+  commit checked there, `claims` and `place` dropped, paths kept; format 1 `projects` are refused (`org-undeclared`)
+  until the `org` member is written by hand, since adopt never invents an org; a file already in format 2 is only rewritten
   canonically, so a second run changes no byte. A first-parent root another repo of the primary's account shares is
   refused (`root-shared`) with the proposed `--fork-id`, since which repo takes its own identity is a person's call.
   `add` writes `{ id, at, importName, commit }`, `at` from every confirmed home and the commit from the primary's

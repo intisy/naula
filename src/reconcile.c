@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -9,6 +10,7 @@
 #include "naula/json.h"
 #include "naula/memory.h"
 #include "naula/reconcile.h"
+#include "naula/sha256.h"
 #include "naula/repo_file.h"
 #include "resolve_internal.h"
 
@@ -55,6 +57,7 @@ typedef struct reconciler {
     size_t history_count;
     home_hint hints[HINT_LIMIT];
     size_t hint_count;
+    char hint_name[160];
     found_home serving;
     const naula_provider *serving_provider;
     char *serving_word;
@@ -239,10 +242,10 @@ static char *hint_path(const reconciler *subject) {
     if (subject->options == NULL || subject->options->cache_directory == NULL) {
         return NULL;
     }
-    size_t length = strlen(subject->options->cache_directory) + 96;
+    size_t length = strlen(subject->options->cache_directory) + sizeof subject->hint_name + 16;
     char *path = naula_memory_allocate(length);
     if (path != NULL) {
-        snprintf(path, length, "%s/homes/%s.json", subject->options->cache_directory, subject->commit);
+        snprintf(path, length, "%s/homes/%s.json", subject->options->cache_directory, subject->hint_name);
     }
     return path;
 }
@@ -318,11 +321,15 @@ static void write_hints(const reconciler *subject) {
             status = add_hint(homes, home->wanted->provider, home->wanted->host, home->wanted->account,
                               home->found.number);
         }
+        if (status == NAULA_OK && home->found.number != 0 && home->old_account != NULL) {
+            status = add_hint(homes, home->wanted->provider, home->wanted->host, home->old_account,
+                              home->found.number);
+        }
     }
     char *text = status == NAULA_OK ? cJSON_PrintUnformatted(json) : NULL;
     const char *cache = subject->options->cache_directory;
-    char below[96];
-    snprintf(below, sizeof below, "homes/%s.json", subject->commit);
+    char below[sizeof subject->hint_name + 16];
+    snprintf(below, sizeof below, "homes/%s.json", subject->hint_name);
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
     char *folder = text == NULL ? NULL : naula_memory_allocate(strlen(cache) + 8);
@@ -502,6 +509,76 @@ static naula_status local_identity(reconciler *subject, char **branch, naula_ref
     return status;
 }
 
+static int by_text(const void *left, const void *right) {
+    return strcmp(*(const char *const *)left, *(const char *const *)right);
+}
+
+/**
+ * Hints are kept per checkout identity, the way the resolver keys its cache by a consumer's `at`: the id and every
+ * provider home the checkout's own repo.json history listed, each `<provider>@<host>:<account>` lowercased, sorted,
+ * joined by newlines and hashed. Another checkout of the id, a fork naming its own homes, never reads or writes them.
+ */
+static naula_status name_the_hints(reconciler *subject) {
+    size_t total = 0;
+    for (size_t index = 0; index < subject->history_count; index++) {
+        total += subject->history[index].home_count;
+    }
+    char **entries = naula_memory_allocate((total + 1) * sizeof *entries);
+    if (entries == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    size_t count = 0;
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; status == NAULA_OK && index < subject->history_count; index++) {
+        const naula_repo_file *file = &subject->history[index];
+        for (size_t entry = 0; status == NAULA_OK && entry < file->home_count; entry++) {
+            const naula_home *home = &file->homes[entry];
+            if (home->kind != NAULA_HOME_PROVIDER) {
+                continue;
+            }
+            size_t length = strlen(home->provider) + (home->host == NULL ? 0 : strlen(home->host)) +
+                            strlen(home->account) + 3;
+            char *text = naula_memory_allocate(length);
+            if (text == NULL) {
+                status = NAULA_OUT_OF_MEMORY;
+                break;
+            }
+            snprintf(text, length, "%s@%s:%s", home->provider, home->host == NULL ? "" : home->host, home->account);
+            for (char *letter = text; *letter != '\0'; letter++) {
+                *letter = (*letter >= 'A' && *letter <= 'Z') ? (char)(*letter + ('a' - 'A')) : *letter;
+            }
+            int repeated = 0;
+            for (size_t other = 0; other < count && !repeated; other++) {
+                repeated = strcmp(entries[other], text) == 0;
+            }
+            if (repeated) {
+                naula_memory_release(text);
+            } else {
+                entries[count++] = text;
+            }
+        }
+    }
+    if (status == NAULA_OK) {
+        qsort(entries, count, sizeof *entries, by_text);
+        naula_sha256 hash;
+        char key[NAULA_SHA256_HEX_SIZE];
+        naula_sha256_start(&hash);
+        for (size_t index = 0; index < count; index++) {
+            if (index > 0) {
+                naula_sha256_add(&hash, (const uint8_t *)"\n", 1);
+            }
+            naula_sha256_add(&hash, (const uint8_t *)entries[index], strlen(entries[index]));
+        }
+        naula_sha256_hex(&hash, key);
+        snprintf(subject->hint_name, sizeof subject->hint_name, "%s-%s", subject->commit, key);
+    }
+    for (size_t index = 0; index < count; index++) {
+        naula_memory_release(entries[index]);
+    }
+    naula_memory_release(entries);
+    return status;
+}
+
 static naula_status try_serving(reconciler *subject, const char *word, const char *host, const char *account,
                                 int *located, naula_refusal *refusal) {
     *located = 0;
@@ -523,9 +600,54 @@ static naula_status try_serving(reconciler *subject, const char *word, const cha
     return NAULA_OK;
 }
 
+static int history_lists(const reconciler *subject, const char *word, const char *host, const char *account) {
+    for (size_t index = 0; index < subject->history_count; index++) {
+        const naula_repo_file *file = &subject->history[index];
+        for (size_t entry = 0; entry < file->home_count; entry++) {
+            const naula_home *home = &file->homes[entry];
+            if (home->kind == NAULA_HOME_PROVIDER && strcmp(home->provider, word) == 0 &&
+                same_text(home->host, host) && same_text(home->account, account)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /**
- * The first home of the local file found holding this repo, else the first home a run before found it at, since a
- * checkout not pulled since a transfer still names the old account: the home whose working branch says what is wanted.
+ * The repo at a hinted number, taken as the serving home once it holds the id: the hint's account must be one the
+ * checkout's own repo.json history listed, which is what lets a home transferred since the last pull still be found.
+ */
+static naula_status try_hinted_serving(reconciler *subject, const home_hint *hint, int *located,
+                                       naula_refusal *refusal) {
+    *located = 0;
+    const naula_provider *provider = naula_providers_find(subject->session->providers, hint->provider, refusal);
+    if (provider == NULL) {
+        return NAULA_OK;
+    }
+    int ours = 0;
+    naula_status status =
+        examine(subject, provider, hint->provider, hint->host, hint->number, &subject->serving, &ours, refusal);
+    if (status == NAULA_NOT_FOUND || (status == NAULA_OK && !ours)) {
+        release_found(&subject->serving);
+        return NAULA_OK;
+    }
+    if (status != NAULA_OK) {
+        release_found(&subject->serving);
+        return refuse_unheard(hint->provider, hint->account, status, refusal);
+    }
+    *located = 1;
+    subject->serving_provider = provider;
+    subject->serving_word = naula_memory_duplicate_text(hint->provider);
+    subject->serving_host = copy_or_null(hint->host);
+    return subject->serving_word == NULL || (hint->host != NULL && subject->serving_host == NULL) ? NAULA_OUT_OF_MEMORY
+                                                                                                  : NAULA_OK;
+}
+
+/**
+ * The first home of the local file found holding this repo, else a hinted home of an account the checkout's history
+ * listed, since a checkout not pulled since a transfer still names the old account. A hint for any other account is
+ * never a serving home (`serving-unproven`): the file it serves would steer every write.
  */
 static naula_status find_serving(reconciler *subject, const naula_repo_file *local, naula_refusal *refusal) {
     int located = 0;
@@ -536,11 +658,22 @@ static naula_status find_serving(reconciler *subject, const naula_repo_file *loc
             status = try_serving(subject, home->provider, home->host, home->account, &located, refusal);
         }
     }
+    size_t unproven = 0;
     for (size_t index = 0; status == NAULA_OK && !located && index < subject->hint_count; index++) {
         const home_hint *hint = &subject->hints[index];
-        status = try_serving(subject, hint->provider, hint->host, hint->account, &located, refusal);
+        if (history_lists(subject, hint->provider, hint->host, hint->account)) {
+            status = try_hinted_serving(subject, hint, &located, refusal);
+        } else {
+            unproven++;
+        }
     }
-    if (status == NAULA_OK && !located) {
+    if (status == NAULA_OK && !located && unproven > 0) {
+        naula_refuse(refusal, "serving-unproven", "pull the working branch into the checkout, then run again",
+                     "no home the checkout's repo.json has listed holds %s, and a hint naming another account is not "
+                     "taken as the serving home",
+                     subject->id_text);
+        status = NAULA_REFUSED;
+    } else if (status == NAULA_OK && !located) {
         naula_refuse(refusal, "no-home-found", "push the repo to a home its repo.json lists, then run again",
                      "no home the local repo.json lists holds %s", subject->id_text);
         status = NAULA_REFUSED;
@@ -727,6 +860,50 @@ static naula_status check_both_ways(reconciler *subject, naula_refusal *refusal)
         naula_refuse(refusal, "primary-not-listed", "list the home in homes, or push the file to the home that is",
                      "the repo.json %s/%s serves does not list it", serving->account, serving->name);
         return NAULA_REFUSED;
+    }
+    return NAULA_OK;
+}
+
+static int target_is_allowed(const reconciler *subject, const naula_home *target, const char *text) {
+    const naula_reconcile_options *options = subject->options;
+    for (size_t index = 0; options != NULL && index < options->held_account_count; index++) {
+        const naula_home *held = &options->held_accounts[index];
+        if (held->kind == NAULA_HOME_PROVIDER && strcmp(held->provider, target->provider) == 0 &&
+            same_text(held->host, target->host) && same_text(held->account, target->account)) {
+            return 1;
+        }
+    }
+    for (size_t index = 0; options != NULL && index < options->accepted_home_count; index++) {
+        if (same_text(options->accepted_homes[index], text)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * A home to create, or an account to transfer one into, that is neither an account an org of the root holds nor one
+ * this run accepted refuses the whole run before anything is sent: whoever can push the file could otherwise name any
+ * account and have every branch pushed there, or the repo moved there, with the user's credentials.
+ */
+static naula_status check_targets(reconciler *subject, naula_refusal *refusal) {
+    for (size_t index = 0; index < subject->planned_count; index++) {
+        const planned_home *home = &subject->planned[index];
+        if (home->found.number != 0 && home->old_account == NULL) {
+            continue;
+        }
+        const naula_home *target = home->wanted;
+        char text[300];
+        snprintf(text, sizeof text, "%s%s%s:%s", target->provider, target->host == NULL ? "" : "@",
+                 target->host == NULL ? "" : target->host, target->account);
+        if (!target_is_allowed(subject, target, text)) {
+            naula_refuse(refusal, "home-unaccepted",
+                         "if that account is meant to hold the repo, run again with --accept-home <the home named>",
+                         "the file asks to %s %s, an account no org of this root holds and no run accepted; nothing "
+                         "was sent",
+                         home->found.number == 0 ? "create the repo in" : "transfer the repo into", text);
+            return NAULA_REFUSED;
+        }
     }
     return NAULA_OK;
 }
@@ -1179,6 +1356,10 @@ static naula_status prepare(reconciler *subject, naula_refusal *refusal) {
     if (status != NAULA_OK) {
         return status;
     }
+    status = name_the_hints(subject);
+    if (status != NAULA_OK) {
+        return status;
+    }
     read_hints(subject);
     if (subject->history_count == 0) {
         naula_refuse(refusal, "unadopted", "run naula adopt, commit and push first", "no repo.json of format 2 is committed");
@@ -1195,6 +1376,9 @@ static naula_status prepare(reconciler *subject, naula_refusal *refusal) {
         status = check_both_ways(subject, refusal);
     }
     if (status == NAULA_OK) {
+        status = check_targets(subject, refusal);
+    }
+    if (status == NAULA_OK) {
         status = check_literal_consumers(subject, refusal);
     }
     return status == NAULA_OK ? check_names_free(subject, refusal) : status;
@@ -1206,7 +1390,8 @@ naula_status naula_reconcile(naula_session *session, const char *repository, con
     memset(report, 0, sizeof *report);
     report->size = size;
     report->first_failure.size = sizeof report->first_failure;
-    if (options != NULL && options->size < offsetof(naula_reconcile_options, context) + sizeof options->context) {
+    if (options != NULL &&
+        options->size < offsetof(naula_reconcile_options, accepted_home_count) + sizeof options->accepted_home_count) {
         naula_refuse(refusal, "invalid_options", "set size to sizeof(naula_reconcile_options)",
                      "the options are smaller than their first shape");
         return NAULA_REFUSED;

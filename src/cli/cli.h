@@ -43,6 +43,8 @@ typedef struct cli_arguments {
     const char *fork_id;
     const char *accept_primary[CLI_LIST_LIMIT];
     size_t accept_primary_count;
+    const char *accept_home[CLI_LIST_LIMIT];
+    size_t accept_home_count;
     uint64_t accept_number[CLI_LIST_LIMIT];
     size_t accept_number_count;
     int json;
@@ -187,9 +189,15 @@ naula_status cli_resolve(cli_context *context, const naula_reference *reference,
 /** The verdicts of a resolution as lines on standard error, for a refused one. */
 void cli_print_verdicts(const naula_resolution *resolution);
 
-/** naula_reconcile for the checkout at `repository`, printing every change on standard output. */
-naula_status cli_reconcile(cli_context *context, const char *repository, naula_reconcile_report *report,
-                           naula_refusal *refusal);
+/**
+ * naula_reconcile for the checkout at `repository`, printing every change on standard output; a home is created or
+ * transferred into only in one of the `held` accounts or one `--accept-home` names.
+ */
+naula_status cli_reconcile(cli_context *context, const char *repository, const naula_home *held, size_t held_count,
+                           naula_reconcile_report *report, naula_refusal *refusal);
+
+/** Whether `home` is one of `held`, or one the run accepted with `--accept-home <provider>[@<host>]:<account>`. */
+int cli_home_is_allowed(const cli_context *context, const naula_home *home, const naula_home *held, size_t held_count);
 
 /** The checkout a command acts on: `--repo`, else the working folder, absolute. */
 char *cli_repository(const cli_arguments *arguments);

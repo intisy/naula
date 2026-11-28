@@ -60,7 +60,10 @@ foreach(name IN ITEMS check_refuses_a_rebased_root check_warns_on_a_narrow_at_an
         planned_move_creates_the_new_home_and_pushes_every_ref retire_refuses_while_a_dependent_lacks_the_new_home
         retire_refuses_while_the_old_home_times_out retire_archives_only_after_the_listing_commit_is_pushed
         adopt_keeps_paths_and_repeats adopt_is_idempotent adopt_proposes_the_fork_exception_on_a_shared_root
-        adopt_drops_claims_and_place new_creates_every_home_and_the_link add_writes_id_at_importname_and_commit)
+        adopt_drops_claims_and_place new_creates_every_home_and_the_link add_writes_id_at_importname_and_commit
+        reconcile_refuses_a_home_no_held_org_owns reconcile_creates_in_a_held_account_without_acceptance
+        sync_of_an_org_reconciles_only_its_repos adopt_refuses_to_invent_an_org
+        sync_never_serves_from_a_hint_the_checkout_never_listed)
     add_test(NAME cli/${name} COMMAND cli_test ${name})
     set_tests_properties(cli/${name} PROPERTIES TIMEOUT 300 ENVIRONMENT "${NAULA_CLI_ENVIRONMENT}")
 endforeach()
