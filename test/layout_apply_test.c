@@ -1727,15 +1727,18 @@ typedef enum swapped_change {
     CHANGE_OWNED_FILE,
     CHANGE_APPENDER,
     CHANGE_FILE_REMOVE,
+    CHANGE_FILE_REMOVE_IF_HOLDING,
     CHANGE_COUNT
 } swapped_change;
 
 static const char *const CHANGE_NAMES[CHANGE_COUNT] = {"folder make", "file replace", "link make",
                                                        "link remove", "move from",    "move to",
-                                                       "owned file",  "appender",     "file remove"};
+                                                       "owned file",  "appender",     "file remove",
+                                                       "file remove if holding"};
 
 static naula_status make_change(swapped_change change, unsigned long *error) {
     int held = 0;
+    int holding = 0;
     int exists = 0;
     disk_owned_file *owned = NULL;
     disk_appender *appender = NULL;
@@ -1759,6 +1762,9 @@ static naula_status make_change(swapped_change change, unsigned long *error) {
         return disk_link_remove(root, "org/link", DISK_FOR_PLAN_STEP, error);
     case CHANGE_FILE_REMOVE:
         return disk_file_remove(root, "org/file.txt", DISK_FOR_PLAN_STEP, error);
+    case CHANGE_FILE_REMOVE_IF_HOLDING:
+        return disk_file_remove_if_holding(root, "org/file.txt", (const uint8_t *)"old", 3, DISK_FOR_PLAN_STEP,
+                                           &holding, error);
     case CHANGE_MOVE_FROM:
         return disk_move(root, "org/clone", "moved", DISK_FOR_PLAN_STEP, &held, error);
     default:
@@ -1844,6 +1850,44 @@ static void removing_a_file_removes_only_a_regular_file(void) {
     CHECK(kind_at(at("target.txt")) == 2);
     unlink_link(at("folder-link"));
     finish("file-remove");
+}
+
+/**
+ * Removing a file while it holds given bytes removes it only when it holds exactly them, never one that holds more,
+ * less or other bytes, and refuses a link to such a file and a folder.
+ */
+static void removing_a_file_holding_bytes_removes_only_an_exact_match(void) {
+    fresh("file-remove-if");
+    const char *const kept[] = {"other.txt", "longer.txt", "shorter.txt"};
+    write_text(at("exact.txt"), "@docs/RULES.md\n");
+    write_text(at("other.txt"), "@docs/OTHER.md\n");
+    write_text(at("longer.txt"), "@docs/RULES.md\n\n");
+    write_text(at("shorter.txt"), "@docs/RULES.md");
+    make_folder(at("folder"));
+    make_link(at("folder-link"), at("folder"));
+    const uint8_t *generated = (const uint8_t *)"@docs/RULES.md\n";
+    size_t length = strlen("@docs/RULES.md\n");
+    unsigned long error = 0;
+    int holding = 0;
+    CHECK(disk_file_remove_if_holding(root, "exact.txt", generated, length, DISK_FOR_PLAN_STEP, &holding, &error) ==
+          NAULA_OK);
+    CHECK(holding && kind_at(at("exact.txt")) == 0);
+    for (size_t index = 0; index < sizeof kept / sizeof kept[0]; index++) {
+        holding = 1;
+        CHECK(disk_file_remove_if_holding(root, kept[index], generated, length, DISK_FOR_PLAN_STEP, &holding,
+                                          &error) == NAULA_OK);
+        CHECK(!holding && kind_at(at(kept[index])) == 2);
+    }
+    CHECK(disk_file_remove_if_holding(root, "folder", generated, length, DISK_FOR_PLAN_STEP, &holding, &error) ==
+          NAULA_REFUSED);
+    CHECK(kind_at(at("folder")) == 1);
+    CHECK(disk_file_remove_if_holding(root, "folder-link", generated, length, DISK_FOR_PLAN_STEP, &holding,
+                                      &error) == NAULA_REFUSED);
+    CHECK(kind_at(at("folder-link")) == 3);
+    CHECK(disk_file_remove_if_holding(root, "missing.txt", generated, length, DISK_FOR_PLAN_STEP, &holding,
+                                      &error) == NAULA_NOT_FOUND);
+    unlink_link(at("folder-link"));
+    finish("file-remove-if");
 }
 
 static void a_resumed_move_refused_after_its_checkout_moved_stays_unfinished(void) {
@@ -3529,6 +3573,8 @@ static const named_test TESTS[] = {
     {"a_writer_making_ever_deeper_folders_is_stopped", a_writer_making_ever_deeper_folders_is_stopped},
     {"every_change_refuses_a_folder_above_it_swapped_for_a_link", every_change_refuses_a_folder_above_it_swapped_for_a_link},
     {"removing_a_file_removes_only_a_regular_file", removing_a_file_removes_only_a_regular_file},
+    {"removing_a_file_holding_bytes_removes_only_an_exact_match",
+     removing_a_file_holding_bytes_removes_only_an_exact_match},
     {"a_fifo_swapped_in_for_a_file_is_refused_without_waiting", a_fifo_swapped_in_for_a_file_is_refused_without_waiting},
     {"a_repointed_recorded_link_is_forgotten_by_the_scan", a_repointed_recorded_link_is_forgotten_by_the_scan},
     {"writing_the_root_file_takes_the_roots_lock", writing_the_root_file_takes_the_roots_lock},

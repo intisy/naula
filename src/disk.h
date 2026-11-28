@@ -71,6 +71,15 @@ naula_status disk_link_remove(const char *root, const char *below, disk_walk_pur
 /** Removes the regular file at `below` under `root`; a link, a folder or anything else there is refused. */
 naula_status disk_file_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
 
+/**
+ * Removes the regular file at `below` under `root` only while it holds exactly `bytes`, setting `holding` when it did.
+ * The file is read through the one open the walk reached and removed in that same walked folder, by its handle on
+ * Windows and on POSIX by its name once that name still names the file read, so nothing swapped in between the read
+ * and the removal is removed. A link, a folder or anything else there is refused; NAULA_NOT_FOUND when nothing is.
+ */
+naula_status disk_file_remove_if_holding(const char *root, const char *below, const uint8_t *bytes, size_t length,
+                                         disk_walk_purpose purpose, int *holding, unsigned long *error);
+
 /** Makes the one folder `below` under `root`; its parent must exist. */
 naula_status disk_folder_make(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
 

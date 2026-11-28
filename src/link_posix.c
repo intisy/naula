@@ -97,6 +97,81 @@ naula_status disk_file_remove(const char *root, const char *below, disk_walk_pur
     return status;
 }
 
+static naula_status holds_exactly(int file, const uint8_t *bytes, size_t length, int *holding, unsigned long *error) {
+    uint8_t buffer[4096];
+    size_t seen = 0;
+    for (;;) {
+        ssize_t read_now = read(file, buffer, sizeof buffer);
+        if (read_now < 0 && errno == EINTR) {
+            continue;
+        }
+        if (read_now < 0) {
+            *error = (unsigned long)errno;
+            return NAULA_REFUSED;
+        }
+        if (read_now == 0) {
+            break;
+        }
+        if ((size_t)read_now > length - seen || memcmp(buffer, bytes + seen, (size_t)read_now) != 0) {
+            *holding = 0;
+            return NAULA_OK;
+        }
+        seen += (size_t)read_now;
+    }
+    *holding = seen == length;
+    return NAULA_OK;
+}
+
+static int same_file(const struct stat *left, const struct stat *right) {
+    return left->st_dev == right->st_dev && left->st_ino == right->st_ino;
+}
+
+naula_status disk_file_remove_if_holding(const char *root, const char *below, const uint8_t *bytes, size_t length,
+                                         disk_walk_purpose purpose, int *holding, unsigned long *error) {
+    *error = 0;
+    *holding = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
+    int file = -1;
+    struct stat opened;
+    if (status == NAULA_OK) {
+        file = openat(walk.parent, walk.name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+        if (file < 0) {
+            *error = (unsigned long)errno;
+            status = errno == ENOENT ? NAULA_NOT_FOUND : NAULA_REFUSED;
+        }
+    }
+    if (status == NAULA_OK && fstat(file, &opened) != 0) {
+        *error = (unsigned long)errno;
+        status = NAULA_REFUSED;
+    } else if (status == NAULA_OK && !S_ISREG(opened.st_mode)) {
+        *error = EINVAL;
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK) {
+        status = holds_exactly(file, bytes, length, holding, error);
+    }
+    struct stat named;
+    if (status == NAULA_OK && *holding && fstatat(walk.parent, walk.name, &named, AT_SYMLINK_NOFOLLOW) != 0) {
+        *error = (unsigned long)errno;
+        status = NAULA_REFUSED;
+    } else if (status == NAULA_OK && *holding && !same_file(&named, &opened)) {
+        *holding = 0;
+    }
+    if (status == NAULA_OK && *holding && unlinkat(walk.parent, walk.name, 0) != 0) {
+        *error = (unsigned long)errno;
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK && *holding) {
+        fsync(walk.parent);
+    }
+    if (file >= 0) {
+        close(file);
+    }
+    disk_walk_release(&walk);
+    return status;
+}
+
 naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
