@@ -79,6 +79,19 @@ naula_status cli_read_file(const char *path, uint8_t **bytes, size_t *length, na
 naula_status cli_git(const char *repository, const char *const *arguments, naula_run_result *result,
                      naula_refusal *refusal);
 
+/** Fills `refusal` as `git-failed` for a git that ran and exited other than 0, naming its first argument. */
+void cli_git_refusal(const char *const *arguments, const naula_run_result *result, naula_refusal *refusal);
+
+/** The bytes of the regular files directly in `folder`, never following a link; 0 for a folder that is missing. */
+naula_status cli_folder_bytes(const char *folder, uint64_t *bytes);
+
+/**
+ * Refuses `path-linked` for a link or other reparse point at any folder of `relative` below `base`, its first folder
+ * included, and `path-in-git` for a path through a `.git` folder: a link a repo tracks would carry a write out of it.
+ * Ask it right before the write, since an earlier write can bring links of its own.
+ */
+naula_status cli_refuse_links_below(const char *base, const char *relative, naula_refusal *refusal);
+
 /** Whether a clone url may be handed to git: https, and in a test build a local file url. */
 int cli_clone_url_is_allowed(const char *url);
 

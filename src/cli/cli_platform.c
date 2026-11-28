@@ -8,6 +8,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 #else
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -65,7 +68,47 @@ static int is_absolute(const char *path) {
     return ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' &&
            (path[2] == '/' || path[2] == '\\');
 }
+
+naula_status cli_folder_bytes(const char *folder, uint64_t *bytes) {
+    *bytes = 0;
+    char *pattern = cli_join(folder, "*");
+    wchar_t *wide = pattern == NULL ? NULL : widen(pattern);
+    naula_memory_release(pattern);
+    if (wide == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    WIN32_FIND_DATAW found;
+    HANDLE search = FindFirstFileW(wide, &found);
+    naula_memory_release(wide);
+    if (search == INVALID_HANDLE_VALUE) {
+        return NAULA_OK;
+    }
+    do {
+        if (!(found.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+            *bytes += ((uint64_t)found.nFileSizeHigh << 32) | found.nFileSizeLow;
+        }
+    } while (FindNextFileW(search, &found));
+    FindClose(search);
+    return NAULA_OK;
+}
 #else
+naula_status cli_folder_bytes(const char *folder, uint64_t *bytes) {
+    *bytes = 0;
+    DIR *listing = opendir(folder);
+    if (listing == NULL) {
+        return NAULA_OK;
+    }
+    int descriptor = dirfd(listing);
+    for (struct dirent *entry = readdir(listing); entry != NULL; entry = readdir(listing)) {
+        struct stat facts;
+        if (fstatat(descriptor, entry->d_name, &facts, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(facts.st_mode)) {
+            *bytes += (uint64_t)facts.st_size;
+        }
+    }
+    closedir(listing);
+    return NAULA_OK;
+}
+
 char *cli_environment(const char *name) {
     const char *value = getenv(name);
     return value == NULL || value[0] == '\0' ? NULL : naula_memory_duplicate_text(value);

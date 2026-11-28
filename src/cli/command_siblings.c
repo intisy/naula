@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,13 +31,24 @@ static size_t depth_of(const char *path) {
     return depth;
 }
 
+/** Paths compared ignoring ASCII case on every system, since a repo checked out on Windows or macOS folds them. */
+static int compare_paths(const char *left, const char *right) {
+    for (;; left++, right++) {
+        int first = tolower((unsigned char)*left);
+        int second = tolower((unsigned char)*right);
+        if (first != second || first == '\0') {
+            return first - second;
+        }
+    }
+}
+
 static int by_depth(const void *left, const void *right) {
     const sibling *first = left;
     const sibling *second = right;
     if (first->depth != second->depth) {
         return first->depth < second->depth ? -1 : 1;
     }
-    return strcmp(first->relative, second->relative);
+    return compare_paths(first->relative, second->relative);
 }
 
 static naula_status read_file(siblings_run *run, int *adopted, naula_refusal *refusal) {
@@ -87,6 +99,11 @@ static naula_status locate(cli_context *context, sibling *item, naula_refusal *r
                          dependency->reference.url);
             return NAULA_REFUSED;
         }
+        naula_status checked = cli_history_check_commit(context->history, dependency->reference.url,
+                                                        dependency->commit, NULL, refusal);
+        if (checked != NAULA_OK) {
+            return checked;
+        }
         fprintf(stdout, "warning url-dependency: %s is checked out by url, unconfirmed\n", dependency->import_name);
         item->url = naula_memory_duplicate_text(dependency->reference.url);
         return item->url == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
@@ -133,7 +150,7 @@ static naula_status prepare(siblings_run *run, naula_refusal *refusal) {
     }
     qsort(run->items, run->count, sizeof *run->items, by_depth);
     for (size_t index = 1; index < run->count; index++) {
-        if (strcmp(run->items[index].relative, run->items[index - 1].relative) == 0) {
+        if (compare_paths(run->items[index].relative, run->items[index - 1].relative) == 0) {
             naula_refuse(refusal, "sibling-path-repeated", "give each dependency a path of its own",
                          "two dependencies check out into %s", run->items[index].relative);
             return NAULA_REFUSED;
@@ -144,7 +161,10 @@ static naula_status prepare(siblings_run *run, naula_refusal *refusal) {
 
 static naula_status locate_all(siblings_run *run, cli_context *context, naula_refusal *refusal) {
     for (size_t index = 0; index < run->count; index++) {
-        naula_status status = judge_existing(&run->items[index], refusal);
+        naula_status status = cli_refuse_links_below(run->repository, run->items[index].relative, refusal);
+        if (status == NAULA_OK) {
+            status = judge_existing(&run->items[index], refusal);
+        }
         if (status == NAULA_OK && !run->items[index].kept) {
             status = locate(context, &run->items[index], refusal);
         }
@@ -155,11 +175,14 @@ static naula_status locate_all(siblings_run *run, cli_context *context, naula_re
     return NAULA_OK;
 }
 
-static naula_status check_out(const sibling *item, naula_refusal *refusal) {
+static naula_status check_out(const char *repository, const sibling *item, naula_refusal *refusal) {
     const char *clone[] = {"clone", "--quiet", "--no-checkout", "--", item->url, item->path, NULL};
     const char *checkout[] = {"checkout", "--quiet", "--detach", item->dependency->commit, NULL};
     naula_run_result result;
-    naula_status status = cli_git(NULL, clone, &result, refusal);
+    naula_status status = cli_refuse_links_below(repository, item->relative, refusal);
+    if (status == NAULA_OK) {
+        status = cli_git(NULL, clone, &result, refusal);
+    }
     if (status == NAULA_OK) {
         naula_run_result_release(&result);
         status = cli_git(item->path, checkout, &result, refusal);
@@ -210,7 +233,7 @@ static naula_status run_siblings(siblings_run *run, const cli_arguments *argumen
         if (run->items[index].kept) {
             printf("kept %s %s\n", run->items[index].relative, run->items[index].dependency->commit);
         } else {
-            status = check_out(&run->items[index], refusal);
+            status = check_out(run->repository, &run->items[index], refusal);
         }
     }
     return status;

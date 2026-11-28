@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -5,6 +6,7 @@
 #include <string.h>
 
 #include "cli.h"
+#include "disk.h"
 #include "naula/git.h"
 #include "naula/memory.h"
 
@@ -186,16 +188,23 @@ char *cli_join(const char *folder, const char *name) {
     return cli_format(has_separator ? "%s%s" : "%s/%s", folder, name);
 }
 
+void cli_git_refusal(const char *const *arguments, const naula_run_result *result, naula_refusal *refusal) {
+    while (arguments[0] != NULL && arguments[1] != NULL && strcmp(arguments[0], "-c") == 0) {
+        arguments += 2;
+    }
+    size_t length = strlen(result->error);
+    while (length > 0 && (result->error[length - 1] == '\n' || result->error[length - 1] == '\r')) {
+        length--;
+    }
+    naula_refuse(refusal, "git-failed", "run the same git command by hand to see why", "git %s exited %d: %.*s",
+                 arguments[0], result->exit_code, (int)(length > 700 ? 700 : length), result->error);
+}
+
 naula_status cli_git(const char *repository, const char *const *arguments, naula_run_result *result,
                      naula_refusal *refusal) {
     naula_status status = naula_git_run(repository, arguments, NULL, 0, result, refusal);
     if (status == NAULA_OK && result->exit_code != 0) {
-        size_t length = strlen(result->error);
-        while (length > 0 && (result->error[length - 1] == '\n' || result->error[length - 1] == '\r')) {
-            length--;
-        }
-        naula_refuse(refusal, "git-failed", "run the same git command by hand to see why", "git %s exited %d: %.*s",
-                     arguments[0], result->exit_code, (int)(length > 700 ? 700 : length), result->error);
+        cli_git_refusal(arguments, result, refusal);
         naula_run_result_release(result);
         return NAULA_REFUSED;
     }
@@ -212,4 +221,53 @@ int cli_clone_url_is_allowed(const char *url) {
     }
 #endif
     return strncmp(url, "https://", 8) == 0 && url[8] != '\0';
+}
+
+static int is_git_segment(const char *segment, size_t length) {
+    static const char git_folder[] = ".git";
+    if (length != sizeof git_folder - 1) {
+        return 0;
+    }
+    for (size_t index = 0; index < length; index++) {
+        if (tolower((unsigned char)segment[index]) != git_folder[index]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+naula_status cli_refuse_links_below(const char *repository, const char *relative, naula_refusal *refusal) {
+    naula_status status = NAULA_OK;
+    for (const char *end = relative; status == NAULA_OK && *end != '\0';) {
+        const char *start = end;
+        while (*end != '\0' && *end != '/') {
+            end++;
+        }
+        if (is_git_segment(start, (size_t)(end - start))) {
+            naula_refuse(refusal, "path-in-git", "name a path outside .git",
+                         "%s runs through a .git folder", relative);
+            return NAULA_REFUSED;
+        }
+        char *prefix = cli_format("%s/%.*s", repository, (int)(end - relative), relative);
+        if (prefix == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        disk_kind kind = DISK_MISSING;
+        unsigned long error = 0;
+        if (disk_kind_of(prefix, &kind, &error) != NAULA_OK) {
+            naula_refuse(refusal, "path-unreadable", "check the folder can be read", "cannot read %s", prefix);
+            status = NAULA_REFUSED;
+        } else if (kind == DISK_LINK || kind == DISK_OTHER) {
+            naula_refuse(refusal, "path-linked", "remove the link; naula writes only into real folders",
+                         "%s is a link or reparse point, so writing %s could reach outside", prefix,
+                         relative);
+            status = NAULA_REFUSED;
+        }
+        naula_memory_release(prefix);
+        if (kind == DISK_MISSING) {
+            break;
+        }
+        end += *end == '/';
+    }
+    return status;
 }

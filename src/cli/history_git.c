@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cli.h"
@@ -9,6 +10,8 @@
 
 #define FETCHED_LIMIT 256
 #define SPACE_SIZE 17
+#define FETCH_TIME_LIMIT_MILLISECONDS (10u * 60u * 1000u)
+#define FETCH_BYTE_LIMIT (1024ull * 1024ull * 1024ull)
 
 typedef enum object_format { FORMAT_SHA1 = 0, FORMAT_SHA256 = 1 } object_format;
 
@@ -29,7 +32,36 @@ struct cli_history {
     int ready[2];
     fetched_home homes[FETCHED_LIMIT];
     size_t count;
+    uint64_t time_limit;
+    uint64_t byte_limit;
 };
+
+/** What one fetch may add to the scratch repo's packs, measured while git runs and again once it is done. */
+typedef struct fetch_budget {
+    char *packs;
+    uint64_t before;
+    uint64_t limit;
+    int over;
+} fetch_budget;
+
+static int within_budget(void *context) {
+    fetch_budget *budget = context;
+    uint64_t now = 0;
+    if (cli_folder_bytes(budget->packs, &now) == NAULA_OK && now > budget->before && now - budget->before > budget->limit) {
+        budget->over = 1;
+    }
+    return !budget->over;
+}
+
+/** A limit from the environment, as a whole number above 0, or `fallback`. */
+static uint64_t limit_from(const char *name, uint64_t fallback) {
+    char *text = cli_environment(name);
+    char *end = NULL;
+    unsigned long long value = text == NULL ? 0 : strtoull(text, &end, 10);
+    int read = text != NULL && end != NULL && *end == '\0' && value > 0;
+    naula_memory_release(text);
+    return read ? (uint64_t)value : fallback;
+}
 
 static const char *const scratch_names[2] = {"sha1.git", "sha256.git"};
 
@@ -96,6 +128,18 @@ static int is_format_mismatch(const naula_refusal *refusal) {
     return strstr(refusal->detail, "object format") != NULL || strstr(refusal->detail, "mismatched algorithms") != NULL;
 }
 
+static naula_status refuse_over_budget(const cli_history *history, const fetched_home *home, naula_refusal *refusal) {
+    naula_refuse(refusal, "fetch-too-large", "check the home serves the repository it names",
+                 "fetching the history of %s brought more than %llu bytes, past what naula reads", home->url,
+                 (unsigned long long)history->byte_limit);
+    return NAULA_REFUSED;
+}
+
+/**
+ * Fetches commits only, every one kept in a pack (`fetch.unpackLimit=1`) so the bytes it brings can be counted while
+ * it runs: a home that sends past the byte limit, or is still sending at the time limit however slowly it trickles, is
+ * stopped and refused.
+ */
 static naula_status fetch_into(cli_history *history, fetched_home *home, naula_refusal *refusal) {
     naula_status status = prepare_scratch(history, home->format, refusal);
     if (status != NAULA_OK) {
@@ -103,14 +147,32 @@ static naula_status fetch_into(cli_history *history, fetched_home *home, naula_r
     }
     char refspec[96];
     snprintf(refspec, sizeof refspec, "+refs/heads/*:refs/naula/%s/*", home->space);
-    const char *arguments[] = {"-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "http.lowSpeedLimit=1",
-                               "-c", "http.lowSpeedTime=60", "fetch", "--quiet", "--no-tags", "--prune",
-                               "--filter=tree:0", home->url, refspec, NULL};
-    naula_run_result result;
-    status = cli_git(history->scratch[home->format], arguments, &result, refusal);
-    if (status == NAULA_OK) {
-        naula_run_result_release(&result);
+    const char *arguments[] = {"-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.unpackLimit=1", "-c",
+                               "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=60", "fetch", "--quiet", "--no-tags",
+                               "--prune", "--filter=tree:0", home->url, refspec, NULL};
+    fetch_budget budget = {cli_join(history->scratch[home->format], "objects/pack"), 0, history->byte_limit, 0};
+    if (budget.packs == NULL) {
+        return NAULA_OUT_OF_MEMORY;
     }
+    cli_folder_bytes(budget.packs, &budget.before);
+    naula_run_limits limits = {sizeof limits, history->time_limit, within_budget, &budget};
+    naula_run_result result;
+    status = naula_git_run_limited(history->scratch[home->format], arguments, NULL, 0, &limits, &result, refusal);
+    if (status == NAULA_OK) {
+        int failed = result.exit_code != 0;
+        if (failed) {
+            cli_git_refusal(arguments, &result, refusal);
+        }
+        naula_run_result_release(&result);
+        status = failed ? NAULA_REFUSED : within_budget(&budget) ? NAULA_OK : refuse_over_budget(history, home, refusal);
+    } else if (status == NAULA_REFUSED && budget.over) {
+        status = refuse_over_budget(history, home, refusal);
+    } else if (status == NAULA_TIMED_OUT) {
+        naula_refuse(refusal, "fetch-too-slow", "run again once the home answers faster",
+                     "fetching the history of %s took longer than %llu ms", home->url,
+                     (unsigned long long)history->time_limit);
+    }
+    naula_memory_release(budget.packs);
     return status;
 }
 
@@ -176,6 +238,24 @@ static naula_status has_branch(cli_history *history, const fetched_home *home, c
     naula_memory_release(name);
     if (status == NAULA_OK) {
         *exists = result.exit_code == 0;
+        naula_run_result_release(&result);
+    }
+    return status;
+}
+
+/** Whether a branch of the home holds `commit`, never just the scratch repo another home's fetch filled. */
+static naula_status on_a_branch(cli_history *history, const fetched_home *home, const char *commit, int *reachable,
+                                naula_refusal *refusal) {
+    char *branches = cli_format("refs/naula/%s/", home->space);
+    if (branches == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    const char *arguments[] = {"for-each-ref", "--count=1", "--format=%(refname)", "--contains", commit, branches, NULL};
+    naula_run_result result;
+    naula_status status = cli_git(history->scratch[home->format], arguments, &result, refusal);
+    naula_memory_release(branches);
+    if (status == NAULA_OK) {
+        *reachable = result.output_length > 0;
         naula_run_result_release(&result);
     }
     return status;
@@ -282,7 +362,13 @@ naula_status cli_history_id(cli_history *history, const char *url, const char *d
         return status;
     }
     const char *branch = exists ? "development" : default_branch;
-    if (!is_safe_branch(branch)) {
+    if (!exists && is_safe_branch(branch)) {
+        status = has_branch(history, home, branch, &exists, refusal);
+        if (status != NAULA_OK) {
+            return status;
+        }
+    }
+    if (!is_safe_branch(branch) || !exists) {
         naula_refuse(refusal, "no-working-branch", "give the repo a development or default branch",
                      "%s has neither a development branch nor a default branch naula reads", url);
         return NAULA_REFUSED;
@@ -325,7 +411,7 @@ naula_status cli_history_check_commit(cli_history *history, const char *url, con
         naula_refuse(refusal, "commit-invalid", "pin the dependency by a whole commit", "%s is not a whole commit", commit);
         return NAULA_REFUSED;
     }
-    naula_status status = naula_id_parse(id_text, strlen(id_text), &wanted, refusal);
+    naula_status status = id_text == NULL ? NAULA_OK : naula_id_parse(id_text, strlen(id_text), &wanted, refusal);
     if (status == NAULA_OK) {
         status = fetch_home(history, url, &home, refusal);
     }
@@ -333,10 +419,17 @@ naula_status cli_history_check_commit(cli_history *history, const char *url, con
     if (status == NAULA_OK) {
         status = has_commit(history, home, commit, &exists, refusal);
     }
+    if (status == NAULA_OK && exists) {
+        status = on_a_branch(history, home, commit, &exists, refusal);
+    }
     if (status == NAULA_OK && !exists) {
         naula_refuse(refusal, "commit-not-on-home", "pin a commit that a branch of the primary holds",
                      "no branch of %s holds %s", url, commit);
         status = NAULA_REFUSED;
+    }
+    if (status != NAULA_OK || id_text == NULL) {
+        naula_id_release(&wanted);
+        return status;
     }
     int same = 0;
     if (status == NAULA_OK) {
@@ -367,6 +460,8 @@ naula_status cli_history_open(const char *cache_directory, naula_providers *prov
     memset(history, 0, sizeof *history);
     history->providers = providers;
     history->credentials = credentials;
+    history->time_limit = limit_from("NAULA_FETCH_TIME_LIMIT_MS", FETCH_TIME_LIMIT_MILLISECONDS);
+    history->byte_limit = limit_from("NAULA_FETCH_BYTE_LIMIT", FETCH_BYTE_LIMIT);
     char *folder = cli_join(cache_directory, "history");
     for (int format = 0; format < 2 && folder != NULL; format++) {
         history->scratch[format] = cli_join(folder, scratch_names[format]);
