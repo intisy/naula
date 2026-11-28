@@ -13,10 +13,13 @@ extern "C" {
 
 /**
  * The variables every git child gets so it can never wait for a person: no terminal, credential manager or askpass
- * prompt, and ssh in batch mode unless the caller already set GIT_SSH_COMMAND. NULL-terminated, for naula_run.
+ * prompt, and ssh in batch mode. Every variable git documents as choosing another repository, object store,
+ * configuration, program or transport than the one named (GIT_DIR, GIT_WORK_TREE, GIT_CONFIG_*, GIT_EXEC_PATH,
+ * GIT_SSH, GIT_SSL_NO_VERIFY and the like) is removed, so a hook or CI step that set one never redirects naula.
+ * NULL-terminated, for naula_run.
  */
 typedef struct naula_git_environment_entries {
-    const char *list[8];
+    const char *list[48];
 } naula_git_environment_entries;
 
 void naula_git_environment(naula_git_environment_entries *entries);
@@ -28,6 +31,11 @@ void naula_git_environment(naula_git_environment_entries *entries);
  */
 naula_status naula_git_run(const char *repository, const char *const *arguments, const char *input,
                            size_t input_length, naula_run_result *result, naula_refusal *refusal);
+
+/** naula_git_run under naula_run_limited's `limits`. */
+naula_status naula_git_run_limited(const char *repository, const char *const *arguments, const char *input,
+                                   size_t input_length, const naula_run_limits *limits, naula_run_result *result,
+                                   naula_refusal *refusal);
 
 /**
  * Refuses with `git-missing` when no `git` runs, and with `git-too-old` below 2.24, the first release that takes

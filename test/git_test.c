@@ -303,6 +303,14 @@ static void set_variable(const char *name, const char *value) {
 #endif
 }
 
+static void remove_variable(const char *name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 static void run_replaces_a_variable_the_parent_already_has(void) {
     const char *arguments[] = {own_program, "--print-environment", "NAULA_TEST_OVERRIDDEN", NULL};
     const char *added[] = {"NAULA_TEST_OVERRIDDEN=added", NULL};
@@ -312,6 +320,46 @@ static void run_replaces_a_variable_the_parent_already_has(void) {
     CHECK(naula_run(arguments, NULL, added, &result, &refusal) == NAULA_OK);
     check_text(result.output, "added\n", "overridden variable");
     naula_run_result_release(&result);
+}
+
+static void git_children_never_inherit_another_repository(void) {
+    static const char *const names[] = {"GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_KEY_0",
+                                        "GIT_EXEC_PATH", "GIT_SSH_COMMAND"};
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        set_variable(names[index], "inherited");
+    }
+    naula_git_environment_entries entries;
+    naula_git_environment(&entries);
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        const char *arguments[] = {own_program, "--print-environment", names[index], NULL};
+        naula_run_result result;
+        naula_refusal refusal;
+        CHECK(naula_run(arguments, NULL, entries.list, &result, &refusal) == NAULA_OK);
+        int inherited = result.output != NULL && strcmp(result.output, "inherited\n") == 0;
+        if (inherited) {
+            fprintf(stderr, "%s reached the git child\n", names[index]);
+        }
+        CHECK(!inherited);
+        naula_run_result_release(&result);
+    }
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        remove_variable(names[index]);
+    }
+}
+
+static void run_removes_the_variables_an_entry_names_without_a_value(void) {
+    set_variable("NAULA_TEST_REMOVED", "parent");
+    set_variable("NAULA_TEST_PREFIXED_ONE", "parent");
+    const char *removed[] = {"NAULA_TEST_REMOVED", "NAULA_TEST_PREFIXED_*", NULL};
+    const char *names[] = {"NAULA_TEST_REMOVED", "NAULA_TEST_PREFIXED_ONE"};
+    for (size_t index = 0; index < 2; index++) {
+        const char *arguments[] = {own_program, "--print-environment", names[index], NULL};
+        naula_run_result result;
+        naula_refusal refusal;
+        CHECK(naula_run(arguments, NULL, removed, &result, &refusal) == NAULA_OK);
+        check_text(result.output, "(unset)\n", names[index]);
+        naula_run_result_release(&result);
+    }
 }
 
 static void run_never_runs_a_program_from_the_current_directory(void) {
@@ -443,6 +491,8 @@ int main(int count, char **values) {
     run_gives_the_child_the_added_environment();
     git_children_never_wait_for_a_person();
     run_replaces_a_variable_the_parent_already_has();
+    run_removes_the_variables_an_entry_names_without_a_value();
+    git_children_never_inherit_another_repository();
     run_never_runs_a_program_from_the_current_directory();
     run_passes_input_and_then_end_of_file();
     run_refuses_input_past_its_limit();
