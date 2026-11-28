@@ -279,6 +279,7 @@ naula_status disk_file_remove(const char *root, const char *below, disk_walk_pur
         }
     }
     FILE_ATTRIBUTE_TAG_INFO tag;
+    memset(&tag, 0, sizeof tag);
     if (status == NAULA_OK && !GetFileInformationByHandleEx(file, FileAttributeTagInfo, &tag, sizeof tag)) {
         status = refused(error);
     } else if (status == NAULA_OK &&
