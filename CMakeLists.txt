@@ -11,6 +11,7 @@ else()
     set(naula_is_top_level OFF)
 endif()
 option(NAULA_TESTS "Build naula's tests" ${naula_is_top_level})
+option(NAULA_COMMAND_LINE "Build the naula program" ${naula_is_top_level})
 
 function(naula_strict_warnings target)
     if(MSVC)
@@ -58,6 +59,21 @@ target_link_libraries(naula_git PUBLIC naula)
 set_target_properties(naula_git PROPERTIES POSITION_INDEPENDENT_CODE ON C_VISIBILITY_PRESET hidden)
 naula_strict_warnings(naula_git)
 
+set(NAULA_CLI_SOURCES src/cli/main.c src/cli/cli_common.c src/cli/cli_platform.c src/cli/cli_context.c
+    src/cli/credentials.c src/cli/history_git.c src/cli/reference.c src/cli/command_resolve.c src/cli/command_check.c
+    src/cli/check_files.c src/cli/command_siblings.c src/cli/command_init.c src/cli/command_hold.c
+    src/cli/command_sync.c src/cli/command_clone.c src/cli/sync_gather.c src/cli/sync_run.c)
+list(TRANSFORM NAULA_CLI_SOURCES PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
+
+# The command line. Its own output folder keeps naula.exe and its pdb apart from the library of the same name.
+if(NAULA_COMMAND_LINE)
+    add_executable(naula_command ${NAULA_CLI_SOURCES})
+    target_include_directories(naula_command PRIVATE src)
+    target_link_libraries(naula_command PRIVATE naula_git naula naula_allocator)
+    set_target_properties(naula_command PROPERTIES OUTPUT_NAME naula RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    naula_strict_warnings(naula_command)
+endif()
+
 add_library(naula_test_hooks STATIC EXCLUDE_FROM_ALL ${naula_sources})
 target_include_directories(naula_test_hooks PUBLIC include src)
 target_compile_definitions(naula_test_hooks PRIVATE NAULA_TEST_HOOKS)
@@ -82,6 +98,9 @@ naula_refuse_plain_allocation(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 include(GNUInstallDirs)
 install(FILES schema/repo.schema.json DESTINATION ${CMAKE_INSTALL_DATADIR}/naula)
+if(NAULA_COMMAND_LINE)
+    install(TARGETS naula_command RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 if(NAULA_TESTS)
     enable_testing()

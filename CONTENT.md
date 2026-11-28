@@ -30,3 +30,11 @@ A C library and command line that lays out, identifies and renames git repos fro
   heard it (a 404 by number, a provider that is not installed) counts a home as gone, so a timeout or an unresolved
   host never lets a copy past the home that would disown it. A home on a provider that is not installed is
   `dead-skipped`, and a refusal it decides names "install a plugin that provides a resolver" as its `fix`.
+- **The command line** (`naula`, `src/cli`): `init`, `hold`, `release`, `sync` and `clone` lay a root out from the
+  orgs it holds; `resolve` prints the homes that speak for an id; `check` is the gate a repo passes before a push;
+  `siblings` checks every dependency out at its commit. It reads history with the `git` it runs under (2.24 or newer,
+  refused below with the fix), fetching each home's commits once a run into `<cache>/history`, and takes a host's token
+  from `git credential fill`. Exit 0 done, 1 refused (code, detail and fix on standard error), 2 usage; `resolve` and
+  `check` take `--json`. A layout command that is refused writes nothing, and `siblings` resolves and checks every
+  dependency before its first clone. An acceptance the resolver asks for is never remembered: each run names it and
+  `--accept-primary` or `--accept-number` grants it for that run.

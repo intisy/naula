@@ -1,0 +1,708 @@
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "check.h"
+#include "disk.h"
+#include "naula/json.h"
+#include "naula/memory.h"
+#include "naula/run.h"
+
+#ifndef NAULA_PROGRAM
+#error "NAULA_PROGRAM names the test build of the naula program"
+#endif
+#ifndef NAULA_TEST_SCRATCH
+#error "NAULA_TEST_SCRATCH names the folder a test may write into"
+#endif
+#ifndef NAULA_CMAKE
+#error "NAULA_CMAKE names cmake, which removes a case's folder"
+#endif
+
+#define TEXT_SIZE 4096
+#define FORGE_LIMIT 32
+#define SNAPSHOT_SIZE (64 * 1024)
+
+typedef struct forge_repo {
+    unsigned number;
+    char account[32];
+    char name[64];
+    char path[1024];
+    char topics[128];
+    int archived;
+} forge_repo;
+
+/** Everything one case builds under its own folder, and the fake forge it serves to the naula program. */
+typedef struct test_case {
+    char folder[1024];
+    forge_repo repos[FORGE_LIMIT];
+    size_t repo_count;
+    unsigned clock;
+    naula_run_result last;
+} test_case;
+
+static test_case here;
+
+static void path_in(char *out, const char *relative) {
+    snprintf(out, 1024, "%s/%s", here.folder, relative);
+}
+
+static int run_in(const char *directory, const char *const *arguments, const char *const *environment,
+                  naula_run_result *result) {
+    naula_refusal refusal;
+    memset(&refusal, 0, sizeof refusal);
+    refusal.size = sizeof refusal;
+    if (naula_run(arguments, directory, environment, result, &refusal) != NAULA_OK) {
+        fprintf(stderr, "cannot run %s: %s: %s\n", arguments[0], refusal.code, refusal.detail);
+        check_failures++;
+        return 0;
+    }
+    return 1;
+}
+
+static void git(const char *directory, const char *first, ...) {
+    const char *arguments[24] = {"git", first};
+    size_t count = 2;
+    va_list more;
+    va_start(more, first);
+    for (const char *each = va_arg(more, const char *); each != NULL && count < 23; each = va_arg(more, const char *)) {
+        arguments[count++] = each;
+    }
+    va_end(more);
+    arguments[count] = NULL;
+    char author_date[64];
+    char committer_date[64];
+    here.clock += 60;
+    snprintf(author_date, sizeof author_date, "GIT_AUTHOR_DATE=%u +0000", 1700000000u + here.clock);
+    snprintf(committer_date, sizeof committer_date, "GIT_COMMITTER_DATE=%u +0000", 1700000000u + here.clock);
+    const char *environment[] = {author_date, committer_date, "GIT_AUTHOR_NAME=Fixture",
+                                 "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture",
+                                 "GIT_COMMITTER_EMAIL=fixture@example.invalid", NULL};
+    naula_run_result result;
+    if (run_in(directory, arguments, environment, &result) && result.exit_code != 0) {
+        fprintf(stderr, "git %s in %s exited %d: %s\n", first, directory == NULL ? "." : directory, result.exit_code,
+                result.error);
+        check_failures++;
+    }
+    naula_run_result_release(&result);
+}
+
+static void revision(const char *repository, const char *name, char hex[65]) {
+    const char *arguments[] = {"git", "rev-parse", name, NULL};
+    naula_run_result result;
+    hex[0] = '\0';
+    if (run_in(repository, arguments, NULL, &result) && result.exit_code == 0) {
+        snprintf(hex, 65, "%.*s", (int)strcspn(result.output, "\r\n"), result.output);
+    }
+    naula_run_result_release(&result);
+}
+
+static void root_commit(const char *repository, char hex[65]) {
+    const char *arguments[] = {"git", "rev-list", "--first-parent", "--max-parents=0", "HEAD", NULL};
+    naula_run_result result;
+    hex[0] = '\0';
+    if (run_in(repository, arguments, NULL, &result) && result.exit_code == 0) {
+        snprintf(hex, 65, "%.*s", (int)strcspn(result.output, "\r\n"), result.output);
+    }
+    naula_run_result_release(&result);
+}
+
+static void write_text(const char *path, const char *text) {
+    char folder[1024];
+    snprintf(folder, sizeof folder, "%s", path);
+    char *slash = strrchr(folder, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+        const char *arguments[] = {NAULA_CMAKE, "-E", "make_directory", folder, NULL};
+        naula_run_result result;
+        if (run_in(NULL, arguments, NULL, &result)) {
+            naula_run_result_release(&result);
+        }
+    }
+    FILE *file = fopen(path, "wb");
+    CHECK(file != NULL);
+    if (file != NULL) {
+        fputs(text, file);
+        fclose(file);
+    }
+}
+
+static int exists(const char *path) {
+    disk_kind kind = DISK_MISSING;
+    unsigned long error = 0;
+    return disk_kind_of(path, &kind, &error) == NAULA_OK && kind != DISK_MISSING;
+}
+
+static int is_link(const char *path) {
+    disk_kind kind = DISK_MISSING;
+    unsigned long error = 0;
+    return disk_kind_of(path, &kind, &error) == NAULA_OK && kind == DISK_LINK;
+}
+
+static size_t case_number;
+
+/** Each case works in `<scratch>/c<n>`: a short folder, since git paths inside nested checkouts near MAX_PATH. */
+static void start_case(void) {
+    memset(&here, 0, sizeof here);
+    snprintf(here.folder, sizeof here.folder, "%s/c%zu", NAULA_TEST_SCRATCH, case_number);
+    const char *remove[] = {NAULA_CMAKE, "-E", "remove_directory", here.folder, NULL};
+    const char *make[] = {NAULA_CMAKE, "-E", "make_directory", here.folder, NULL};
+    naula_run_result result;
+    if (run_in(NULL, remove, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
+    if (run_in(NULL, make, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
+}
+
+/** A repo at `<case>/<folder>` on branch main, committed once with every file `files` names, NULL-terminated pairs. */
+static void make_repo(const char *folder, const char *const *files) {
+    char path[1024];
+    path_in(path, folder);
+    const char *make[] = {NAULA_CMAKE, "-E", "make_directory", path, NULL};
+    naula_run_result result;
+    if (run_in(NULL, make, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
+    git(path, "init", "--quiet", "-b", "main", NULL);
+    git(path, "config", "uploadpack.allowFilter", "true", NULL);
+    for (size_t index = 0; files != NULL && files[index] != NULL; index += 2) {
+        char file[1024];
+        snprintf(file, sizeof file, "%s/%s", path, files[index]);
+        write_text(file, files[index + 1]);
+    }
+    git(path, "add", "-A", NULL);
+    git(path, "commit", "--quiet", "-m", "first", NULL);
+}
+
+static void commit_file(const char *folder, const char *name, const char *text) {
+    char path[1024];
+    char file[1024];
+    path_in(path, folder);
+    snprintf(file, sizeof file, "%s/%s", path, name);
+    write_text(file, text);
+    git(path, "add", "-A", NULL);
+    git(path, "commit", "--quiet", "-m", name, NULL);
+}
+
+static void serve(unsigned number, const char *account, const char *name, const char *folder, const char *topics) {
+    forge_repo *repo = &here.repos[here.repo_count++];
+    repo->number = number;
+    snprintf(repo->account, sizeof repo->account, "%s", account);
+    snprintf(repo->name, sizeof repo->name, "%s", name);
+    path_in(repo->path, folder);
+    snprintf(repo->topics, sizeof repo->topics, "%s", topics == NULL ? "" : topics);
+}
+
+static void write_forge(void) {
+    static char text[TEXT_SIZE * 4];
+    size_t length = (size_t)snprintf(text, sizeof text, "{\"repos\":[");
+    for (size_t index = 0; index < here.repo_count; index++) {
+        const forge_repo *repo = &here.repos[index];
+        length += (size_t)snprintf(text + length, sizeof text - length,
+                                   "%s{\"number\":%u,\"account\":\"%s\",\"name\":\"%s\",\"path\":\"%s\",\"archived\":%s,"
+                                   "\"topics\":[%s]}",
+                                   index == 0 ? "" : ",", repo->number, repo->account, repo->name, repo->path,
+                                   repo->archived ? "true" : "false", repo->topics);
+    }
+    snprintf(text + length, sizeof text - length, "]}");
+    char path[1024];
+    path_in(path, "forge.json");
+    write_text(path, text);
+}
+
+/** Runs the naula program with the case's forge and cache; the answer stays in `here.last` until the next run. */
+static int naula(const char *first, ...) {
+    const char *arguments[24] = {NAULA_PROGRAM, first};
+    size_t count = 2;
+    va_list more;
+    va_start(more, first);
+    for (const char *each = va_arg(more, const char *); each != NULL && count < 23; each = va_arg(more, const char *)) {
+        arguments[count++] = each;
+    }
+    va_end(more);
+    arguments[count] = NULL;
+    write_forge();
+    char forge[1100];
+    char cache[1100];
+    char banks[1100];
+    snprintf(forge, sizeof forge, "NAULA_TEST_FORGE=%s/forge.json", here.folder);
+    snprintf(cache, sizeof cache, "NAULA_CACHE=%s/cache", here.folder);
+    snprintf(banks, sizeof banks, "NAULA_MEMORY_BANKS=%s/banks", here.folder);
+    const char *environment[] = {forge, cache, banks, NULL};
+    naula_run_result_release(&here.last);
+    if (!run_in(NULL, arguments, environment, &here.last)) {
+        return -1;
+    }
+    return here.last.exit_code;
+}
+
+static void expect_exit(int code, int expected, const char *label) {
+    if (code != expected) {
+        fprintf(stderr, "%s: naula exited %d, expected %d\nstdout:\n%s\nstderr:\n%s\n", label, code, expected,
+                here.last.output == NULL ? "" : here.last.output, here.last.error == NULL ? "" : here.last.error);
+        check_failures++;
+    }
+}
+
+static void expect_output(const char *text, int wanted, const char *label) {
+    int found = (here.last.output != NULL && strstr(here.last.output, text) != NULL) ||
+                (here.last.error != NULL && strstr(here.last.error, text) != NULL);
+    if (found != wanted) {
+        fprintf(stderr, "%s: the output %s \"%s\"\nstdout:\n%s\nstderr:\n%s\n", label, wanted ? "lacks" : "holds", text,
+                here.last.output == NULL ? "" : here.last.output, here.last.error == NULL ? "" : here.last.error);
+        check_failures++;
+    }
+}
+
+static void app_file(char *out, const char *name, const char *account, const char *extra) {
+    snprintf(out, TEXT_SIZE,
+             "{\"format\":2,\"name\":\"%s\",\"importName\":\"%s\",\"homes\":[{\"provider\":\"forge\",\"account\":\"%s\"}]%s}\n",
+             name, name, account, extra == NULL ? "" : extra);
+}
+
+static void check_refuses_a_rebased_root(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    commit_file("app", "second.txt", "second\n");
+    char repo[1024];
+    char first[65];
+    char previous[65];
+    path_in(repo, "app");
+    revision(repo, "HEAD~1", first);
+    revision(repo, "HEAD", previous);
+    expect_exit(naula("check", "--repo", repo, "--previous", first, NULL), 0, "a fast-forward keeps the id");
+    git(repo, "checkout", "--quiet", "--orphan", "rewritten", NULL);
+    git(repo, "commit", "--quiet", "-m", "rewritten", NULL);
+    expect_exit(naula("check", "--repo", repo, "--previous", previous, NULL), 1, "a rebased root");
+    expect_output("id-changed", 1, "a rebased root");
+}
+
+static void check_warns_on_a_narrow_at_and_prints_the_line(void) {
+    start_case();
+    const char *library[] = {"repo.json",
+                             "{\"format\":2,\"name\":\"lib\",\"importName\":\"lib\",\"homes\":[{\"provider\":\"forge\","
+                             "\"account\":\"alpha\"},{\"provider\":\"forge\",\"account\":\"beta\"}]}\n",
+                             NULL};
+    make_repo("lib", library);
+    serve(201, "alpha", "lib", "lib", NULL);
+    serve(202, "beta", "lib", "lib", NULL);
+    char lib[1024];
+    char root[65];
+    char head[65];
+    path_in(lib, "lib");
+    root_commit(lib, root);
+    revision(lib, "HEAD", head);
+    char dependency[512];
+    char file[TEXT_SIZE];
+    snprintf(dependency, sizeof dependency,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:201\"],\"importName\":\"lib\",\"commit\":\"%s\"}]",
+             root, head);
+    app_file(file, "app", "alpha", dependency);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char repo[1024];
+    path_in(repo, "app");
+    expect_exit(naula("check", "--repo", repo, NULL), 0, "a narrow at is a warning");
+    expect_output("warning at-narrow", 1, "a narrow at");
+    expect_output("\"at\": [\"forge:201\", \"forge:202\"]", 1, "the line to commit");
+}
+
+static void check_warns_on_a_url_dependency(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha",
+             ",\"dependencies\":[{\"url\":\"https://example.org/x/lib.git\",\"importName\":\"lib\","
+             "\"commit\":\"0123456789abcdef0123456789abcdef01234567\"}]");
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char repo[1024];
+    path_in(repo, "app");
+    expect_exit(naula("check", "--repo", repo, NULL), 0, "a url dependency is a warning");
+    expect_output("warning url-dependency", 1, "a url dependency");
+}
+
+static void check_refuses_an_owner_repo_literal_outside_exempt_places(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *exempt[] = {"repo.json", file,
+                            ".github/workflows/test.yml",
+                            "jobs:\n  test:\n    uses: alpha/workflows/.github/workflows/test.yml@main\n",
+                            "docs/specs/2026-01-01-history.md", "It once lived at alpha/old-name.\n", NULL};
+    make_repo("app", exempt);
+    char repo[1024];
+    path_in(repo, "app");
+    expect_exit(naula("check", "--repo", repo, NULL), 0, "exempt places may name a repo");
+    commit_file("app", "README.md", "Build it beside alpha/other-tool.\n");
+    expect_exit(naula("check", "--repo", repo, NULL), 1, "a literal outside the exempt places");
+    expect_output("owner-repo-literal", 1, "the literal");
+    expect_output("README.md:1", 1, "where the literal is");
+    expect_output(".github/workflows", 0, "the workflow is exempt");
+}
+
+typedef struct proxy_entry {
+    const char *repo;
+    const char *revision;
+    const char *path;
+} proxy_entry;
+
+static void siblings_clones_nested_paths(void) {
+    start_case();
+    static const char *const names[] = {"typescript", "core", "standard", "conformance", "forebay-library", "library",
+                                        "c"};
+    char roots[7][65];
+    for (size_t index = 0; index < 7; index++) {
+        char file[TEXT_SIZE];
+        app_file(file, names[index], "alpha", NULL);
+        const char *files[] = {"repo.json", file, NULL};
+        make_repo(names[index], files);
+        commit_file(names[index], "second.txt", "second\n");
+        commit_file(names[index], "third.txt", "third\n");
+        serve(400 + (unsigned)index, "alpha", names[index], names[index], NULL);
+        char path[1024];
+        path_in(path, names[index]);
+        root_commit(path, roots[index]);
+    }
+    static const proxy_entry entries[] = {
+        {"typescript", "HEAD", NULL},
+        {"core", "HEAD~1", "siblings/typescript/siblings/core"},
+        {"standard", "HEAD", "siblings/typescript/siblings/standard"},
+        {"conformance", "HEAD~2", "siblings/typescript/siblings/conformance"},
+        {"forebay-library", "HEAD", NULL},
+        {"library", "HEAD~1", "siblings/forebay-library/siblings/library"},
+        {"core", "HEAD", "siblings/forebay-library/siblings/core"},
+        {"standard", "HEAD", "siblings/forebay-library/siblings/standard"},
+        {"c", "HEAD", "siblings/forebay-library/siblings/c"},
+        {"library", "HEAD", NULL},
+        {"core", "HEAD", "siblings/library/siblings/core"},
+        {"standard", "HEAD~1", "siblings/library/siblings/standard"},
+        {"c", "HEAD", "siblings/library/siblings/c"},
+    };
+    static char dependencies[TEXT_SIZE * 2];
+    char commits[13][65];
+    size_t length = (size_t)snprintf(dependencies, sizeof dependencies, ",\"dependencies\":[");
+    for (size_t index = 0; index < 13; index++) {
+        size_t which = 0;
+        while (strcmp(names[which], entries[index].repo) != 0) {
+            which++;
+        }
+        char path[1024];
+        path_in(path, names[which]);
+        revision(path, entries[index].revision, commits[index]);
+        char member[160] = "";
+        if (entries[index].path != NULL) {
+            snprintf(member, sizeof member, ",\"path\":\"%s\"", entries[index].path);
+        }
+        length += (size_t)snprintf(dependencies + length, sizeof dependencies - length,
+                                   "%s{\"id\":\"git:%s\",\"at\":[\"forge:%u\"],\"importName\":\"%s\",\"commit\":\"%s\"%s}",
+                                   index == 0 ? "" : ",", roots[which], 400 + (unsigned)which, names[which],
+                                   commits[index], member);
+    }
+    snprintf(dependencies + length, sizeof dependencies - length, "]");
+    static char file[TEXT_SIZE * 2];
+    snprintf(file, sizeof file,
+             "{\"format\":2,\"name\":\"claude-code-proxy\",\"importName\":\"claude-code-proxy\",\"homes\":[{\"provider\":"
+             "\"forge\",\"account\":\"alpha\"}]%s}\n",
+             dependencies);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("proxy", files);
+    char proxy[1024];
+    path_in(proxy, "proxy");
+    expect_exit(naula("siblings", "--repo", proxy, NULL), 0, "thirteen siblings");
+    for (size_t index = 0; index < 13; index++) {
+        char relative[256];
+        char target[1100];
+        char head[65];
+        if (entries[index].path == NULL) {
+            snprintf(relative, sizeof relative, "siblings/%s", entries[index].repo);
+        } else {
+            snprintf(relative, sizeof relative, "%s", entries[index].path);
+        }
+        snprintf(target, sizeof target, "%s/%s", proxy, relative);
+        CHECK(!is_link(target));
+        revision(target, "HEAD", head);
+        check_text(head, commits[index], relative);
+    }
+    expect_exit(naula("siblings", "--repo", proxy, NULL), 0, "a second run keeps them");
+    expect_output("kept siblings/library/siblings/c", 1, "kept on a second run");
+}
+
+static void siblings_refuses_a_copy(void) {
+    start_case();
+    char original_file[TEXT_SIZE];
+    char copy_file[TEXT_SIZE];
+    app_file(original_file, "lib", "alpha", NULL);
+    app_file(copy_file, "lib", "beta", NULL);
+    const char *original_files[] = {"repo.json", original_file, NULL};
+    const char *copy_files[] = {"repo.json", copy_file, "copy.txt", "a copy with its own history\n", NULL};
+    make_repo("original", original_files);
+    make_repo("copy", copy_files);
+    serve(301, "alpha", "lib", "original", NULL);
+    serve(302, "beta", "lib", "copy", NULL);
+    char path[1024];
+    char root[65];
+    char head[65];
+    path_in(path, "original");
+    root_commit(path, root);
+    path_in(path, "copy");
+    revision(path, "HEAD", head);
+    char dependency[512];
+    char file[TEXT_SIZE];
+    snprintf(dependency, sizeof dependency,
+             ",\"dependencies\":[{\"id\":\"git:%s\",\"at\":[\"forge:302\"],\"importName\":\"lib\",\"commit\":\"%s\"}]",
+             root, head);
+    app_file(file, "app", "gamma", dependency);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    char app[1024];
+    char siblings[1100];
+    path_in(app, "app");
+    snprintf(siblings, sizeof siblings, "%s/siblings", app);
+    expect_exit(naula("siblings", "--repo", app, NULL), 1, "a copy at another root");
+    expect_output("not-in-history", 1, "why the copy was refused");
+    CHECK(!exists(siblings));
+}
+
+/** The orgs every layout case starts from: alpha the top with docs and a tool, beta beside it, gamma held by none. */
+static void make_orgs(char alpha_root[65], char beta_app_root[65], char gamma_root[65]) {
+    const char *alpha_docs[] = {
+        "repo.json",
+        "{\"format\":2,\"name\":\"docs\",\"importName\":\"docs\",\"homes\":[{\"provider\":\"forge\",\"account\":\"alpha\"}],"
+        "\"org\":{\"name\":\"alpha\",\"accounts\":[{\"provider\":\"forge\",\"account\":\"alpha\"}],\"rules\":\"RULES.md\","
+        "\"projects\":{\"tools\":\"Programs.\"}}}\n",
+        "RULES.md", "alpha rules\n", NULL};
+    make_repo("alpha-docs", alpha_docs);
+    char path[1024];
+    path_in(path, "alpha-docs");
+    root_commit(path, alpha_root);
+    char tool[TEXT_SIZE];
+    app_file(tool, "tool", "alpha", ",\"topics\":[\"tools\"]");
+    const char *tool_files[] = {"repo.json", tool, NULL};
+    make_repo("alpha-tool", tool_files);
+    char beta_docs[TEXT_SIZE];
+    snprintf(beta_docs, sizeof beta_docs,
+             "{\"format\":2,\"name\":\"docs\",\"importName\":\"docs\",\"homes\":[{\"provider\":\"forge\",\"account\":"
+             "\"beta\"}],\"org\":{\"name\":\"beta\",\"parent\":{\"id\":\"git:%s\",\"at\":[\"forge:101\"]},"
+             "\"accounts\":[{\"provider\":\"forge\",\"account\":\"beta\"}],\"rules\":\"RULES.md\"}}\n",
+             alpha_root);
+    const char *beta_docs_files[] = {"repo.json", beta_docs, "RULES.md", "beta rules\n", NULL};
+    make_repo("beta-docs", beta_docs_files);
+    char app[TEXT_SIZE];
+    app_file(app, "app", "beta", NULL);
+    const char *app_files[] = {"repo.json", app, NULL};
+    make_repo("beta-app", app_files);
+    path_in(path, "beta-app");
+    root_commit(path, beta_app_root);
+    char thing[TEXT_SIZE];
+    app_file(thing, "thing", "gamma", NULL);
+    const char *thing_files[] = {"repo.json", thing, NULL};
+    make_repo("gamma-thing", thing_files);
+    path_in(path, "gamma-thing");
+    root_commit(path, gamma_root);
+    serve(101, "alpha", "docs", "alpha-docs", NULL);
+    serve(102, "alpha", "tool", "alpha-tool", NULL);
+    serve(201, "beta", "docs", "beta-docs", NULL);
+    serve(202, "beta", "app", "beta-app", NULL);
+    serve(301, "gamma", "thing", "gamma-thing", NULL);
+}
+
+static void init_root(char *root) {
+    path_in(root, "root");
+    expect_exit(naula("init", root, "forge:101", NULL), 0, "init");
+}
+
+static void expect_path(const char *root, const char *relative, int wanted_link, const char *label) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/%s", root, relative);
+    if (!exists(path) || (wanted_link && !is_link(path))) {
+        fprintf(stderr, "%s: %s is %s\n", label, path, exists(path) ? "not a link" : "missing");
+        check_failures++;
+    }
+}
+
+static void expect_absent(const char *root, const char *relative, const char *label) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/%s", root, relative);
+    if (exists(path)) {
+        fprintf(stderr, "%s: %s is still there\n", label, path);
+        check_failures++;
+    }
+}
+
+static void checkout_of(const char *hex, char *relative, const char *org) {
+    snprintf(relative, 128, "%s%srepos/%.12s", org == NULL ? "" : org, org == NULL ? "" : "/", hex);
+}
+
+/** Every path under `folder` with its link target or file bytes, never entering a link, `.git` or a journal. */
+static void snapshot(const char *folder, char *out, size_t *length) {
+    char **names = NULL;
+    size_t count = 0;
+    unsigned long error = 0;
+    if (disk_names(folder, &names, &count, &error) != NAULA_OK) {
+        return;
+    }
+    for (size_t index = 0; index < count; index++) {
+        if (strcmp(names[index], ".git") == 0 || strcmp(names[index], ".naula-journal") == 0) {
+            continue;
+        }
+        char path[1100];
+        snprintf(path, sizeof path, "%s/%s", folder, names[index]);
+        disk_kind kind = DISK_MISSING;
+        disk_kind_of(path, &kind, &error);
+        char *target = NULL;
+        uint8_t *bytes = NULL;
+        size_t size = 0;
+        if (kind == DISK_LINK && disk_link_target(path, &target, &error) == NAULA_OK) {
+            *length += (size_t)snprintf(out + *length, SNAPSHOT_SIZE - *length, "%s -> %s\n", path, target);
+        } else if (kind == DISK_FILE && disk_file_read(path, &bytes, &size, &error) == NAULA_OK) {
+            *length += (size_t)snprintf(out + *length, SNAPSHOT_SIZE - *length, "%s = %.*s\n", path, (int)size,
+                                        (const char *)bytes);
+        } else if (kind == DISK_FOLDER) {
+            *length += (size_t)snprintf(out + *length, SNAPSHOT_SIZE - *length, "%s/\n", path);
+            snapshot(path, out, length);
+        }
+        naula_memory_release(target);
+        naula_memory_release(bytes);
+    }
+    disk_names_release(names, count);
+}
+
+static void sync_is_a_no_op_on_a_laid_out_root(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char checkout[128];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    checkout_of(alpha, checkout, NULL);
+    expect_path(root, checkout, 0, "the docs checkout");
+    expect_path(root, "docs", 1, "the docs link");
+    expect_path(root, "tools/tool", 1, "the tool link");
+    expect_path(root, "CLAUDE.md", 0, "the rules import");
+    static char before[SNAPSHOT_SIZE];
+    static char after[SNAPSHOT_SIZE];
+    size_t before_length = 0;
+    size_t after_length = 0;
+    snapshot(root, before, &before_length);
+    expect_exit(naula("sync", "--root", root, NULL), 0, "a second sync");
+    expect_output("clone ", 0, "a second sync clones nothing");
+    expect_output("move ", 0, "a second sync moves nothing");
+    expect_output("unlink ", 0, "a second sync removes no link");
+    snapshot(root, after, &after_length);
+    check_text(after, before, "the root after a second sync");
+}
+
+static void hold_adds_an_org_and_lays_it_out(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char checkout[128];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_absent(root, "beta", "before hold");
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    checkout_of(beta_app, checkout, "beta");
+    expect_path(root, checkout, 0, "beta's app checkout");
+    expect_path(root, "beta/app", 1, "beta's app link");
+    expect_path(root, "beta/docs", 1, "beta's docs link");
+    expect_path(root, "beta/CLAUDE.md", 0, "beta's rules import");
+}
+
+static void release_removes_an_orgs_links_but_never_a_dirty_clone(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char checkout[128];
+    char dirty[1200];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    checkout_of(beta_app, checkout, "beta");
+    snprintf(dirty, sizeof dirty, "%s/%s/work-in-progress.txt", root, checkout);
+    write_text(dirty, "not committed anywhere\n");
+    expect_exit(naula("release", "beta", "--root", root, NULL), 0, "release beta");
+    expect_absent(root, "beta/app", "beta's app link");
+    expect_absent(root, "beta/docs", "beta's docs link");
+    CHECK(exists(dirty));
+    expect_path(root, "docs", 1, "alpha's docs link stays");
+}
+
+static void clone_names_the_folder_by_twelve_hex(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char checkout[128];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("clone", "forge:301", "--root", root, NULL), 0, "clone gamma's thing");
+    checkout_of(gamma, checkout, NULL);
+    expect_path(root, checkout, 0, "the checkout named by twelve hex");
+    expect_path(root, "thing", 1, "the link by name");
+    char path[1200];
+    char expected[80];
+    snprintf(path, sizeof path, "%s/%s", root, checkout);
+    snprintf(expected, sizeof expected, "naula::git:%s", gamma);
+    const char *arguments[] = {"git", "remote", "get-url", "origin", NULL};
+    naula_run_result result;
+    if (run_in(path, arguments, NULL, &result)) {
+        result.output[strcspn(result.output, "\r\n")] = '\0';
+        check_text(result.output, expected, "the remote names the id");
+        naula_run_result_release(&result);
+    }
+    expect_exit(naula("sync", "--root", root, NULL), 0, "a sync after the clone");
+    expect_output("clone ", 0, "the kept repo is not cloned again");
+}
+
+typedef struct test_entry {
+    const char *name;
+    void (*run)(void);
+} test_entry;
+
+static const test_entry tests[] = {
+    {"check_refuses_a_rebased_root", check_refuses_a_rebased_root},
+    {"check_warns_on_a_narrow_at_and_prints_the_line", check_warns_on_a_narrow_at_and_prints_the_line},
+    {"check_warns_on_a_url_dependency", check_warns_on_a_url_dependency},
+    {"check_refuses_an_owner_repo_literal_outside_exempt_places",
+     check_refuses_an_owner_repo_literal_outside_exempt_places},
+    {"siblings_clones_nested_paths", siblings_clones_nested_paths},
+    {"siblings_refuses_a_copy", siblings_refuses_a_copy},
+    {"sync_is_a_no_op_on_a_laid_out_root", sync_is_a_no_op_on_a_laid_out_root},
+    {"hold_adds_an_org_and_lays_it_out", hold_adds_an_org_and_lays_it_out},
+    {"release_removes_an_orgs_links_but_never_a_dirty_clone", release_removes_an_orgs_links_but_never_a_dirty_clone},
+    {"clone_names_the_folder_by_twelve_hex", clone_names_the_folder_by_twelve_hex},
+};
+
+int main(int count, char **values) {
+    naula_json_use_allocator();
+    if (count != 2) {
+        fprintf(stderr, "usage: cli_test <test name>\n");
+        return 2;
+    }
+    for (size_t index = 0; index < sizeof tests / sizeof tests[0]; index++) {
+        if (strcmp(values[1], tests[index].name) == 0) {
+            case_number = index;
+            tests[index].run();
+            naula_run_result_release(&here.last);
+            return check_summary(values[1]);
+        }
+    }
+    fprintf(stderr, "no test named %s\n", values[1]);
+    return 2;
+}

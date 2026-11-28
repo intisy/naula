@@ -126,3 +126,7 @@ target_link_libraries(layout_apply_test PRIVATE naula_test_hooks naula_allocator
 # Every allocation and every crash boundary is a full run with its disk flushes, which takes minutes on CI runners.
 set_tests_properties(layout_apply_test PROPERTIES TIMEOUT 900)
 target_compile_definitions(layout_apply_test PRIVATE NAULA_TEST_HOOKS NAULA_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}")
+
+if(NAULA_COMMAND_LINE)
+    add_subdirectory(cli)
+endif()
