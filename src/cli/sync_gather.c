@@ -880,68 +880,109 @@ static void judge_empties(sync_model *model) {
     }
 }
 
-/** Whether another repo this run read, laid out or skipped as a copy, carries the repo's id. */
-static int is_contested(const sync_model *model, const sync_repo *repo) {
-    for (size_t index = 0; index < model->repo_count; index++) {
-        if (&model->repos[index] != repo && naula_id_compare(&model->repos[index].layout.id, &repo->layout.id) == 0) {
-            return 1;
-        }
+/** One repo of this run that carries an id, laid out or skipped as a copy, with where its home is. */
+typedef struct id_carrier {
+    const naula_id *id;
+    const char *name;
+    char *place;
+} id_carrier;
+
+static naula_status list_carriers(const sync_model *model, id_carrier **carriers, size_t *count) {
+    size_t capacity = model->repo_count + model->copy_count;
+    *count = 0;
+    *carriers = capacity == 0 ? NULL : naula_memory_allocate(capacity * sizeof **carriers);
+    if (capacity > 0 && *carriers == NULL) {
+        return NAULA_OUT_OF_MEMORY;
     }
-    return holds_as_copy(model, &repo->layout.id);
+    for (size_t index = 0; index < model->repo_count; index++) {
+        const sync_repo *repo = &model->repos[index];
+        id_carrier carrier = {&repo->layout.id, repo->layout.name, naula_place_text(&repo->place)};
+        if (carrier.place == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        (*carriers)[(*count)++] = carrier;
+    }
+    for (size_t index = 0; index < model->copy_count; index++) {
+        const sync_copy *copy = &model->copies[index];
+        id_carrier carrier = {&copy->id, copy->name, copy_text(copy->place)};
+        if (carrier.place == NULL) {
+            return NAULA_OUT_OF_MEMORY;
+        }
+        (*carriers)[(*count)++] = carrier;
+    }
+    return NAULA_OK;
 }
 
-/** A link naula recorded to `path` for a repo of another name; NULL when there is none, or one is `name`'s own. */
-static const naula_layout_link *recorded_for_another(const sync_model *model, const char *path, const char *name) {
-    const naula_layout_link *other = NULL;
+static void release_carriers(id_carrier *carriers, size_t count) {
+    for (size_t index = 0; index < count; index++) {
+        naula_memory_release(carriers[index].place);
+    }
+    naula_memory_release(carriers);
+}
+
+/** A link naula recorded making to a checkout of `id`, whatever name it carries; NULL when there is none. */
+static const naula_layout_link *recorded_link_to(const sync_model *model, const naula_id *id) {
     for (size_t index = 0; index < model->links.count; index++) {
         const naula_layout_link *link = &model->links.links[index];
-        if (link->made_by_naula && link->target != NULL && same_path(link->target, path)) {
-            if (is_named(link, name)) {
-                return NULL;
-            }
-            other = link;
+        if (link->made_by_naula && link->target != NULL && is_checkout_of(link->target, id)) {
+            return link;
         }
     }
-    return other;
+    return NULL;
 }
 
-static void refuse_claimed(sync_model *model, const sync_repo *repo, const sync_checkout *checkout,
-                           const naula_layout_link *other) {
-    char *text = naula_place_text(&repo->place);
-    naula_refusal refusal = cli_fresh_refusal();
-    naula_refuse(&refusal, "checkout-claimed",
-                 "find which repo the checkout is for and fix the other's id or homes, or remove the link by hand",
-                 "%s carries the id of %s, which naula linked as %s for another repo of that id",
-                 repo->layout.name == NULL ? "(repo)" : repo->layout.name, checkout->path, other->path);
-    record_unread(model, "checkout-claimed", text == NULL ? "(home)" : text, &refusal);
-    naula_memory_release(text);
+static size_t first_carrier_of(const id_carrier *carriers, size_t count, const naula_id *id) {
+    for (size_t index = 0; index < count; index++) {
+        if (naula_id_compare(carriers[index].id, id) == 0) {
+            return index;
+        }
+    }
+    return count;
 }
 
 /**
- * Gives each repo the checkout of its id. Where another repo of this run carries the same id, a checkout naula linked
- * goes only to the repo that link was made for, and any other repo taking it refuses, so a fork of our id never takes
- * our checkout and link. A repo alone with its id takes its checkout under a new name too, which is how a rename moves.
+ * An id two repos of this run carry, where naula recorded a link to that id's checkout, refuses the whole run: the
+ * record cannot say which of them the link and checkout are for, so laying either out could unlink or move ours.
  */
+static naula_status judge_contested_ids(sync_model *model) {
+    id_carrier *carriers = NULL;
+    size_t count = 0;
+    naula_status status = list_carriers(model, &carriers, &count);
+    for (size_t index = 0; status == NAULA_OK && index < count; index++) {
+        const id_carrier *first = &carriers[index];
+        if (first->id->kind != NAULA_ID_GIT || first_carrier_of(carriers, count, first->id) != index) {
+            continue;
+        }
+        size_t other = first_carrier_of(carriers + index + 1, count - index - 1, first->id) + index + 1;
+        const naula_layout_link *link = other < count ? recorded_link_to(model, first->id) : NULL;
+        if (link == NULL) {
+            continue;
+        }
+        naula_refusal refusal = cli_fresh_refusal();
+        naula_refuse(&refusal, "id-contested",
+                     "remove or rename the repo.json of the repo that is not ours, or release the account holding it",
+                     "%s at %s and %s at %s carry the id git:%s, and naula linked %s to its checkout",
+                     first->name == NULL ? "(repo)" : first->name, first->place,
+                     carriers[other].name == NULL ? "(repo)" : carriers[other].name, carriers[other].place,
+                     first->id->commit, link->path);
+        record_unread(model, "id-contested", first->place, &refusal);
+    }
+    release_carriers(carriers, count);
+    return status;
+}
+
 static naula_status place_checkouts(sync_model *model) {
     for (size_t index = 0; index < model->repo_count; index++) {
         sync_repo *repo = &model->repos[index];
         for (size_t checkout = 0; checkout < model->checkout_count; checkout++) {
-            const sync_checkout *found = &model->checkouts[checkout];
-            if (naula_id_compare(&found->id, &repo->layout.id) != 0) {
-                continue;
-            }
-            const naula_layout_link *other =
-                is_contested(model, repo) ? recorded_for_another(model, found->path, repo->layout.name) : NULL;
-            if (other != NULL) {
-                refuse_claimed(model, repo, found, other);
+            if (naula_id_compare(&model->checkouts[checkout].id, &repo->layout.id) == 0) {
+                repo->layout.current_path = copy_text(model->checkouts[checkout].path);
+                repo->layout.clean_and_pushed = model->checkouts[checkout].clean_and_pushed;
+                if (repo->layout.current_path == NULL) {
+                    return NAULA_OUT_OF_MEMORY;
+                }
                 break;
             }
-            repo->layout.current_path = copy_text(found->path);
-            repo->layout.clean_and_pushed = found->clean_and_pushed;
-            if (repo->layout.current_path == NULL) {
-                return NAULA_OUT_OF_MEMORY;
-            }
-            break;
         }
     }
     return NAULA_OK;
@@ -975,6 +1016,9 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
     if (status == NAULA_OK) {
         judge_copies(model);
         judge_empties(model);
+        status = judge_contested_ids(model);
+    }
+    if (status == NAULA_OK) {
         status = place_checkouts(model);
     }
     if (status == NAULA_OK && model->unread_count > 0) {

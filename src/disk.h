@@ -76,6 +76,8 @@ naula_status disk_file_remove(const char *root, const char *below, disk_walk_pur
  * The file is read through the one open the walk reached and removed in that same walked folder, by its handle on
  * Windows and on POSIX by its name once that name still names the file read, so nothing swapped in between the read
  * and the removal is removed. A link, a folder or anything else there is refused; NAULA_NOT_FOUND when nothing is.
+ * On POSIX an edit made in place to that same file between the compare and the unlink is lost with it, a window no
+ * POSIX call closes; a file renamed in over the name is caught and kept.
  */
 naula_status disk_file_remove_if_holding(const char *root, const char *below, const uint8_t *bytes, size_t length,
                                          disk_walk_purpose purpose, int *holding, unsigned long *error);

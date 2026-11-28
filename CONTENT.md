@@ -51,8 +51,12 @@ A C library and command line that lays out, identifies and renames git repos fro
   clone or file is touched, and so does a refused plan. A repo a home it lists disowns, or a fork
   of the repo holding its id, is a definite answer and skipped with a warning (`copy-skipped`), unless naula recorded a
   link for it, one carrying its name to a checkout of its id: then it refuses (`copy-linked`), since it may be our own
-  repo with a mistake in its homes, whatever other repo holds the id. A checkout naula linked for one repo never goes
-  to another repo of the same id: that refuses (`checkout-claimed`), so a fork of our id cannot take our checkout. An
+  repo with a mistake in its homes, whatever other repo holds the id. So a home that forges `disowned-by` against our
+  own repo refuses the whole sync until our repo's homes are fixed: it fails closed, by design. An id two repos of the
+  run carry, laid out or skipped as copies, refuses the whole run (`id-contested`, naming both and the link) when naula
+  recorded a link to that id's checkout, whatever its name, so a fork of our id never takes our checkout or link; with
+  no such link the two are left where they are (`id-collision`), and the plan never removes a recorded link to a
+  checkout two repos' ids name. An
   empty repo with no branch is unadopted, a note, unless naula linked a repo of its name to a checkout no repo of the
   run holds: then it refuses (`empty-linked`) rather than remove that link. From the first write on, the run holds the
   root's lock: it writes

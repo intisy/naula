@@ -51,7 +51,9 @@ foreach(name IN ITEMS check_refuses_a_rebased_root check_warns_on_a_narrow_at_an
         init_and_sync_take_a_root_with_a_trailing_separator sync_skips_a_copy_a_home_disowns
         sync_refuses_a_copy_naula_linked sync_notes_an_empty_repo_as_unadopted
         sync_keeps_a_linked_copys_checkout_from_a_fork_of_its_id sync_refuses_a_fork_taking_a_checkout_naula_linked
-        sync_refuses_an_empty_repo_naula_linked release_keeps_an_edited_one_line_rules_file)
+        sync_refuses_an_empty_repo_naula_linked release_keeps_an_edited_one_line_rules_file
+        sync_refuses_a_fork_of_our_name_in_another_held_account
+        sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy)
     add_test(NAME cli/${name} COMMAND cli_test ${name})
     set_tests_properties(cli/${name} PROPERTIES TIMEOUT 300 ENVIRONMENT "${NAULA_CLI_ENVIRONMENT}")
 endforeach()

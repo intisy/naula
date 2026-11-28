@@ -1349,20 +1349,31 @@ static void sync_takes_the_lock_before_cloning(void) {
  * Our tool lists a second home in zeta, whose repo of the same id does not list it back, so the tool is disowned; a
  * self-listing fork of the tool's id, `fork_name`, sits in alpha, which the root holds.
  */
+static void make_tool_disowned_by_zeta(const char *tool_name);
+
 static void make_tool_disowned_beside_a_fork(const char *tool_name, const char *fork_name) {
     char tool[1024];
     char fork[1024];
-    char zeta[1024];
     char url[1100];
     path_in(tool, "alpha-tool");
     path_in(fork, "alpha-fork");
-    path_in(zeta, "zeta-tool");
     snprintf(url, sizeof url, "file://%s", tool);
     git(NULL, "clone", "--quiet", url, fork, NULL);
     char fork_file[TEXT_SIZE];
     app_file(fork_file, fork_name, "alpha", NULL);
     commit_file("alpha-fork", "repo.json", fork_file);
     serve(103, "alpha", fork_name, "alpha-fork", NULL);
+    make_tool_disowned_by_zeta(tool_name);
+}
+
+/** Our tool lists a second home in zeta, whose repo of the same id and name does not list it back. */
+static void make_tool_disowned_by_zeta(const char *tool_name) {
+    char tool[1024];
+    char zeta[1024];
+    char url[1100];
+    path_in(tool, "alpha-tool");
+    path_in(zeta, "zeta-tool");
+    snprintf(url, sizeof url, "file://%s", tool);
     git(NULL, "clone", "--quiet", url, zeta, NULL);
     char zeta_file[TEXT_SIZE];
     app_file(zeta_file, tool_name, "zeta", NULL);
@@ -1429,7 +1440,7 @@ static void sync_refuses_a_fork_taking_a_checkout_naula_linked(void) {
     tool_link_target(root, before, sizeof before);
     make_tool_disowned_beside_a_fork("renamed", "evil");
     expect_exit(naula("sync", "--root", root, NULL), 1, "a fork of our id beside our renamed copy");
-    expect_output("checkout-claimed", 1, "the fork may not take the checkout naula linked");
+    expect_output("id-contested", 1, "the fork may not take the checkout naula linked");
     expect_output("copy-skipped", 1, "the renamed copy has no link of its own");
     expect_output("copy-linked", 0, "a link is never matched by its id alone");
     expect_tool_left_as_it_was(root, before, "the tool keeps its link and checkout");
@@ -1473,6 +1484,76 @@ static void release_keeps_an_edited_one_line_rules_file(void) {
     expect_exit(naula("release", "beta", "--root", root, NULL), 0, "release beta");
     expect_output("rules-file-edited", 1, "the edited import is named");
     expect_path(root, "beta/CLAUDE.md", 0, "the edited import stays");
+}
+
+/** beta, held beside alpha, holds a self-listing fork of alpha's tool under the tool's own name and topic. */
+static void make_fork_of_our_name_in_beta(const char *root) {
+    char tool[1024];
+    char fork[1024];
+    char url[1100];
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    path_in(tool, "alpha-tool");
+    path_in(fork, "beta-tool");
+    snprintf(url, sizeof url, "file://%s", tool);
+    git(NULL, "clone", "--quiet", url, fork, NULL);
+    char fork_file[TEXT_SIZE];
+    app_file(fork_file, "tool", "beta", ",\"topics\":[\"tools\"]");
+    commit_file("beta-tool", "repo.json", fork_file);
+    serve(203, "beta", "tool", "beta-tool", NULL);
+}
+
+static void expect_checkout_where_it_was(const char *root, const char *label) {
+    char tool[1024];
+    char tool_root[65];
+    char checkout[128];
+    path_in(tool, "alpha-tool");
+    root_commit(tool, tool_root);
+    checkout_of(tool_root, checkout, NULL);
+    expect_path(root, checkout, 0, label);
+}
+
+static void sync_refuses_a_fork_of_our_name_in_another_held_account(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char before[1100];
+    char after[1100];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    tool_link_target(root, before, sizeof before);
+    make_fork_of_our_name_in_beta(root);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a fork of our name and id in another held account");
+    expect_output("id-contested", 1, "the contested id refuses");
+    expect_output("unlink ", 0, "no link is removed");
+    tool_link_target(root, after, sizeof after);
+    check_text(after, before, "the tool keeps its link");
+    expect_checkout_where_it_was(root, "the tool keeps its checkout");
+}
+
+static void sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char before[1100];
+    char after[1100];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    tool_link_target(root, before, sizeof before);
+    make_fork_of_our_name_in_beta(root);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a fork of our name and id in another held account");
+    make_tool_disowned_by_zeta("tool");
+    expect_exit(naula("sync", "--root", root, NULL), 1, "our repo made a copy beside the fork");
+    expect_output("copy-linked", 1, "our linked copy refuses");
+    expect_output("id-contested", 1, "and so does the contested id");
+    expect_output("move ", 0, "nothing moves");
+    expect_output("unlink ", 0, "no link is removed");
+    tool_link_target(root, after, sizeof after);
+    check_text(after, before, "the tool keeps its link");
+    expect_checkout_where_it_was(root, "the tool keeps its checkout");
 }
 
 typedef struct test_entry {
@@ -1520,6 +1601,10 @@ static const test_entry tests[] = {
     {"sync_refuses_a_fork_taking_a_checkout_naula_linked", sync_refuses_a_fork_taking_a_checkout_naula_linked},
     {"sync_refuses_an_empty_repo_naula_linked", sync_refuses_an_empty_repo_naula_linked},
     {"release_keeps_an_edited_one_line_rules_file", release_keeps_an_edited_one_line_rules_file},
+    {"sync_refuses_a_fork_of_our_name_in_another_held_account",
+     sync_refuses_a_fork_of_our_name_in_another_held_account},
+    {"sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy",
+     sync_moves_nothing_when_our_repo_beside_a_fork_of_its_name_is_made_a_copy},
 };
 
 int main(int count, char **values) {
