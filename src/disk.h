@@ -219,7 +219,14 @@ naula_status disk_real_folder(const char *path, char **real, unsigned long *erro
 /** Whether a change refused with `error` because its walk reached a folder mounted from elsewhere. */
 int disk_error_is_mount(unsigned long error);
 
-/** Whether a DISK_FOR_PLAN_STEP walk refused with `error` for want of a folder's mount id, which only Linux does. */
+/**
+ * The error a walk answers when it could read no mount id for a folder it needs one for, which only Linux does. It
+ * lies above every errno value and every Windows system error code, so no system call answers it and a call the
+ * system does not support is never taken for it.
+ */
+#define DISK_ERROR_MOUNT_UNVERIFIABLE ((1UL << 30) + 1UL)
+
+/** Whether a walk refused with `error` for want of a folder's mount id: DISK_ERROR_MOUNT_UNVERIFIABLE. */
 int disk_error_is_mount_unverifiable(unsigned long error);
 
 /** The system's text for `error`, for a refusal's detail, cut to fit `text`. */

@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3046,6 +3047,23 @@ static void a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused(void) {
         finish("mount-unverifiable");
     }
 }
+
+/** A file system that does not support a call naula makes is a failed change with the system's text, not a mount. */
+static void a_change_the_system_does_not_support_is_refused_as_a_change(void) {
+    fresh("unsupported");
+    make_folder(at("org"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/made"), NULL, NULL);
+    naula_disk_test_fail_folder_make("made", ENOTSUP);
+    naula_status status = apply_plan();
+    naula_disk_test_fail_folder_make(NULL, 0);
+    char system_text[64];
+    snprintf(system_text, sizeof system_text, "(errno %d)", ENOTSUP);
+    CHECK(refused_with(status, "change-refused"));
+    CHECK(strstr(refusal.detail, system_text) != NULL);
+    CHECK(kind_at(at("org/made")) == 0);
+    finish("unsupported");
+}
 #endif
 
 #ifndef _WIN32
@@ -3507,6 +3525,7 @@ static const named_test TESTS[] = {
     {"a_mount_above_the_clone_stops_the_removal", a_mount_above_the_clone_stops_the_removal},
     {"every_change_refuses_a_mount_above_it", every_change_refuses_a_mount_above_it},
     {"a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused", a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused},
+    {"a_change_the_system_does_not_support_is_refused_as_a_change", a_change_the_system_does_not_support_is_refused_as_a_change},
 #endif
 };
 

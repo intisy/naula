@@ -1081,8 +1081,7 @@ int disk_error_is_mount(unsigned long error) {
 }
 
 int disk_error_is_mount_unverifiable(unsigned long error) {
-    (void)error;
-    return 0;
+    return error == DISK_ERROR_MOUNT_UNVERIFIABLE;
 }
 
 void disk_error_text(unsigned long error, char *text, size_t capacity) {

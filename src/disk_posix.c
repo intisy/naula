@@ -38,6 +38,28 @@ static naula_status refused(unsigned long *error) {
     return NAULA_REFUSED;
 }
 
+#ifdef NAULA_TEST_HOOKS
+static const char *test_failing_name;
+static int test_failing_error;
+
+void naula_disk_test_fail_folder_make(const char *name, int error) {
+    test_failing_name = name;
+    test_failing_error = error;
+}
+
+static int make_folder_at(int folder, const char *name) {
+    if (test_failing_name != NULL && strcmp(name, test_failing_name) == 0) {
+        errno = test_failing_error;
+        return -1;
+    }
+    return mkdirat(folder, name, 0777);
+}
+#else
+static int make_folder_at(int folder, const char *name) {
+    return mkdirat(folder, name, 0777);
+}
+#endif
+
 static char *copy_of(const char *text, size_t length) {
     char *copy = naula_memory_allocate(length + 1);
     if (copy != NULL) {
@@ -81,7 +103,7 @@ naula_status disk_folder_make(const char *root, const char *below, disk_walk_pur
     *error = 0;
     disk_walk walk;
     naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
-    if (status == NAULA_OK && mkdirat(walk.parent, walk.name, 0777) != 0) {
+    if (status == NAULA_OK && make_folder_at(walk.parent, walk.name) != 0) {
         status = refused(error);
     }
     if (status == NAULA_OK) {
@@ -325,8 +347,10 @@ static naula_status judge_mount(mount_judge *judge, const mount_identity *found,
     }
 #ifdef __linux__
     if (!judge->root.has_mount || !found->has_mount) {
-        return judge->needs_mount_id ? refuse_mount(judge, DISK_REMOVAL_MOUNT_UNVERIFIABLE, ENOTSUP, error)
-                                     : NAULA_OK;
+        if (!judge->needs_mount_id) {
+            return NAULA_OK;
+        }
+        return refuse_mount(judge, DISK_REMOVAL_MOUNT_UNVERIFIABLE, DISK_ERROR_MOUNT_UNVERIFIABLE, error);
     }
     if (found->mount != judge->root.mount) {
         return refuse_mount(judge, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
@@ -1009,16 +1033,13 @@ int disk_error_is_mount(unsigned long error) {
 }
 
 int disk_error_is_mount_unverifiable(unsigned long error) {
-#ifdef __linux__
-    return error == ENOTSUP;
-#else
-    (void)error;
-    return 0;
-#endif
+    return error == DISK_ERROR_MOUNT_UNVERIFIABLE;
 }
 
 void disk_error_text(unsigned long error, char *text, size_t capacity) {
-    if (capacity > 0) {
+    if (capacity > 0 && disk_error_is_mount_unverifiable(error)) {
+        snprintf(text, capacity, "this system gives no mount id for a folder on the way");
+    } else if (capacity > 0) {
         snprintf(text, capacity, "%s (errno %lu)", strerror((int)error), error);
     }
 }
