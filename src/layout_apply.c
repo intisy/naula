@@ -26,6 +26,8 @@ static const char *const DEEP_FIX = "remove the folder by hand, or stop the prog
 static const char *const BANK_FIX = "merge or remove one of the two memory banks by hand, then run naula sync again";
 static const char *const CHANGE_MOUNT_FIX = "unmount what is mounted at or above the path under the root, then run "
                                             "naula sync again to resume";
+static const char *const CHANGE_UNVERIFIABLE_FIX = "make the change by hand once nothing is mounted above the path, or "
+                                                   "run naula on Linux 5.8 or later, then run naula sync again";
 
 /** `memory_banks` is the real folder options->memory_banks names, NULL when there is none. */
 typedef struct applier {
@@ -634,6 +636,13 @@ static naula_status decide(applier *applying, const naula_layout_step *step, int
 
 static naula_status refuse_change(applier *applying, naula_status status, const char *what, const char *path,
                                   unsigned long error) {
+    if (status == NAULA_REFUSED && disk_error_is_mount_unverifiable(error)) {
+        naula_refuse(applying->refusal, "mount-unverifiable", CHANGE_UNVERIFIABLE_FIX,
+                     "%s %s: this system gives naula no mount id for a folder on the way to it, so a bind mount "
+                     "there cannot be told apart",
+                     what, path);
+        return NAULA_REFUSED;
+    }
     if (status == NAULA_REFUSED && disk_error_is_mount(error)) {
         naula_refuse(applying->refusal, "mount-inside", CHANGE_MOUNT_FIX,
                      "%s %s: it is, or lies below, a folder mounted there from elsewhere, which naula never changes",
@@ -655,7 +664,7 @@ static naula_status perform_move(applier *applying, const naula_layout_step *ste
     int held = 0;
     if (decided->change) {
         naula_status status = disk_move(applying->root, below_root(applying, step->path),
-                                        below_root(applying, step->target), &held, &error);
+                                        below_root(applying, step->target), DISK_FOR_PLAN_STEP, &held, &error);
         if (status == NAULA_REFUSED && held) {
             return apply_refuse_disk(applying->refusal, "folder-held", HELD_FIX, "cannot move", step->path, error);
         }
@@ -674,9 +683,9 @@ static naula_status perform_move(applier *applying, const naula_layout_step *ste
     const char *bank_to = apply_below(applying->memory_banks, decided->bank_to);
     naula_status status = NAULA_REFUSED;
     if (bank_from != NULL && bank_to != NULL) {
-        status = disk_move(applying->memory_banks, bank_from, bank_to, &held, &error);
+        status = disk_move(applying->memory_banks, bank_from, bank_to, DISK_FOR_PLAN_STEP, &held, &error);
     }
-    if (status == NAULA_REFUSED && disk_error_is_mount(error)) {
+    if (status == NAULA_REFUSED && (disk_error_is_mount(error) || disk_error_is_mount_unverifiable(error))) {
         return refuse_change(applying, status, "cannot rename the memory bank", decided->bank_from, error);
     }
     return status == NAULA_REFUSED ? apply_refuse_disk(applying->refusal, "memory-bank-move-failed", HELD_FIX,
@@ -687,7 +696,8 @@ static naula_status perform_move(applier *applying, const naula_layout_step *ste
 static naula_status perform_make_link(applier *applying, const naula_layout_step *step, const decision *decided) {
     unsigned long error = 0;
     if (decided->replaces_link) {
-        naula_status status = disk_link_remove(applying->root, below_root(applying, step->path), &error);
+        naula_status status =
+            disk_link_remove(applying->root, below_root(applying, step->path), DISK_FOR_PLAN_STEP, &error);
         if (status != NAULA_OK) {
             return refuse_change(applying, status, "cannot remove the link", step->path, error);
         }
@@ -696,7 +706,8 @@ static naula_status perform_make_link(applier *applying, const naula_layout_step
             return NAULA_REFUSED;
         }
     }
-    naula_status status = disk_link_make(applying->root, below_root(applying, step->path), step->target, &error);
+    naula_status status =
+        disk_link_make(applying->root, below_root(applying, step->path), step->target, DISK_FOR_PLAN_STEP, &error);
     return refuse_change(applying, status, "cannot make the link", step->path, error);
 }
 
@@ -745,18 +756,18 @@ static naula_status perform(applier *applying, const naula_layout_step *step, co
     }
     switch (step->kind) {
     case NAULA_MAKE_FOLDER:
-        status = disk_folder_make(applying->root, below_root(applying, step->path), &error);
+        status = disk_folder_make(applying->root, below_root(applying, step->path), DISK_FOR_PLAN_STEP, &error);
         return refuse_change(applying, status, "cannot make", step->path, error);
     case NAULA_WRITE_FILE:
         status = disk_file_replace(applying->root, below_root(applying, step->path), (const uint8_t *)step->content,
-                                   strlen(step->content), &error);
+                                   strlen(step->content), DISK_FOR_PLAN_STEP, &error);
         return refuse_change(applying, status, "cannot write", step->path, error);
     case NAULA_MAKE_LINK:
         return perform_make_link(applying, step, decided);
     case NAULA_MOVE_CHECKOUT:
         return perform_move(applying, step, decided);
     case NAULA_REMOVE_LINK:
-        status = disk_link_remove(applying->root, below_root(applying, step->path), &error);
+        status = disk_link_remove(applying->root, below_root(applying, step->path), DISK_FOR_PLAN_STEP, &error);
         return refuse_change(applying, status, "cannot remove the link", step->path, error);
     case NAULA_REMOVE_CLONE:
         applying->step_changed = 1;

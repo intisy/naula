@@ -366,7 +366,8 @@ static naula_status write_root_file(const char *root, const naula_root_file *fil
     }
     unsigned long error = 0;
     if (status == NAULA_OK) {
-        status = disk_file_replace(root, ROOT_FILE_NAME, (const uint8_t *)terminated, strlen(terminated), &error);
+        status = disk_file_replace(root, ROOT_FILE_NAME, (const uint8_t *)terminated, strlen(terminated),
+                                   DISK_FOR_NAULA_FILE, &error);
         if (status == NAULA_REFUSED) {
             status = apply_refuse_disk(refusal, "root-file-unwritable", ROOT_FILE_FIX, "cannot write", path, error);
         }

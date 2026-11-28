@@ -53,10 +53,11 @@ typedef struct disk_walk {
 
 /**
  * Opens `root`, then every component of `below` but the last relative to the handle before it, never through a
- * reparse point, refusing a component that is empty, `.` or `..`. Release `walk` with disk_walk_release whatever this
- * answers.
+ * reparse point, refusing a component that is empty, `.` or `..`. `purpose` changes nothing here, since a mounted
+ * folder is a reparse point. Release `walk` with disk_walk_release whatever this answers.
  */
-naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error);
+naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk_purpose purpose, disk_walk *walk,
+                                 unsigned long *error);
 void disk_walk_release(disk_walk *walk);
 
 /**
