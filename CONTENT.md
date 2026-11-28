@@ -38,7 +38,9 @@ A C library and command line that lays out, identifies and renames git repos fro
   configuration or program (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXEC_PATH`, `GIT_SSH` and the like) removed. One home's
   fetch is stopped and refused past 10 minutes (`fetch-too-slow`) or past 1 GiB of history (`fetch-too-large`), however
   slowly the home trickles; `NAULA_FETCH_TIME_LIMIT_MS` and `NAULA_FETCH_BYTE_LIMIT` set other limits. Exit 0 done,
-  1 refused (code, detail and fix on standard error), 2 usage; `resolve` and `check` take `--json`.
+  1 refused (code, detail and fix on standard error), 2 usage; `resolve` and `check` take `--json`. An acceptance the
+  resolver asks for is never remembered: each run names it and `--accept-primary` or `--accept-number` grants it for
+  that run.
 - **What a refused layout command leaves:** `init`, `hold`, `release`, `sync` and `clone` read every home first, and
   a repo of a held account or kept in `extra` that gets no definite answer (unreachable, refused, without its branch,
   with an invalid `repo.json`, unconfirmed) refuses the whole run as `repos-unread`, naming each, before any link,
@@ -51,8 +53,7 @@ A C library and command line that lays out, identifies and renames git repos fro
   clone, so a refused dependency clones nothing; a clone that then fails (a disk error, a folder git will not clone
   into) leaves the siblings already cloned. A link or reparse point anywhere in `siblings/<path>` below the repo, the
   `siblings` folder included, is refused, asked again right before each clone. Two paths that differ only in case are
-  one path. An acceptance the resolver asks for is never remembered: each run names it and `--accept-primary` or
-  `--accept-number` grants it for that run.
+  one path.
 - **`check`** refuses a shallow checkout (`fetch-depth: 0` in actions/checkout), takes a `--previous` of all zeros as
   no previous tip, and fails as `too-many-findings` rather than stop counting past 255 findings. A home that holds the
   name is this repo when the id confirms there, or, for a host repo with no format 2 `repo.json` yet, when its own
