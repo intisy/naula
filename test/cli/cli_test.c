@@ -881,6 +881,13 @@ static void siblings_stops_a_fetch_past_its_byte_limit(void) {
     here.environment[0] = "NAULA_FETCH_BYTE_LIMIT=1";
     expect_exit(naula("siblings", "--repo", app, NULL), 1, "a fetch past its byte limit");
     expect_output("fetch-too-large", 1, "the byte limit");
+    char cache[1100];
+    snprintf(cache, sizeof cache, "%s/cache", here.folder);
+    const char *forget[] = {NAULA_CMAKE, "-E", "remove_directory", cache, NULL};
+    naula_run_result result;
+    if (run_in(NULL, forget, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
     here.environment[0] = "NAULA_FETCH_TIME_LIMIT_MS=1";
     expect_exit(naula("siblings", "--repo", app, NULL), 1, "a fetch past its time limit");
     expect_output("fetch-too-slow", 1, "the time limit");
