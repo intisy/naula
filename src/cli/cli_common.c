@@ -26,7 +26,7 @@ static const char usage_text[] =
     "  retire <home> [--repo <dir>]         archive an old home once every dependent reaches the new one\n"
     "A home is a place: github:<number>, gitea@<host>:<number>, web:<domain> or a git url.\n"
     "Options: --root <folder>, --json (resolve, check), --offline, --accept-primary <place>,\n"
-    "  --accept-home <provider>[@<host>]:<account> (sync, new: create or move a repo into an account no held org owns),\n"
+    "  --accept-home <provider>[@<host>]:<account> (sync, new: write to a home in an account no held org owns),\n"
     "  --accept-number <number>. Exit 0 done, 1 refused, 2 usage.\n";
 
 void cli_usage(void) {

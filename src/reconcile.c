@@ -16,6 +16,7 @@
 
 #define HISTORY_LIMIT 64
 #define HINT_LIMIT 32
+#define ACCEPTED_LIMIT 64
 #define LINE_SIZE 1400
 
 static const char *const TEMPORARY_REFS = "refs/naula-reconcile/";
@@ -26,6 +27,13 @@ typedef struct home_hint {
     char *account;
     uint64_t number;
 } home_hint;
+
+/** An account a run of this checkout wrote to while it was held or accepted: later runs may write there again. */
+typedef struct accepted_account {
+    char *provider;
+    char *host;
+    char *account;
+} accepted_account;
 
 /** A repo a host holds that shows it is this one: its number, what the provider says, and its own repo.json. */
 typedef struct found_home {
@@ -43,6 +51,8 @@ typedef struct planned_home {
     found_home found;
     char *old_account;
     int failed;
+    int wrote;
+    int moved;
 } planned_home;
 
 typedef struct reconciler {
@@ -57,6 +67,8 @@ typedef struct reconciler {
     size_t history_count;
     home_hint hints[HINT_LIMIT];
     size_t hint_count;
+    accepted_account accepted[ACCEPTED_LIMIT];
+    size_t accepted_count;
     char hint_name[160];
     found_home serving;
     const naula_provider *serving_provider;
@@ -280,6 +292,25 @@ static void read_hints(reconciler *subject) {
             hint->number = (uint64_t)number->valuedouble;
             subject->hint_count += hint->provider != NULL && hint->account != NULL;
         }
+        cJSON_ArrayForEach(entry, cJSON_GetObjectItemCaseSensitive(json, "accepted")) {
+            const cJSON *provider = cJSON_GetObjectItemCaseSensitive(entry, "provider");
+            const cJSON *host = cJSON_GetObjectItemCaseSensitive(entry, "host");
+            const cJSON *account = cJSON_GetObjectItemCaseSensitive(entry, "account");
+            if (subject->accepted_count == ACCEPTED_LIMIT || !cJSON_IsString(provider) || !cJSON_IsString(account)) {
+                continue;
+            }
+            accepted_account *accepted = &subject->accepted[subject->accepted_count];
+            accepted->provider = copy_or_null(provider->valuestring);
+            accepted->host = cJSON_IsString(host) ? copy_or_null(host->valuestring) : NULL;
+            accepted->account = copy_or_null(account->valuestring);
+            if (accepted->provider != NULL && accepted->account != NULL) {
+                subject->accepted_count++;
+            } else {
+                naula_memory_release(accepted->provider);
+                naula_memory_release(accepted->host);
+                naula_memory_release(accepted->account);
+            }
+        }
     }
     cJSON_Delete(json);
     naula_memory_release(bytes);
@@ -294,6 +325,84 @@ static uint64_t hint_for(const reconciler *subject, const char *word, const char
         }
     }
     return 0;
+}
+
+static int is_recorded(const reconciler *subject, const char *word, const char *host, const char *account) {
+    for (size_t index = 0; index < subject->accepted_count; index++) {
+        const accepted_account *accepted = &subject->accepted[index];
+        if (strcmp(accepted->provider, word) == 0 && same_text(accepted->host, host) &&
+            same_text(accepted->account, account)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void account_text(char text[300], const char *word, const char *host, const char *account) {
+    snprintf(text, 300, "%s%s%s:%s", word, host == NULL ? "" : "@", host == NULL ? "" : host, account);
+}
+
+/**
+ * Whether a run may write to a home under this account: an org of the root holds it, the run accepted it, or an
+ * earlier run of this checkout wrote there while it was held or accepted. A home merely found, hinted or listed in
+ * the file's history is none of these.
+ */
+static int account_is_allowed(const reconciler *subject, const char *word, const char *host, const char *account) {
+    const naula_reconcile_options *options = subject->options;
+    for (size_t index = 0; options != NULL && index < options->held_account_count; index++) {
+        const naula_home *held = &options->held_accounts[index];
+        if (held->kind == NAULA_HOME_PROVIDER && strcmp(held->provider, word) == 0 && same_text(held->host, host) &&
+            same_text(held->account, account)) {
+            return 1;
+        }
+    }
+    char text[300];
+    account_text(text, word, host, account);
+    for (size_t index = 0; options != NULL && index < options->accepted_home_count; index++) {
+        if (same_text(options->accepted_homes[index], text)) {
+            return 1;
+        }
+    }
+    return is_recorded(subject, word, host, account);
+}
+
+static naula_status add_accepted(cJSON *accepted, const char *word, const char *host, const char *account) {
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, accepted) {
+        const cJSON *kept_host = cJSON_GetObjectItemCaseSensitive(entry, "host");
+        if (strcmp(cJSON_GetObjectItemCaseSensitive(entry, "provider")->valuestring, word) == 0 &&
+            same_text(cJSON_IsString(kept_host) ? kept_host->valuestring : NULL, host) &&
+            same_text(cJSON_GetObjectItemCaseSensitive(entry, "account")->valuestring, account)) {
+            return NAULA_OK;
+        }
+    }
+    cJSON *added = cJSON_CreateObject();
+    if (added == NULL || !cJSON_AddItemToArray(accepted, added) ||
+        cJSON_AddStringToObject(added, "provider", word) == NULL ||
+        (host != NULL && cJSON_AddStringToObject(added, "host", host) == NULL) ||
+        cJSON_AddStringToObject(added, "account", account) == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    return NAULA_OK;
+}
+
+/** The accounts kept before, and every account this run wrote to, each of them held or accepted when it did. */
+static naula_status add_every_accepted(const reconciler *subject, cJSON *accepted) {
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; status == NAULA_OK && index < subject->accepted_count; index++) {
+        const accepted_account *kept = &subject->accepted[index];
+        status = add_accepted(accepted, kept->provider, kept->host, kept->account);
+    }
+    for (size_t index = 0; status == NAULA_OK && index < subject->planned_count; index++) {
+        const planned_home *home = &subject->planned[index];
+        if (home->wrote) {
+            status = add_accepted(accepted, home->wanted->provider, home->wanted->host, home->wanted->account);
+        }
+        if (status == NAULA_OK && home->moved) {
+            status = add_accepted(accepted, home->wanted->provider, home->wanted->host, home->old_account);
+        }
+    }
+    return status;
 }
 
 static naula_status add_hint(cJSON *homes, const char *word, const char *host, const char *account, uint64_t number) {
@@ -314,7 +423,8 @@ static void write_hints(const reconciler *subject) {
     }
     cJSON *json = cJSON_CreateObject();
     cJSON *homes = json == NULL ? NULL : cJSON_AddArrayToObject(json, "homes");
-    naula_status status = homes == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
+    cJSON *accepted = homes == NULL ? NULL : cJSON_AddArrayToObject(json, "accepted");
+    naula_status status = accepted == NULL ? NAULA_OUT_OF_MEMORY : add_every_accepted(subject, accepted);
     for (size_t index = 0; status == NAULA_OK && index < subject->planned_count; index++) {
         const planned_home *home = &subject->planned[index];
         if (home->found.number != 0 && !home->failed) {
@@ -646,8 +756,9 @@ static naula_status try_hinted_serving(reconciler *subject, const home_hint *hin
 
 /**
  * The first home of the local file found holding this repo, else a hinted home of an account the checkout's history
- * listed, since a checkout not pulled since a transfer still names the old account. A hint for any other account is
- * never a serving home (`serving-unproven`): the file it serves would steer every write.
+ * listed and a run may write to, since a checkout not pulled since a transfer still names the old account. A hint for
+ * any other account is never a serving home (`serving-unproven`): the file it serves would steer every write, and an
+ * account the history listed once and dropped since proves nothing on its own.
  */
 static naula_status find_serving(reconciler *subject, const naula_repo_file *local, naula_refusal *refusal) {
     int located = 0;
@@ -661,7 +772,8 @@ static naula_status find_serving(reconciler *subject, const naula_repo_file *loc
     size_t unproven = 0;
     for (size_t index = 0; status == NAULA_OK && !located && index < subject->hint_count; index++) {
         const home_hint *hint = &subject->hints[index];
-        if (history_lists(subject, hint->provider, hint->host, hint->account)) {
+        if (history_lists(subject, hint->provider, hint->host, hint->account) &&
+            account_is_allowed(subject, hint->provider, hint->host, hint->account)) {
             status = try_hinted_serving(subject, hint, &located, refusal);
         } else {
             unproven++;
@@ -669,8 +781,8 @@ static naula_status find_serving(reconciler *subject, const naula_repo_file *loc
     }
     if (status == NAULA_OK && !located && unproven > 0) {
         naula_refuse(refusal, "serving-unproven", "pull the working branch into the checkout, then run again",
-                     "no home the checkout's repo.json has listed holds %s, and a hint naming another account is not "
-                     "taken as the serving home",
+                     "no home the checkout's repo.json lists holds %s, and a hint serves only for an account its "
+                     "history listed that an org of the root holds or a run accepted",
                      subject->id_text);
         status = NAULA_REFUSED;
     } else if (status == NAULA_OK && !located) {
@@ -821,6 +933,12 @@ static naula_status plan_homes(reconciler *subject, naula_refusal *refusal) {
     return NAULA_OK;
 }
 
+static int is_serving_home(const reconciler *subject, const planned_home *home) {
+    return home->found.number != 0 && home->found.number == subject->serving.number &&
+           strcmp(home->wanted->provider, subject->serving_word) == 0 &&
+           same_text(home->wanted->host, subject->serving_host);
+}
+
 /** Every home found, the serving one aside, must list the serving home in its own repo.json, or it is not ours. */
 static naula_status check_both_ways(reconciler *subject, naula_refusal *refusal) {
     const naula_repository *serving = &subject->serving.repository;
@@ -830,9 +948,7 @@ static naula_status check_both_ways(reconciler *subject, naula_refusal *refusal)
         if (home->found.number == 0) {
             continue;
         }
-        int is_serving = home->found.number == subject->serving.number &&
-                         strcmp(home->wanted->provider, subject->serving_word) == 0 &&
-                         same_text(home->wanted->host, subject->serving_host);
+        int is_serving = is_serving_home(subject, home);
         serving_planned = serving_planned || is_serving;
         if (is_serving) {
             continue;
@@ -860,50 +976,6 @@ static naula_status check_both_ways(reconciler *subject, naula_refusal *refusal)
         naula_refuse(refusal, "primary-not-listed", "list the home in homes, or push the file to the home that is",
                      "the repo.json %s/%s serves does not list it", serving->account, serving->name);
         return NAULA_REFUSED;
-    }
-    return NAULA_OK;
-}
-
-static int target_is_allowed(const reconciler *subject, const naula_home *target, const char *text) {
-    const naula_reconcile_options *options = subject->options;
-    for (size_t index = 0; options != NULL && index < options->held_account_count; index++) {
-        const naula_home *held = &options->held_accounts[index];
-        if (held->kind == NAULA_HOME_PROVIDER && strcmp(held->provider, target->provider) == 0 &&
-            same_text(held->host, target->host) && same_text(held->account, target->account)) {
-            return 1;
-        }
-    }
-    for (size_t index = 0; options != NULL && index < options->accepted_home_count; index++) {
-        if (same_text(options->accepted_homes[index], text)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/**
- * A home to create, or an account to transfer one into, that is neither an account an org of the root holds nor one
- * this run accepted refuses the whole run before anything is sent: whoever can push the file could otherwise name any
- * account and have every branch pushed there, or the repo moved there, with the user's credentials.
- */
-static naula_status check_targets(reconciler *subject, naula_refusal *refusal) {
-    for (size_t index = 0; index < subject->planned_count; index++) {
-        const planned_home *home = &subject->planned[index];
-        if (home->found.number != 0 && home->old_account == NULL) {
-            continue;
-        }
-        const naula_home *target = home->wanted;
-        char text[300];
-        snprintf(text, sizeof text, "%s%s%s:%s", target->provider, target->host == NULL ? "" : "@",
-                 target->host == NULL ? "" : target->host, target->account);
-        if (!target_is_allowed(subject, target, text)) {
-            naula_refuse(refusal, "home-unaccepted",
-                         "if that account is meant to hold the repo, run again with --accept-home <the home named>",
-                         "the file asks to %s %s, an account no org of this root holds and no run accepted; nothing "
-                         "was sent",
-                         home->found.number == 0 ? "create the repo in" : "transfer the repo into", text);
-            return NAULA_REFUSED;
-        }
     }
     return NAULA_OK;
 }
@@ -1052,6 +1124,7 @@ static void rename_home(reconciler *subject, planned_home *home) {
     char *text = place_text(home->wanted->provider, home->wanted->host, home->found.number);
     if (status == NAULA_OK) {
         subject->report->changed++;
+        home->wrote = 1;
         say(subject, "rename %s %s to %s", text == NULL ? "(home)" : text, home->found.repository.name,
             subject->file.name);
         char *name = naula_memory_duplicate_text(subject->file.name);
@@ -1080,6 +1153,8 @@ static void transfer_home(reconciler *subject, planned_home *home) {
     char *text = place_text(home->wanted->provider, home->wanted->host, home->found.number);
     if (status == NAULA_OK) {
         subject->report->changed++;
+        home->wrote = 1;
+        home->moved = 1;
         say(subject, "transfer %s from %s to %s", text == NULL ? "(home)" : text, home->old_account,
             home->wanted->account);
     } else {
@@ -1114,6 +1189,7 @@ static void create_home(reconciler *subject, planned_home *home) {
     home->found.number = number;
     home->found.repository.size = sizeof home->found.repository;
     subject->report->changed++;
+    home->wrote = 1;
     char *text = place_text(home->wanted->provider, home->wanted->host, number);
     say(subject, "create %s %s/%s", text == NULL ? "(home)" : text, home->wanted->account, subject->file.name);
     naula_memory_release(text);
@@ -1162,9 +1238,7 @@ static naula_status fetch_every_ref(reconciler *subject, naula_refusal *refusal)
 
 /** Pushes every branch and tag of the serving home, never forcing: a home ahead of it is reported, never rewound. */
 static void push_home(reconciler *subject, planned_home *home) {
-    int is_serving = home->found.number == subject->serving.number &&
-                     strcmp(home->wanted->provider, subject->serving_word) == 0;
-    if (home->found.number == 0 || is_serving) {
+    if (home->found.number == 0 || is_serving_home(subject, home)) {
         return;
     }
     naula_refusal refusal = fresh_refusal();
@@ -1191,6 +1265,7 @@ static void push_home(reconciler *subject, planned_home *home) {
     }
     char *text = place_text(home->wanted->provider, home->wanted->host, home->found.number);
     if (status == NAULA_OK && result.exit_code == 0) {
+        home->wrote = 1;
         int updated = 0;
         for (const char *line = result.output; line != NULL && *line != '\0';) {
             updated = updated || ((line[0] == '*' || line[0] == ' ' || line[0] == '+') && line[1] == '\t');
@@ -1265,28 +1340,92 @@ static uint32_t differing_members(const naula_metadata *wanted, const naula_meta
     return differing;
 }
 
+/** The members of the file's metadata the home does not show yet: every one it states when the host reads none. */
+static naula_status metadata_differing(const reconciler *subject, const planned_home *home, uint32_t *differing,
+                                       naula_refusal *refusal) {
+    const naula_metadata *wanted = &subject->file.metadata;
+    uint32_t supported = 0;
+    int anonymous = 0;
+    home->provider->describe(home->provider->context, &supported, &anonymous);
+    *differing = wanted->present;
+    if (!(supported & NAULA_OP_READ_METADATA)) {
+        return NAULA_OK;
+    }
+    naula_metadata shown;
+    memset(&shown, 0, sizeof shown);
+    shown.size = sizeof shown;
+    naula_status status = home->provider->read_metadata(home->provider->context, home->wanted->host,
+                                                        home->found.number, home_token(subject, home), &shown, refusal);
+    if (status == NAULA_OK) {
+        *differing = differing_members(wanted, &shown);
+    }
+    naula_metadata_release(&shown);
+    return status;
+}
+
+/**
+ * Whether the run would send the home a write: every home but the serving one is pushed to, and the serving one is
+ * written only to rename it or to change metadata it does not show, which a home that cannot be read counts as.
+ */
+static int home_will_be_written(const reconciler *subject, const planned_home *home) {
+    if (home->found.number == 0 || home->old_account != NULL || !is_serving_home(subject, home) ||
+        needs_rename(subject, home)) {
+        return 1;
+    }
+    if (subject->file.metadata.present == 0) {
+        return 0;
+    }
+    uint32_t differing = 0;
+    naula_refusal ignored = fresh_refusal();
+    return metadata_differing(subject, home, &differing, &ignored) != NAULA_OK || differing != 0;
+}
+
+/**
+ * A home to create, write to or transfer into, or a transfer's source, under an account no run may write to refuses
+ * the whole run before anything is sent: whoever can push the file could otherwise name any account, or pre-create a
+ * repo there holding the id and listing the serving home, and have every branch pushed there with the user's
+ * credentials for as long as the file lists it.
+ */
+static naula_status check_targets(reconciler *subject, naula_refusal *refusal) {
+    for (size_t index = 0; index < subject->planned_count; index++) {
+        const planned_home *home = &subject->planned[index];
+        const naula_home *target = home->wanted;
+        char text[300];
+        if (home->old_account != NULL &&
+            !account_is_allowed(subject, target->provider, target->host, home->old_account)) {
+            account_text(text, target->provider, target->host, home->old_account);
+            naula_refuse(refusal, "transfer-source-unaccepted",
+                         "if the repo there is this one's to move, run again with --accept-home <the home named>",
+                         "the file asks to move the repo found under %s, an account no org of this root holds and "
+                         "no run accepted; nothing was sent",
+                         text);
+            return NAULA_REFUSED;
+        }
+        if (!account_is_allowed(subject, target->provider, target->host, target->account) &&
+            home_will_be_written(subject, home)) {
+            const char *act = home->found.number == 0 ? "create the repo in"
+                              : home->old_account != NULL ? "transfer the repo into"
+                                                          : "write to the home in";
+            account_text(text, target->provider, target->host, target->account);
+            naula_refuse(refusal, "home-unaccepted",
+                         "if that account is meant to hold the repo, run again with --accept-home <the home named>",
+                         "the file asks to %s %s, an account no org of this root holds and no run accepted; nothing "
+                         "was sent",
+                         act, text);
+            return NAULA_REFUSED;
+        }
+    }
+    return NAULA_OK;
+}
+
 static void write_metadata(reconciler *subject, planned_home *home) {
     const naula_metadata *wanted = &subject->file.metadata;
     if (home->found.number == 0 || wanted->present == 0) {
         return;
     }
-    uint32_t supported = 0;
-    int anonymous = 0;
-    home->provider->describe(home->provider->context, &supported, &anonymous);
     naula_refusal refusal = fresh_refusal();
-    uint32_t differing = wanted->present;
-    naula_status status = NAULA_OK;
-    if (supported & NAULA_OP_READ_METADATA) {
-        naula_metadata shown;
-        memset(&shown, 0, sizeof shown);
-        shown.size = sizeof shown;
-        status = home->provider->read_metadata(home->provider->context, home->wanted->host, home->found.number,
-                                               home_token(subject, home), &shown, &refusal);
-        if (status == NAULA_OK) {
-            differing = differing_members(wanted, &shown);
-        }
-        naula_metadata_release(&shown);
-    }
+    uint32_t differing = 0;
+    naula_status status = metadata_differing(subject, home, &differing, &refusal);
     char *text = place_text(home->wanted->provider, home->wanted->host, home->found.number);
     uint32_t applied = 0;
     if (status == NAULA_OK && differing != 0) {
@@ -1297,6 +1436,7 @@ static void write_metadata(reconciler *subject, planned_home *home) {
     }
     if (status == NAULA_OK && applied != 0) {
         subject->report->changed++;
+        home->wrote = 1;
         say(subject, "metadata %s%s%s%s%s", text == NULL ? "(home)" : text,
             (applied & NAULA_METADATA_DESCRIPTION) ? " description" : "",
             (applied & NAULA_METADATA_TOPICS) ? " topics" : "", (applied & NAULA_METADATA_HOMEPAGE) ? " homepage" : "",
@@ -1334,6 +1474,11 @@ static void release_reconciler(reconciler *subject) {
         naula_memory_release(subject->hints[index].provider);
         naula_memory_release(subject->hints[index].host);
         naula_memory_release(subject->hints[index].account);
+    }
+    for (size_t index = 0; index < subject->accepted_count; index++) {
+        naula_memory_release(subject->accepted[index].provider);
+        naula_memory_release(subject->accepted[index].host);
+        naula_memory_release(subject->accepted[index].account);
     }
     for (size_t index = 0; index < subject->planned_count; index++) {
         release_found(&subject->planned[index].found);

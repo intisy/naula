@@ -77,16 +77,20 @@ A C library and command line that lays out, identifies and renames git repos fro
   home and push every branch and tag to it; push to every other home, never forcing; write the metadata the file
   states. Each step compares first, so a rerun after a host refused one converges and changes nothing once the hosts
   match. A home is written to only when its host shows it holds the id and, unless it serves the file, its own
-  `repo.json` lists the serving home, so a copy can neither take writes nor steer them. A home is created, or a repo
-  transferred into an account, only where an org of the root holds that account (its declaring repo's primary lives
-  there) or the run names it with `--accept-home <provider>[@<host>]:<account>`, since whoever can push the file
-  could otherwise have every branch pushed to an account of their choosing. Refused before anything is sent: that
-  (`home-unaccepted`), a home that cannot be heard (`home-unheard`), a name another repo holds (`name-taken`), and a
+  `repo.json` lists the serving home, so a copy can neither take writes nor steer them. A home is written to at all
+  (created, pushed to, renamed, given metadata, or a repo transferred into or out of its account) only where an org of
+  the root holds that account (its declaring repo's primary lives there), where the run names it with
+  `--accept-home <provider>[@<host>]:<account>`, or where an earlier run of the same checkout wrote to it while it was
+  held or accepted, which the hint file keeps as `accepted`; a home merely found, hinted or listed in the history is
+  never accepted by that. Whoever can push the file could otherwise list an account of their choosing, or pre-create a
+  repo there holding the id and listing the serving home, and have every branch pushed there for as long as it is
+  listed. Refused before anything is sent: that (`home-unaccepted`, and `transfer-source-unaccepted` for the account a
+  transfer moves out of), a home that cannot be heard (`home-unheard`), a name another repo holds (`name-taken`), and a
   rename or transfer of a repo others reach by its name (`literal-consumers`: a `workflow_call` workflow, or a Gradle
   build with a release). Where each home was last found is kept as a hint in `<cache>/homes/<hex>-<anchor>.json`, the
   anchor hashing the homes the checkout's own `repo.json` history listed, so a fork's checkout never shares it; a hint
-  is trusted only once the host confirms it again, and serves the file only for an account that history listed
-  (`serving-unproven` otherwise). A host's refusal is reported and the sync answers `reconcile-incomplete` after laying
+  is trusted only once the host confirms it again, and serves the file only for an account that history listed and
+  a run may write to (`serving-unproven` otherwise). A host's refusal is reported and the sync answers `reconcile-incomplete` after laying
   out.
 - **`new`, `adopt`, `add`, `retire`**: `new <org> <name> [--project p]` gives the repo the homes of its org's declaring
   repo, creates only in an account one of that repo's confirmed homes is under or one `--accept-home` names

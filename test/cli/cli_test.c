@@ -1720,7 +1720,7 @@ static void sync_converges_after_a_home_refused_the_rename(void) {
     homes_file(file, "app2", "alpha", "mirror", NULL);
     commit_file("app", "repo.json", file);
     served(502)->refuse_rename = 1;
-    expect_exit(naula("sync", "--root", root, NULL), 1, "a mirror refuses the rename");
+    expect_exit(naula("sync", "--root", root, "--accept-home", "forge:mirror", NULL), 1, "a mirror refuses the rename");
     expect_output("rename-refused", 1, "the refusing home is reported");
     check_text(served(501)->name, "app2", "the primary is renamed");
     check_text(served(502)->name, "app", "the refusing home keeps its name");
@@ -1747,7 +1747,7 @@ static void rename_is_refused_before_push_when_a_home_has_the_name(void) {
     serve(503, "mirror", "taken", "other", NULL);
     homes_file(file, "taken", "alpha", "mirror", NULL);
     commit_file("app", "repo.json", file);
-    expect_exit(naula("sync", "--root", root, NULL), 1, "a home holds the new name");
+    expect_exit(naula("sync", "--root", root, "--accept-home", "forge:mirror", NULL), 1, "a home holds the new name");
     expect_output("name-taken", 1, "the taken name");
     CHECK(log_holds("rename 501 taken") == 0);
     CHECK(log_holds("rename 502 taken") == 0);
@@ -2210,6 +2210,23 @@ static void adopt_refuses_to_invent_an_org(void) {
     expect_text(text, "\"format\":1", 1, "nothing is written");
 }
 
+/** Writes `hints` as the hint file of the checkout of `root_hex` whose history listed the homes `anchor` joins. */
+static void plant_hints(const char *root_hex, const char *anchor, const char *hints) {
+    naula_sha256 hash;
+    char key[NAULA_SHA256_HEX_SIZE];
+    naula_sha256_start(&hash);
+    naula_sha256_add(&hash, (const uint8_t *)anchor, strlen(anchor));
+    naula_sha256_hex(&hash, key);
+    char homes[1100];
+    char name[200];
+    snprintf(homes, sizeof homes, "%s/cache/homes", here.folder);
+    snprintf(name, sizeof name, "%s-%s.json", root_hex, key);
+    make_folder(homes);
+    unsigned long error = 0;
+    CHECK(disk_file_replace(homes, name, (const uint8_t *)hints, strlen(hints), DISK_FOR_NAULA_FILE, &error) ==
+          NAULA_OK);
+}
+
 /**
  * A hint naming an account the checkout's own repo.json never listed, as one another checkout of the id (a fork)
  * would leave behind, is never taken as the serving home.
@@ -2240,23 +2257,163 @@ static void sync_never_serves_from_a_hint_the_checkout_never_listed(void) {
     git(fork_work, "push", "--quiet", "origin", "main", NULL);
     serve(702, "zeta", "app", "fork.git", NULL);
     snprintf(served(501)->name, sizeof served(501)->name, "%s", "renamed-by-hand");
-    naula_sha256 hash;
-    char key[NAULA_SHA256_HEX_SIZE];
-    naula_sha256_start(&hash);
-    naula_sha256_add(&hash, (const uint8_t *)"forge@:alpha", strlen("forge@:alpha"));
-    naula_sha256_hex(&hash, key);
-    char homes[1100];
-    char name[200];
-    static const char hint[] = "{\"homes\":[{\"provider\":\"forge\",\"account\":\"zeta\",\"number\":702}]}";
-    snprintf(homes, sizeof homes, "%s/cache/homes", here.folder);
-    snprintf(name, sizeof name, "%s-%s.json", app_root, key);
-    make_folder(homes);
-    unsigned long error = 0;
-    CHECK(disk_file_replace(homes, name, (const uint8_t *)hint, sizeof hint - 1, DISK_FOR_NAULA_FILE, &error) ==
-          NAULA_OK);
+    plant_hints(app_root, "forge@:alpha", "{\"homes\":[{\"provider\":\"forge\",\"account\":\"zeta\",\"number\":702}]}");
     naula("sync", "--root", root, NULL);
     expect_output("serving-unproven", 1, "the fork's hint is not taken");
     CHECK(log_holds("topics 702 1") == 0);
+}
+
+/** `app` of alpha with `mallory`, a bare clone of it at forge:502, added to its homes in a later commit. */
+static void make_app_mallory_lists(char *root, char *app) {
+    char file[TEXT_SIZE];
+    make_alpha_docs(NULL);
+    homes_file(file, "app", "alpha", NULL, NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    path_in(app, "app");
+    serve(501, "alpha", "app", "app", NULL);
+    init_root(root);
+    bare_clone("app", "mallory.git");
+    serve(502, "mallory", "app", "mallory.git", NULL);
+    homes_file(file, "app", "alpha", "mallory", NULL);
+    commit_file("app", "repo.json", file);
+}
+
+static void expect_same_branch(const char *left, const char *right, int same, const char *label) {
+    char one[65];
+    char other[65];
+    revision(left, "refs/heads/main", one);
+    revision(right, "refs/heads/main", other);
+    if ((strcmp(one, other) == 0) != same) {
+        fprintf(stderr, "%s: main is %s and %s\n", label, one, other);
+        check_failures++;
+    }
+}
+
+/**
+ * Someone who can push the working branch lists their own account and pre-creates a repo there holding our root and
+ * a repo.json listing the serving home: it receives nothing until a run accepts it, and from then on every push.
+ */
+static void sync_pushes_into_a_home_outside_the_root_only_once_accepted(void) {
+    start_case();
+    char root[1024];
+    char app[1024];
+    make_app_mallory_lists(root, app);
+    const char *mallory = served(502)->path;
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a home no held org owns");
+    expect_output("home-unaccepted", 1, "the unaccepted home is refused");
+    expect_output("forge:mallory", 1, "the home is named as --accept-home takes it");
+    expect_same_branch(app, mallory, 0, "nothing is pushed to it");
+    expect_exit(naula("sync", "--root", root, "--accept-home", "forge:mallory", NULL), 0, "the home accepted");
+    expect_same_branch(app, mallory, 1, "the accepted home receives the push");
+    commit_file("app", "notes.txt", "more\n");
+    expect_exit(naula("sync", "--root", root, NULL), 0, "the acceptance is kept for this checkout");
+    expect_same_branch(app, mallory, 1, "the accepted home receives the next push");
+}
+
+static void sync_pushes_into_a_held_accounts_home_without_acceptance(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char file[TEXT_SIZE];
+    char tool[1024];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    bare_clone("alpha-tool", "beta-tool.git");
+    serve(250, "beta", "tool", "beta-tool.git", NULL);
+    homes_file(file, "tool", "alpha", "beta", ",\"topics\":[\"tools\"]");
+    commit_file("alpha-tool", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 0, "a held account");
+    expect_output("home-unaccepted", 0, "a held account needs no acceptance");
+    path_in(tool, "alpha-tool");
+    expect_same_branch(tool, served(250)->path, 1, "the held home receives the push");
+}
+
+/** A home a sync only found and had nothing to write to is not accepted by that, so a later write waits for one. */
+static void sync_never_accepts_a_home_it_only_found(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("clone", "forge:301", "--root", root, NULL), 0, "clone gamma's thing");
+    expect_exit(naula("sync", "--root", root, NULL), 0, "nothing to write to gamma");
+    app_file(file, "thing", "gamma", ",\"topics\":[\"things\"]");
+    commit_file("gamma-thing", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a write to gamma");
+    expect_output("home-unaccepted", 1, "the write waits for acceptance");
+    CHECK(log_holds("topics 301 1") == 0);
+}
+
+/** A transfer moves the repo found under an old account, so that account must be held or accepted as well. */
+static void transfer_refuses_a_source_never_accepted(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char file[TEXT_SIZE];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    bare_clone("alpha-tool", "stranger-tool.git");
+    serve(150, "stranger", "tool", "stranger-tool.git", NULL);
+    homes_file(file, "tool", "alpha", "stranger", ",\"topics\":[\"tools\"]");
+    commit_file("alpha-tool", "repo.json", file);
+    homes_file(file, "tool", "alpha", "beta", ",\"topics\":[\"tools\"]");
+    commit_file("alpha-tool", "repo.json", file);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a transfer from an account never accepted");
+    expect_output("transfer-source-unaccepted", 1, "the source is refused");
+    CHECK(log_holds("transfer 150 beta") == 0);
+    check_text(served(150)->account, "stranger", "the repo stays where it is");
+}
+
+/**
+ * A home once listed in the checkout's history and dropped since, never accepted nor held, is not taken as the serving
+ * home from a hint, though the history still lists it.
+ */
+static void sync_never_serves_from_a_dropped_home_never_accepted(void) {
+    start_case();
+    char root[1024];
+    char file[TEXT_SIZE];
+    char app[1024];
+    char app_root[65];
+    make_alpha_docs(NULL);
+    homes_file(file, "app", "alpha", NULL, NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("app", files);
+    path_in(app, "app");
+    root_commit(app, app_root);
+    homes_file(file, "app", "alpha", "mallory", NULL);
+    commit_file("app", "repo.json", file);
+    homes_file(file, "app", "alpha", NULL, NULL);
+    commit_file("app", "repo.json", file);
+    serve(501, "alpha", "app", "app", NULL);
+    init_root(root);
+    bare_clone("app", "mallory.git");
+    char mallory_file[TEXT_SIZE];
+    homes_file(mallory_file, "app", "mallory", "alpha", ",\"topics\":[\"stolen\"]");
+    char work[1024];
+    char bare[1024];
+    path_in(work, "mallory-work");
+    path_in(bare, "mallory.git");
+    git(NULL, "clone", "--quiet", bare, work, NULL);
+    commit_file("mallory-work", "repo.json", mallory_file);
+    git(work, "push", "--quiet", "origin", "main", NULL);
+    serve(702, "mallory", "app", "mallory.git", NULL);
+    snprintf(served(501)->name, sizeof served(501)->name, "%s", "renamed-by-hand");
+    plant_hints(app_root, "forge@:alpha\nforge@:mallory",
+                "{\"homes\":[{\"provider\":\"forge\",\"account\":\"mallory\",\"number\":702}]}");
+    naula("sync", "--root", root, NULL);
+    expect_output("serving-unproven", 1, "the dropped home's hint is not taken");
+    CHECK(log_holds("topics 702 1") == 0);
+    CHECK(log_holds("create 900 alpha/app") == 0);
 }
 
 typedef struct test_entry {
@@ -2328,6 +2485,13 @@ static const test_entry tests[] = {
     {"adopt_refuses_to_invent_an_org", adopt_refuses_to_invent_an_org},
     {"sync_never_serves_from_a_hint_the_checkout_never_listed",
      sync_never_serves_from_a_hint_the_checkout_never_listed},
+    {"sync_pushes_into_a_home_outside_the_root_only_once_accepted",
+     sync_pushes_into_a_home_outside_the_root_only_once_accepted},
+    {"sync_pushes_into_a_held_accounts_home_without_acceptance",
+     sync_pushes_into_a_held_accounts_home_without_acceptance},
+    {"sync_never_accepts_a_home_it_only_found", sync_never_accepts_a_home_it_only_found},
+    {"transfer_refuses_a_source_never_accepted", transfer_refuses_a_source_never_accepted},
+    {"sync_never_serves_from_a_dropped_home_never_accepted", sync_never_serves_from_a_dropped_home_never_accepted},
 };
 
 int main(int count, char **values) {

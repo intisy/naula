@@ -86,7 +86,7 @@ static int is_dropped(const sync_request *request, const char *name) {
 
 /**
  * An org holds an account only where its declaring repo's primary lives (spisor rev 270); an account it merely lists
- * is left out, so a repo can be created or moved there only with --accept-home.
+ * is left out, so a home there is written to only once a run accepts it.
  */
 static void add_owned_accounts(held_accounts *held, const naula_resolution *resolution) {
     const naula_org_declaration *org = resolution->file.org;

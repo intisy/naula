@@ -15,12 +15,14 @@ extern "C" {
 /**
  * How naula_reconcile runs. `cache_directory` keeps, in `homes/<hex>-<anchor>.json`, the number each home was last
  * found at, `<anchor>` hashing the homes the checkout's own repo.json history listed, so another checkout of the id
- * (a fork naming its own homes) never shapes it: a hint only, used once the host shows that repo holds the id, and
- * as the serving home only for an account that history listed. `url_is_allowed` answers whether a clone url may be handed to git (NULL allows
- * https only). `held_accounts` are the accounts the orgs of the root hold, and `accepted_homes` the homes a person
- * accepted for this run, each written `<provider>[@<host>]:<account>`: a home is created, or transferred into, only in
- * one of the two. `say` receives one line for every change made and every home left alone with a reason, `context`
- * beside it. First shape ends at `accepted_home_count`.
+ * (a fork naming its own homes) never shapes it: a hint only, used once the host shows that repo holds the id. The
+ * same file keeps `accepted`, every account a run of that checkout wrote to while it was held or accepted.
+ * `url_is_allowed` answers whether a clone url may be handed to git (NULL allows https only). `held_accounts` are the
+ * accounts the orgs of the root hold, and `accepted_homes` the homes a person accepted for this run, each written
+ * `<provider>[@<host>]:<account>`: a home is written to (created, pushed to, renamed, transferred into or out of, or
+ * given metadata), and a hinted home serves the file, only under an account held, accepted for this run or kept as
+ * accepted. `say` receives one line for every change made and every home left alone with a reason, `context` beside
+ * it. First shape ends at `accepted_home_count`.
  */
 typedef struct naula_reconcile_options {
     uint32_t size;
@@ -56,8 +58,9 @@ typedef struct naula_reconcile_report {
  * A home is this repo's only when its host shows it holds the id, the way the resolver confirms one, and, unless it
  * serves the file, its own repo.json lists the serving home; so a copy holding the id can neither take writes nor
  * steer them. Refused before anything is sent: `home-unheard` (a home could not be heard, so nothing is decided from
- * it), `no-home-found`, `serving-unproven`, `home-unaccepted` (a home to create or transfer into that no org of the
- * root holds and no run accepted), `id-changed`, `primary-not-listed`, `disowned-by`, `home-unadopted`, `name-taken`
+ * it), `no-home-found`, `serving-unproven`, `home-unaccepted` (a home to write to under an account no org of the
+ * root holds and no run accepted), `transfer-source-unaccepted` (the same for the account a transfer moves the repo
+ * out of), `id-changed`, `primary-not-listed`, `disowned-by`, `home-unadopted`, `name-taken`
  * and `name-unverifiable` (another repo holds, or may hold, the name under a home's account) and `literal-consumers` (a
  * rename or transfer of a repo holding a `workflow_call` workflow, or a Gradle build with a release, which consumers
  * reach by its name). A write a host refuses is reported and the run goes on; it answers NAULA_REFUSED
