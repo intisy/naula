@@ -1,8 +1,13 @@
 #ifdef _WIN32
 #include <windows.h>
+#include <winternl.h>
 #else
 #define _POSIX_C_SOURCE 200809L
+#ifdef __linux__
+#define _GNU_SOURCE
+#endif
 #include <dirent.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -12,9 +17,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "check.h"
 #include "disk.h"
+#ifdef __linux__
+#include "disk_posix_internal.h"
+#endif
 #include "layout_apply_internal.h"
 #include "memory_testing.h"
 #include "naula/json.h"
@@ -80,6 +89,16 @@ static int kind_at(const char *path) {
     return S_ISDIR(found.st_mode) ? 1 : 2;
 #endif
 }
+
+#ifndef _WIN32
+/** Whether both names open one entry, never following a link: a file system Windows backs opens its aliases. */
+static int is_same_entry(const char *path, const char *other) {
+    struct stat found;
+    struct stat other_found;
+    return lstat(path, &found) == 0 && lstat(other, &other_found) == 0 && found.st_dev == other_found.st_dev &&
+           found.st_ino == other_found.st_ino;
+}
+#endif
 
 typedef struct names {
     char **items;
@@ -229,17 +248,34 @@ static int file_holds(const char *path, const char *expected) {
     return holds;
 }
 
-static void make_link(const char *path, const char *target) {
+/** The folder holding `path`, into `parent`, and its last name, for a call that takes a root and a path below it. */
+static const char *split_at_parent(const char *path, char *parent) {
+    const char *slash = strrchr(path, '/');
+    size_t length = slash == NULL ? 0 : (size_t)(slash - path);
+    memcpy(parent, path, length);
+    parent[length] = '\0';
+    return slash == NULL ? path : slash + 1;
+}
+
+static int link_made(const char *path, const char *target) {
+    char parent[PATH_SIZE];
+    const char *name = split_at_parent(path, parent);
     unsigned long error = 0;
-    if (disk_link_make(path, target, &error) != NAULA_OK) {
-        fprintf(stderr, "cannot link %s to %s: %lu\n", path, target, error);
+    return disk_link_make(parent, name, target, &error) == NAULA_OK;
+}
+
+static void make_link(const char *path, const char *target) {
+    if (!link_made(path, target)) {
+        fprintf(stderr, "cannot link %s to %s\n", path, target);
         check_failures++;
     }
 }
 
 static void unlink_link(const char *path) {
+    char parent[PATH_SIZE];
+    const char *name = split_at_parent(path, parent);
     unsigned long error = 0;
-    if (disk_link_remove(path, &error) != NAULA_OK) {
+    if (disk_link_remove(parent, name, &error) != NAULA_OK) {
         fprintf(stderr, "cannot remove the link %s: %lu\n", path, error);
         check_failures++;
     }
@@ -729,6 +765,60 @@ static void apply_refuses_an_existing_memory_bank_target(void) {
     CHECK(kind_at(old_bank) == 1);
     CHECK(kind_at(new_bank) == 1);
     finish("bank-taken");
+}
+
+/** A checkout moved with its bank, the run stopped between the two at `stop_at` when it is not 0, then resumed. */
+static void move_with_its_bank(const char *from, const char *to, unsigned long stop_at) {
+    char old_bank[PATH_SIZE];
+    char memory[PATH_SIZE];
+    compose(old_bank, bank_of(from), NULL);
+    make_folder(old_bank);
+    compose(memory, old_bank, "/MEMORY.md", NULL);
+    write_text(memory, "remembered");
+    plan_start();
+    plan_add(NAULA_MOVE_CHECKOUT, from, to, NULL);
+    naula_apply_test_stop_at(stop_at);
+    naula_status status = apply_plan();
+    if (stop_at != 0) {
+        CHECK(refused_with(status, "test-stopped"));
+        after_a_simulated_crash();
+        CHECK(kind_at(to) == 1);
+        CHECK(kind_at(old_bank) == 1);
+        char *journal_file = unfinished_journal();
+        CHECK(journal_file != NULL);
+        status = journal_file == NULL ? NAULA_REFUSED : resume(journal_file);
+        naula_memory_release(journal_file);
+    }
+    if (status != NAULA_OK) {
+        fprintf(stderr, "moving %s with its bank: %s %s\n", from, refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(from) == 0);
+    CHECK(kind_at(old_bank) == 0);
+    compose(memory, bank_of(to), "/MEMORY.md", NULL);
+    CHECK(file_holds(memory, "remembered"));
+}
+
+/**
+ * The memory banks folder is the user's Claude Code's, outside the root, and may be a link, as a symlinked
+ * ~/.claude/projects is: it is followed once to its real folder, so the bank moves with its checkout, on a run and on
+ * a resume after a crash between the two.
+ */
+static void a_memory_banks_folder_that_is_a_link_moves_each_bank(void) {
+    fresh("bank-link");
+    char real_banks[PATH_SIZE];
+    compose(real_banks, base, "/bank-link/real-banks", NULL);
+    make_folder(real_banks);
+    remove_tree(banks);
+    make_link(banks, real_banks);
+    make_folder(at("repos"));
+    make_checkout(at("old"), "checkout");
+    make_checkout(at("second"), "second checkout");
+    move_with_its_bank(at("old"), at("repos/" HEX), 0);
+    move_with_its_bank(at("second"), at("repos/bbbbbbbbbbbb"), 3);
+    CHECK(kind_at(banks) == 3);
+    unlink_link(banks);
+    finish("bank-link");
 }
 
 static void removing_a_link_leaves_its_target_intact(void) {
@@ -1523,7 +1613,7 @@ static void a_run_refused_halfway_through_a_step_must_be_resumed(void) {
     CHECK(held != INVALID_HANDLE_VALUE);
     plan_start();
     plan_add(NAULA_REMOVE_CLONE, at("archived"), NULL, NULL);
-    CHECK(refused_with(apply_plan(), "change-refused"));
+    CHECK(refused_with(apply_plan(), "folder-held"));
     CHECK(strstr(refusal.detail, "system error 32)") != NULL);
     CHECK(kind_at(at("archived/a")) == 0);
     char *journal_file = unfinished_journal();
@@ -1539,120 +1629,196 @@ static void a_run_refused_halfway_through_a_step_must_be_resumed(void) {
 #endif
 }
 
-typedef struct swap_race {
-    char watched[PATH_SIZE];
-    char swapped[PATH_SIZE];
+#define SWAP_ROUNDS 8
+
+/**
+ * A folder of the root moved aside and a link to a folder outside the root put in its place, once, the moment a disk
+ * call reaches `point` with `trigger` as its name, or as its name's start when `prefix` is set.
+ */
+typedef struct folder_swap {
+    char folder[PATH_SIZE];
     char moved_to[PATH_SIZE];
     char outside[PATH_SIZE];
-    volatile int removal_returned;
+    char trigger[PATH_SIZE];
+    disk_test_point point;
+    int prefix;
+    int tried;
     int swapped_in;
-} swap_race;
+} folder_swap;
 
-/** Waits for the removal to take its first file, then moves a folder it has not reached yet and links it outside. */
-static void swap_once_removal_starts(swap_race *race) {
-    while (kind_at(race->watched) != 0 && !race->removal_returned) {
+static void swap_folder_for_link(disk_test_point point, const char *name, void *context) {
+    folder_swap *swap = context;
+    size_t length = strlen(swap->trigger);
+    int matches = swap->prefix ? strncmp(name, swap->trigger, length) == 0 : strcmp(name, swap->trigger) == 0;
+    if (swap->tried || point != swap->point || !matches) {
+        return;
     }
+    swap->tried = 1;
 #ifdef _WIN32
-    int moved = MoveFileA(race->swapped, race->moved_to) != 0;
+    int moved = MoveFileA(swap->folder, swap->moved_to) != 0;
 #else
-    int moved = rename(race->swapped, race->moved_to) == 0;
+    int moved = rename(swap->folder, swap->moved_to) == 0;
 #endif
-    if (moved) {
-        unsigned long error = 0;
-        race->swapped_in = disk_link_make(race->swapped, race->outside, &error) == NAULA_OK;
-    }
+    swap->swapped_in = moved && link_made(swap->folder, swap->outside);
 }
 
-#ifdef _WIN32
-static DWORD WINAPI swap_thread(LPVOID context) {
-    swap_once_removal_starts(context);
-    return 0;
-}
-#else
-static void *swap_thread(void *context) {
-    swap_once_removal_starts(context);
-    return NULL;
-}
-#endif
-
-static naula_status remove_clone_while_racing(swap_race *race) {
-    plan_start();
-    plan_add(NAULA_REMOVE_CLONE, at("victim"), NULL, NULL);
-#ifdef _WIN32
-    HANDLE thread = CreateThread(NULL, 0, swap_thread, race, 0, NULL);
-    naula_status status = apply_plan();
-    race->removal_returned = 1;
-    WaitForSingleObject(thread, INFINITE);
-    CloseHandle(thread);
-#else
-    pthread_t thread;
-    pthread_create(&thread, NULL, swap_thread, race);
-    naula_status status = apply_plan();
-    race->removal_returned = 1;
-    pthread_join(thread, NULL);
-#endif
-    return status;
-}
-
-#define SWAP_ROUNDS 8
-#define SWAP_FILES 2000
-
-static void lay_out_a_victim(swap_race *race, const char *outside) {
-    fresh("swap");
-    make_checkout(at("victim"), "victim");
-    make_folder(at("victim/a"));
-    for (int index = 0; index < SWAP_FILES; index++) {
-        char name[64];
-        snprintf(name, sizeof name, "victim/a/f%05d.txt", index);
-        write_text(at(name), "x");
-    }
-    make_folder(at("victim/z"));
-    write_text(at("victim/z/z.txt"), "z");
-    memset(race, 0, sizeof *race);
-    compose(race->watched, at("victim/a/f00000.txt"), NULL);
-    compose(race->swapped, at("victim/z"), NULL);
-    compose(race->moved_to, base, "/swap/z-moved", NULL);
-    compose(race->outside, outside, NULL);
+static void prepare_swap(folder_swap *swap, const char *folder, const char *moved_to, const char *outside,
+                         disk_test_point point, const char *trigger, int prefix) {
+    memset(swap, 0, sizeof *swap);
+    compose(swap->folder, folder, NULL);
+    compose(swap->moved_to, moved_to, NULL);
+    compose(swap->outside, outside, NULL);
+    compose(swap->trigger, trigger, NULL);
+    swap->point = point;
+    swap->prefix = prefix;
 }
 
 /**
- * Another process renames a folder of the clone away mid-removal and puts a link to a folder outside the root in its
- * place. The outside folder must come through byte for byte, whether the removal then finishes or refuses.
+ * Another process renames a subfolder of the clone away after the removal judged it a real folder and before it opens
+ * it, and puts a link to a folder outside the root in its place. The outside folder must come through byte for byte,
+ * whether the removal then finishes or refuses.
  */
 static void removing_a_clone_never_follows_a_folder_swapped_for_a_link_while_it_runs(void) {
     char outside[PATH_SIZE];
     char keep[PATH_SIZE];
+    char moved_to[PATH_SIZE];
     compose(outside, base, "/swap-outside", NULL);
     compose(keep, outside, "/keep.txt", NULL);
     remove_tree(outside);
     make_folder(outside);
     write_text(keep, "must survive");
     char *before = snapshot("swap-outside");
-    int swaps = 0;
-    for (int round = 0; round < SWAP_ROUNDS; round++) {
-        swap_race race;
-        lay_out_a_victim(&race, outside);
-        naula_status status = remove_clone_while_racing(&race);
-        CHECK(status == NAULA_OK || status == NAULA_REFUSED);
-        char *after = snapshot("swap-outside");
-        if (strcmp(before, after) != 0) {
-            fprintf(stderr, "round %d: the folder outside the root changed:\n%s\n", round, after);
+    fresh("swap");
+    make_checkout(at("victim"), "victim");
+    make_folder(at("victim/z"));
+    write_text(at("victim/z/z.txt"), "z");
+    compose(moved_to, base, "/swap/z-moved", NULL);
+    folder_swap swap;
+    prepare_swap(&swap, at("victim/z"), moved_to, outside, DISK_TEST_BEFORE_ENTRY_OPEN, "z", 0);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("victim"), NULL, NULL);
+    naula_disk_test_hook(swap_folder_for_link, &swap);
+    naula_status status = apply_plan();
+    naula_disk_test_hook(NULL, NULL);
+    CHECK(swap.swapped_in);
+    CHECK(status == NAULA_OK || status == NAULA_REFUSED);
+    char *after = snapshot("swap-outside");
+    if (strcmp(before, after) != 0) {
+        fprintf(stderr, "the folder outside the root changed:\n%s\n", after);
+        check_failures++;
+    }
+    free(after);
+    free(before);
+    if (kind_at(at("victim/z")) == 3) {
+        unlink_link(at("victim/z"));
+    }
+    finish("swap");
+    remove_tree(outside);
+}
+
+typedef enum swapped_change {
+    CHANGE_FOLDER_MAKE,
+    CHANGE_FILE_REPLACE,
+    CHANGE_LINK_MAKE,
+    CHANGE_LINK_REMOVE,
+    CHANGE_MOVE_FROM,
+    CHANGE_MOVE_TO,
+    CHANGE_OWNED_FILE,
+    CHANGE_APPENDER,
+    CHANGE_COUNT
+} swapped_change;
+
+static const char *const CHANGE_NAMES[CHANGE_COUNT] = {
+    "folder make", "file replace", "link make", "link remove", "move from", "move to", "owned file", "appender"};
+
+static naula_status make_change(swapped_change change, unsigned long *error) {
+    int held = 0;
+    int exists = 0;
+    disk_owned_file *owned = NULL;
+    disk_appender *appender = NULL;
+    naula_status status = NAULA_OK;
+    switch (change) {
+    case CHANGE_OWNED_FILE:
+        status = disk_owned_file_create(root, "org/lock", (const uint8_t *)"1\n", 2, &exists, &owned, error);
+        disk_owned_file_abandon(owned);
+        return status;
+    case CHANGE_APPENDER:
+        status = disk_appender_open(root, "org/journal.txt", 1, &appender, error);
+        disk_appender_close(appender);
+        return status;
+    case CHANGE_FOLDER_MAKE:
+        return disk_folder_make(root, "org/made", error);
+    case CHANGE_FILE_REPLACE:
+        return disk_file_replace(root, "org/file.txt", (const uint8_t *)"new", 3, error);
+    case CHANGE_LINK_MAKE:
+        return disk_link_make(root, "org/made-link", at("repos"), error);
+    case CHANGE_LINK_REMOVE:
+        return disk_link_remove(root, "org/link", error);
+    case CHANGE_MOVE_FROM:
+        return disk_move(root, "org/clone", "moved", &held, error);
+    default:
+        return disk_move(root, "clone", "org/moved", &held, error);
+    }
+}
+
+/** What both `org` and the outside folder hold, so a change followed through the link shows in the outside one. */
+static void lay_out_an_org(const char *folder) {
+    char path[PATH_SIZE];
+    make_folder(folder);
+    compose(path, folder, "/clone", NULL);
+    make_checkout(path, "clone");
+    compose(path, folder, "/file.txt", NULL);
+    write_text(path, "old");
+    compose(path, folder, "/link", NULL);
+    make_link(path, at("repos"));
+}
+
+/**
+ * Every call that changes the disk walks from the root and acts by name in the folder it opened, so a folder above
+ * the path swapped for a link after the caller checked it, the moment before the call walks, is refused, never
+ * followed: nothing outside the root changes.
+ */
+static void every_change_refuses_a_folder_above_it_swapped_for_a_link(void) {
+    char outside[PATH_SIZE];
+    char moved_to[PATH_SIZE];
+    for (int change = 0; change < CHANGE_COUNT; change++) {
+        fresh("swap-change");
+        make_folder(at("repos"));
+        compose(outside, base, "/swap-change/outside-org", NULL);
+        compose(moved_to, base, "/swap-change/org-moved", NULL);
+        lay_out_an_org(outside);
+        lay_out_an_org(at("org"));
+        make_checkout(at("clone"), "inside");
+        char *before = snapshot("swap-change/outside-org");
+        folder_swap swap;
+        prepare_swap(&swap, at("org"), moved_to, outside, DISK_TEST_BEFORE_WALK, "org/", 1);
+        naula_disk_test_hook(swap_folder_for_link, &swap);
+        unsigned long error = 0;
+        naula_status status = make_change((swapped_change)change, &error);
+        naula_disk_test_hook(NULL, NULL);
+        char *after = snapshot("swap-change/outside-org");
+        if (!swap.swapped_in || status != NAULA_REFUSED || strcmp(before, after) != 0 ||
+            kind_at(at("moved")) != 0) {
+            fprintf(stderr, "%s through a swapped link: swapped %d, status %d, outside now:\n%s\n",
+                    CHANGE_NAMES[change], swap.swapped_in, (int)status, after);
             check_failures++;
         }
+        free(before);
         free(after);
-        swaps += race.swapped_in;
-        if (kind_at(at("victim/z")) == 3) {
-            unlink_link(at("victim/z"));
+        if (kind_at(at("org")) == 3) {
+            unlink_link(at("org"));
         }
-        finish("swap");
+        char link[PATH_SIZE];
+        compose(link, outside, "/link", NULL);
+        if (kind_at(link) == 3) {
+            unlink_link(link);
+        }
+        compose(link, moved_to, "/link", NULL);
+        if (kind_at(link) == 3) {
+            unlink_link(link);
+        }
+        finish("swap-change");
     }
-    printf("removing_a_clone_never_follows_a_folder_swapped_for_a_link_while_it_runs: %d of %d rounds swapped\n",
-           swaps, SWAP_ROUNDS);
-#ifdef _WIN32
-    CHECK(swaps > 0);
-#endif
-    free(before);
-    remove_tree(outside);
 }
 
 static void a_resumed_move_refused_after_its_checkout_moved_stays_unfinished(void) {
@@ -1752,9 +1918,9 @@ static void a_journal_a_newer_one_follows_is_never_resumed(void) {
     CHECK(is_recorded(at("gone"), NULL));
     char newer[PATH_SIZE * 2];
     snprintf(newer, sizeof newer, "{\"journal\":1,\"root\":\"%s\",\"steps\":0}\n{\"state\":\"finished\"}\n", root);
-    write_text(at(".naula-journal/99991231T235959Z.jsonl"), newer);
+    write_text(at(".naula-journal/9999999999-20261127T000000Z.jsonl"), newer);
     CHECK(journal_file != NULL && refused_with(resume(journal_file), "journal-superseded"));
-    CHECK(strstr(refusal.detail, "99991231T235959Z.jsonl") != NULL);
+    CHECK(strstr(refusal.detail, "9999999999-20261127T000000Z.jsonl") != NULL);
     CHECK(kind_at(at("org")) == 0);
     naula_memory_release(journal_file);
     finish("resume-superseded");
@@ -1768,13 +1934,13 @@ static void a_journal_torn_inside_its_opening_append_reads_as_stopped(void) {
              "{\"journal\":1,\"root\":\"%s\",\"steps\":2}\n{\"step\":0,\"state\":\"planned\",\"kind\":1,\"path\":\"%s\"}"
              "\n{\"step\":1,\"sta",
              root, at("org"));
-    write_text(at(".naula-journal/20260101T000000Z.jsonl"), text);
+    write_text(at(".naula-journal/0000000001-20260101T000000Z.jsonl"), text);
     CHECK(unfinished_journal() == NULL);
     plan_start();
     plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
     CHECK(apply_plan() == NAULA_OK);
     CHECK(kind_at(at("org")) == 1);
-    CHECK(refused_with(resume(at(".naula-journal/20260101T000000Z.jsonl")), "journal-stopped"));
+    CHECK(refused_with(resume(at(".naula-journal/0000000001-20260101T000000Z.jsonl")), "journal-stopped"));
     finish("torn-opening");
 }
 
@@ -1830,25 +1996,1324 @@ static void removing_a_clone_leaves_a_hard_linked_read_only_file_read_only(void)
 #endif
 }
 
-static void a_step_naming_an_entry_by_an_alias_is_refused(void) {
+/** Another program reading a file without sharing reads still lets it be deleted, so the removal must not read it. */
+static void a_file_held_without_read_sharing_is_removed(void) {
+#ifdef _WIN32
+    fresh("held-unshared");
+    make_checkout(at("clone"), "clone");
+    write_text(at("clone/held.txt"), "held");
+    HANDLE held = CreateFileA(at("clone/held.txt"), GENERIC_READ, FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(held != INVALID_HANDLE_VALUE);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_status status = apply_plan();
+    if (status != NAULA_OK) {
+        fprintf(stderr, "removing a clone holding a file read without sharing: %s %s\n", refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    if (held != INVALID_HANDLE_VALUE) {
+        CloseHandle(held);
+    }
+    char *journal_file = unfinished_journal();
+    if (journal_file != NULL) {
+        resume(journal_file);
+    }
+    naula_memory_release(journal_file);
+    finish("held-unshared");
+#else
+    printf("a_file_held_without_read_sharing_is_removed: skipped, POSIX has no sharing modes\n");
+#endif
+}
+
+#ifdef _WIN32
+static void refused_as_input(const char *relative) {
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at(relative), NULL, NULL);
+    if (!refused_with(apply_plan(), "apply-input-invalid")) {
+        fprintf(stderr, "  for %s\n", relative);
+        check_failures++;
+    }
+}
+#endif
+
+/** Windows opens these as naula's own files; elsewhere they are ordinary names. */
+static void a_step_naming_naulas_files_by_an_alias_is_refused_on_windows(void) {
     fresh("alias");
     make_folder(at(".naula-journal"));
-    make_folder(at("x"));
+#ifdef _WIN32
     plan_start();
     plan_add(NAULA_WRITE_FILE, at(".naula-journal./links.json"), NULL, "{\"links\":[]}");
     CHECK(refused_with(apply_plan(), "apply-input-invalid"));
     CHECK(kind_at(at(".naula-journal/links.json")) == 0);
+    refused_as_input(".naula-journal /org");
+    refused_as_input(".naula.json.");
+    refused_as_input("NAULA-~1/org");
+    refused_as_input("naula~2.jso");
+    refused_as_input("NAU~1");
+    refused_as_input("NA1B2C~1");
+#else
+    int aliased = is_same_entry(at("NAULA-~1"), at(".naula-journal"));
     plan_start();
-    plan_add(NAULA_MAKE_FOLDER, at("org "), NULL, NULL);
-    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
-    plan_start();
-    plan_add(NAULA_MAKE_FOLDER, at("NAULA-~1/org"), NULL, NULL);
-    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
-    plan_start();
-    plan_add(NAULA_MAKE_LINK, at("name"), at("x."), NULL);
-    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
-    CHECK(kind_at(at("name")) == 0);
+    plan_add(NAULA_MAKE_FOLDER, at("NAULA-~1"), NULL, NULL);
+    if (aliased) {
+        printf("a_step_naming_naulas_files_by_an_alias_is_refused_on_windows: this file system opens Windows' "
+               "aliases\n");
+        CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    } else {
+        CHECK(apply_plan() == NAULA_OK);
+        CHECK(kind_at(at("NAULA-~1")) == 1);
+    }
+#endif
     finish("alias");
+}
+
+/** A tilde is an ordinary name everywhere when it cannot stand for naula's own files. */
+static void a_name_with_a_tilde_moves_on_every_platform(void) {
+    fresh("tilde");
+    make_folder(at("repos"));
+    make_checkout(at("work~old"), "kept");
+    make_folder(at("notes~1"));
+    plan_start();
+    plan_add(NAULA_MOVE_CHECKOUT, at("work~old"), at("repos/" HEX), NULL);
+    plan_add(NAULA_MAKE_LINK, at("repos/a~b"), at("repos/" HEX), NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("notes~1/inner"), NULL, NULL);
+    naula_status status = apply_plan();
+    if (status != NAULA_OK) {
+        fprintf(stderr, "a tilde: %s %s\n", refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(file_holds(at("repos/" HEX "/README.md"), "kept"));
+    CHECK(links_to(at("repos/a~b"), at("repos/" HEX)));
+    CHECK(kind_at(at("notes~1/inner")) == 1);
+    unlink_link(at("repos/a~b"));
+    finish("tilde");
+}
+
+static const char *const NAMES_WINDOWS_OPENS_AS_ANOTHER[] = {
+    "clone.", "clone ", "CON", "con.txt", "Nul", "aux .log", "PRN.tar.gz", "COM1", "lpt9.md", "COM\xc2\xb9",
+    "lpt\xc2\xb3.txt", "CONIN$", "conout$.x", NULL};
+
+/**
+ * A name Windows drops a trailing dot or space from, or opens as a device, is refused on every platform before any
+ * change, so a plan that applies on one system applies on every one; and on Windows the disk refuses it itself, since
+ * NTFS would make it literally where Win32 opens something else by it.
+ */
+static void a_name_windows_opens_as_another_is_refused_everywhere(void) {
+    fresh("windows-names");
+    make_folder(at("org"));
+    for (size_t index = 0; NAMES_WINDOWS_OPENS_AS_ANOTHER[index] != NULL; index++) {
+        const char *name = NAMES_WINDOWS_OPENS_AS_ANOTHER[index];
+        char path[PATH_SIZE];
+        compose(path, "org/", name, "/inner", NULL);
+        plan_start();
+        plan_add(NAULA_MAKE_FOLDER, at(path), NULL, NULL);
+        if (!refused_with(apply_plan(), "apply-input-invalid")) {
+            fprintf(stderr, "  for the name %s\n", name);
+            check_failures++;
+        }
+#ifdef _WIN32
+        unsigned long error = 0;
+        compose(path, "org/", name, NULL);
+        if (disk_folder_make(root, path, &error) != NAULA_REFUSED || error != ERROR_INVALID_NAME) {
+            fprintf(stderr, "the disk made the folder %s: %lu\n", name, error);
+            check_failures++;
+        }
+#endif
+    }
+    names found = list_names(at("org"));
+    CHECK(found.count == 0);
+    release_names(&found);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/console.d"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("org/com10"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("org/a.b"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("org/console.d")) == 1 && kind_at(at("org/com10")) == 1 && kind_at(at("org/a.b")) == 1);
+    finish("windows-names");
+}
+
+/** A clean path has no trailing separator, so a step whose path ends in one is refused before any change. */
+static void a_path_with_a_trailing_separator_is_refused_as_input(void) {
+    fresh("trailing");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    CHECK(kind_at(at("org")) == 0);
+    CHECK(unfinished_journal() == NULL);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    plan_add(NAULA_MAKE_LINK, at("name"), at("org/"), NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    CHECK(kind_at(at("org")) == 0);
+    finish("trailing");
+}
+
+/**
+ * The clock went back: a finished journal carries a stamp far in the future, and a later run crashes. Its journal
+ * takes the next sequence, so it is the one unfinished and the one resumed.
+ */
+static void a_journal_stamped_in_the_future_never_blocks_a_resume(void) {
+    fresh("clock-back");
+    make_folder(at(".naula-journal"));
+    char future[PATH_SIZE * 2];
+    snprintf(future, sizeof future, "{\"journal\":1,\"root\":\"%s\",\"steps\":0}\n{\"state\":\"finished\"}\n", root);
+    write_text(at(".naula-journal/0000000001-99991231T235959Z.jsonl"), future);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    naula_apply_test_stop_at(2);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL && strstr(journal_file, "0000000002-") != NULL);
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("org")) == 1);
+    CHECK(unfinished_journal() == NULL);
+    naula_memory_release(journal_file);
+    finish("clock-back");
+}
+
+static void write_finished_journal(const char *name) {
+    char text[PATH_SIZE * 2];
+    char path[PATH_SIZE];
+    snprintf(text, sizeof text, "{\"journal\":1,\"root\":\"%s\",\"steps\":0}\n{\"state\":\"finished\"}\n", root);
+    compose(path, at(".naula-journal/"), name, NULL);
+    make_folder(at(".naula-journal"));
+    write_text(path, text);
+}
+
+static size_t journal_count(void) {
+    names found = list_names(at(".naula-journal"));
+    size_t count = 0;
+    for (size_t index = 0; index < found.count; index++) {
+        count += strstr(found.items[index], ".jsonl") != NULL;
+    }
+    release_names(&found);
+    return count;
+}
+
+/**
+ * A journal holding the largest sequence a name can carry leaves none for the next run, which is refused rather than
+ * named past what any listing reads; and a longer sequence, which no listing can order, refuses every run and every
+ * search for an unfinished journal until it is moved.
+ */
+static void a_journal_sequence_past_the_largest_refuses_the_run(void) {
+    fresh("sequence-edge");
+    write_finished_journal("9999999999999999999-20260101T000000Z.jsonl");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("second"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "journal-sequence-exhausted"));
+    CHECK(strstr(refusal.detail, "9999999999999999999-20260101T000000Z.jsonl") != NULL);
+    CHECK(kind_at(at("second")) == 0);
+    CHECK(journal_count() == 1);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    remove_tree(at(".naula-journal/9999999999999999999-20260101T000000Z.jsonl"));
+    write_finished_journal("10000000000000000000-20260101T000000Z.jsonl");
+    CHECK(refused_with(apply_plan(), "journal-sequence-invalid"));
+    CHECK(kind_at(at("second")) == 0);
+    char *journal_file = NULL;
+    CHECK(refused_with(naula_journal_unfinished(root, &journal_file, &refusal), "journal-sequence-invalid"));
+    CHECK(journal_file == NULL);
+    remove_tree(at(".naula-journal/10000000000000000000-20260101T000000Z.jsonl"));
+    write_finished_journal("1-20260101T000000Z.jsonl");
+    CHECK(refused_with(apply_plan(), "journal-sequence-invalid"));
+    finish("sequence-edge");
+}
+
+/**
+ * A copied journal carries its original's sequence, so neither can be read as the newer: the search for an unfinished
+ * journal, a resume of either and a new run all refuse, naming both, and nothing more is changed.
+ */
+static void two_journals_of_one_sequence_refuse_the_run_and_the_resume(void) {
+    fresh("sequence-twice");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("a"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("b"), NULL, NULL);
+    naula_apply_test_stop_at(4);
+    CHECK(refused_with(apply_plan(), "test-stopped"));
+    after_a_simulated_crash();
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    char *text = journal_file == NULL ? NULL : read_text(journal_file);
+    const char *own_name = journal_file == NULL ? "(none)" : strrchr(journal_file, '/') + 1;
+    char copy[PATH_SIZE];
+    compose(copy, at(".naula-journal/0000000001-20000101T000000Z.jsonl"), NULL);
+    write_text(copy, text == NULL ? "" : text);
+    char *found = NULL;
+    CHECK(refused_with(naula_journal_unfinished(root, &found, &refusal), "journal-sequence-duplicate"));
+    CHECK(found == NULL);
+    CHECK(strstr(refusal.detail, own_name) != NULL);
+    CHECK(strstr(refusal.detail, "0000000001-20000101T000000Z.jsonl") != NULL);
+    CHECK(journal_file != NULL && refused_with(resume(journal_file), "journal-sequence-duplicate"));
+    CHECK(refused_with(resume(copy), "journal-sequence-duplicate"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("other"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "journal-sequence-duplicate"));
+    CHECK(kind_at(at("b")) == 0);
+    CHECK(kind_at(at("other")) == 0);
+    CHECK(journal_count() == 2);
+    free(text);
+    naula_memory_release(journal_file);
+    finish("sequence-twice");
+}
+
+static naula_status aliases_checked(void) {
+    memset(&refusal, 0, sizeof refusal);
+    refusal.size = sizeof refusal;
+    return apply_check_aliases(root, &plans.plan, &refusal);
+}
+
+/** The identity check alone, past the rule on names: naula's own files by their own names, and an ordinary folder. */
+static void a_step_into_naulas_files_is_refused_by_their_identity(void) {
+    fresh("identity");
+    make_folder(at(".naula-journal"));
+    write_text(at(".naula.json"), "{}");
+    make_folder(at("org"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at(".naula-journal/x"), NULL, NULL);
+    CHECK(refused_with(aliases_checked(), "apply-input-invalid"));
+    plan_start();
+    plan_add(NAULA_MOVE_CHECKOUT, at("org/a"), at(".naula.json/b"), NULL);
+    CHECK(refused_with(aliases_checked(), "apply-input-invalid"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/x"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("missing/x"), NULL, NULL);
+    plan_add(NAULA_REPORT, NULL, NULL, NULL);
+    CHECK(aliases_checked() == NAULA_OK);
+    finish("identity");
+}
+
+/**
+ * The 8.3 aliases Windows makes for `.naula-journal` and `.naula.json` once enough names collide, read back from the
+ * volume: a step through either is refused by the rule on names and by the identity check alone.
+ */
+static void an_alias_windows_generates_for_naulas_files_is_refused(void) {
+#ifdef _WIN32
+    fresh("generated-alias");
+    static const char *const colliding[] = {".naula-journalA", ".naula-journalB", ".naula-journalC", ".naula-journalD",
+                                            ".naula-journalE", ".naula-journalF", ".naula-journalG", ".naula-journal",
+                                            ".naula.jsonA",    ".naula.jsonB",    ".naula.jsonC",    ".naula.jsonD",
+                                            ".naula.jsonE",    ".naula.jsonF",    ".naula.json"};
+    for (size_t index = 0; index < sizeof colliding / sizeof colliding[0]; index++) {
+        make_folder(at(colliding[index]));
+    }
+    static const char *const own[] = {".naula-journal", ".naula.json"};
+    int aliases = 0;
+    for (size_t index = 0; index < 2; index++) {
+        char short_path[PATH_SIZE];
+        DWORD got = GetShortPathNameA(at(own[index]), short_path, sizeof short_path);
+        const char *alias = got == 0 || got >= sizeof short_path ? NULL : strrchr(short_path, '\\');
+        alias = alias == NULL ? strrchr(short_path, '/') : alias;
+        if (got == 0 || alias == NULL || _stricmp(alias + 1, own[index]) == 0) {
+            continue;
+        }
+        aliases++;
+        char step_path[PATH_SIZE];
+        compose(step_path, root, "/", alias + 1, "/x", NULL);
+        printf("an_alias_windows_generates_for_naulas_files_is_refused: %s is %s\n", own[index], alias + 1);
+        plan_start();
+        plan_add(NAULA_MAKE_FOLDER, step_path, NULL, NULL);
+        CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+        CHECK(refused_with(aliases_checked(), "apply-input-invalid"));
+        char made[PATH_SIZE];
+        compose(made, at(own[index]), "/x", NULL);
+        CHECK(kind_at(made) == 0);
+    }
+    if (aliases == 0) {
+        printf("an_alias_windows_generates_for_naulas_files_is_refused: skipped, the volume makes no 8.3 names\n");
+    } else {
+        CHECK(aliases == 2);
+    }
+    finish("generated-alias");
+#else
+    printf("an_alias_windows_generates_for_naulas_files_is_refused: skipped, only Windows makes 8.3 aliases\n");
+#endif
+}
+
+#define REFILL_WRITERS 3
+#define REFILL_SECONDS 20
+#define REFILL_FILES 100
+#define REFILL_NAMES 10
+
+typedef struct refill_race {
+    char folder[PATH_SIZE];
+    volatile int removal_returned;
+} refill_race;
+
+typedef struct refill_writer {
+    refill_race *race;
+    int number;
+} refill_writer;
+
+/** A file the writer holds open for a moment must not read as one another process holds against the removal. */
+static void create_letting_others_delete(const char *path) {
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+    }
+#else
+    int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (file >= 0) {
+        close(file);
+    }
+#endif
+}
+
+/**
+ * Puts back the writer's few files as fast as the removal takes them, until it returns or the time is up, so a
+ * removal that never stops still ends. A fixed set of names keeps every pass short on any file system; new names at
+ * full speed outgrow a slow removal, whose first pass then outlasts the writers.
+ */
+static void keep_refilling(refill_writer *writer) {
+    time_t deadline = time(NULL) + REFILL_SECONDS;
+    for (long made = 0; !writer->race->removal_returned && time(NULL) < deadline; made++) {
+        char path[PATH_SIZE + 64];
+        snprintf(path, sizeof path, "%s/w%d-%02ld", writer->race->folder, writer->number, made % REFILL_NAMES);
+        if (kind_at(path) == 0) {
+            create_letting_others_delete(path);
+        }
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI refill_thread(LPVOID context) {
+    keep_refilling(context);
+    return 0;
+}
+#else
+static void *refill_thread(void *context) {
+    keep_refilling(context);
+    return NULL;
+}
+#endif
+
+static naula_status remove_clone_while_refilling(refill_race *race) {
+    refill_writer writers[REFILL_WRITERS];
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+#ifdef _WIN32
+    HANDLE threads[REFILL_WRITERS];
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        writers[index].race = race;
+        writers[index].number = index;
+        threads[index] = CreateThread(NULL, 0, refill_thread, &writers[index], 0, NULL);
+    }
+    naula_status status = apply_plan();
+    race->removal_returned = 1;
+    WaitForMultipleObjects(REFILL_WRITERS, threads, TRUE, INFINITE);
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        CloseHandle(threads[index]);
+    }
+#else
+    pthread_t threads[REFILL_WRITERS];
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        writers[index].race = race;
+        writers[index].number = index;
+        pthread_create(&threads[index], NULL, refill_thread, &writers[index]);
+    }
+    naula_status status = apply_plan();
+    race->removal_returned = 1;
+    for (int index = 0; index < REFILL_WRITERS; index++) {
+        pthread_join(threads[index], NULL);
+    }
+#endif
+    return status;
+}
+
+#define REFILL_ROUNDS 10
+
+/**
+ * One removal raced by the writers: 1 when it stopped as `folder-refills` and its resume then finished, 0 when it won
+ * the race outright because the writers left the folder empty for a whole listing, which a scheduler can do.
+ */
+static int refill_round(int round) {
+    fresh("refill");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/refill"));
+    for (int index = 0; index < REFILL_FILES; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "clone/refill/f%05d", index);
+        write_text(at(name), "x");
+    }
+    refill_race race;
+    memset(&race, 0, sizeof race);
+    compose(race.folder, at("clone/refill"), NULL);
+    time_t started = time(NULL);
+    naula_status status = remove_clone_while_refilling(&race);
+    printf("a_folder_that_keeps_refilling_stops_the_removal: round %d answered %d %s after %ld s\n", round,
+           (int)status, refusal.code, (long)(time(NULL) - started));
+    int stopped = status == NAULA_REFUSED && strcmp(refusal.code, "folder-refills") == 0;
+    CHECK(stopped || status == NAULA_OK);
+    CHECK(kind_at(at(".naula-journal/lock")) == 0);
+    char *journal_file = unfinished_journal();
+    CHECK(stopped == (journal_file != NULL));
+    if (stopped) {
+        CHECK(kind_at(at("clone/refill")) == 1);
+        CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    }
+    CHECK(kind_at(at("clone")) == 0);
+    naula_memory_release(journal_file);
+    finish("refill");
+    return stopped;
+}
+
+/**
+ * Other programs keep writing into a folder of the clone while it is removed. The removal stops as `folder-refills`
+ * rather than chase them for ever, leaving its journal to be resumed, and the resume finishes once they have stopped.
+ * A round the removal wins outright proves nothing either way, so of several rounds at least one must stop; a removal
+ * that chases the writers wins every round, once their time is up.
+ */
+static void a_folder_that_keeps_refilling_stops_the_removal(void) {
+    int stopped = 0;
+    for (int round = 0; round < REFILL_ROUNDS && !stopped; round++) {
+        stopped = refill_round(round);
+    }
+    CHECK(stopped);
+}
+
+static long long clock_milliseconds(void) {
+#ifdef _WIN32
+    return (long long)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+#endif
+}
+
+#define SUBFOLDER_WRITERS 4
+#define SUBFOLDER_SECONDS 60
+#define SUBFOLDER_ROUNDS 5
+
+typedef struct subfolder_writer {
+    char folder[PATH_SIZE];
+    int number;
+    volatile int *removal_returned;
+    long made;
+} subfolder_writer;
+
+/** Makes a new subfolder under a name never used before, as fast as it can, until the removal returns or time is up. */
+static void keep_making_subfolders(subfolder_writer *writer) {
+    time_t deadline = time(NULL) + SUBFOLDER_SECONDS;
+    for (long index = 0; !*writer->removal_returned && time(NULL) < deadline; index++) {
+        char path[PATH_SIZE + 64];
+        snprintf(path, sizeof path, "%s/s%d-%08ld", writer->folder, writer->number, index);
+#ifdef _WIN32
+        writer->made += CreateDirectoryA(path, NULL) ? 1 : 0;
+#else
+        writer->made += mkdir(path, 0777) == 0 ? 1 : 0;
+#endif
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI subfolder_thread(LPVOID context) {
+    keep_making_subfolders(context);
+    return 0;
+}
+#else
+static void *subfolder_thread(void *context) {
+    keep_making_subfolders(context);
+    return NULL;
+}
+#endif
+
+static naula_status remove_clone_while_making_subfolders(subfolder_writer *writers, volatile int *removal_returned) {
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+#ifdef _WIN32
+    HANDLE threads[SUBFOLDER_WRITERS];
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        threads[index] = CreateThread(NULL, 0, subfolder_thread, &writers[index], 0, NULL);
+    }
+    naula_status status = apply_plan();
+    *removal_returned = 1;
+    WaitForMultipleObjects(SUBFOLDER_WRITERS, threads, TRUE, INFINITE);
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        CloseHandle(threads[index]);
+    }
+#else
+    pthread_t threads[SUBFOLDER_WRITERS];
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        pthread_create(&threads[index], NULL, subfolder_thread, &writers[index]);
+    }
+    naula_status status = apply_plan();
+    *removal_returned = 1;
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        pthread_join(threads[index], NULL);
+    }
+#endif
+    return status;
+}
+
+/** 1 when the removal stopped as `folder-refills` and its resume finished; every round must return well in time. */
+static int subfolder_round(int round) {
+    fresh("refill-folders");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/refill"));
+    for (int index = 0; index < 50; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "clone/refill/f%03d", index);
+        write_text(at(name), "x");
+    }
+    volatile int removal_returned = 0;
+    subfolder_writer writers[SUBFOLDER_WRITERS];
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        memset(&writers[index], 0, sizeof writers[index]);
+        compose(writers[index].folder, at("clone/refill"), NULL);
+        writers[index].number = index;
+        writers[index].removal_returned = &removal_returned;
+    }
+    long long started = clock_milliseconds();
+    naula_status status = remove_clone_while_making_subfolders(writers, &removal_returned);
+    long long took = clock_milliseconds() - started;
+    long made = 0;
+    for (int index = 0; index < SUBFOLDER_WRITERS; index++) {
+        made += writers[index].made;
+    }
+    printf("a_folder_refilled_with_new_subfolders_stops_well_before_its_writers: round %d answered %d %s after "
+           "%lld ms, the writers made %ld folders\n",
+           round, (int)status, status == NAULA_OK ? "" : refusal.code, took, made);
+    int stopped = status == NAULA_REFUSED && strcmp(refusal.code, "folder-refills") == 0;
+    CHECK(stopped || status == NAULA_OK);
+    CHECK(took < SUBFOLDER_SECONDS * 1000 / 2);
+    char *journal_file = unfinished_journal();
+    CHECK(stopped == (journal_file != NULL));
+    if (journal_file != NULL) {
+        CHECK(resume(journal_file) == NAULA_OK);
+    }
+    CHECK(kind_at(at("clone")) == 0);
+    naula_memory_release(journal_file);
+    finish("refill-folders");
+    return stopped;
+}
+
+/**
+ * Other programs keep making new subfolders in a folder of the clone. Each is entered and removed, and the folder's
+ * listing is carried on after it rather than read again, so a writer can only refill it between whole listings: the
+ * removal stops as `folder-refills` long before the writers stop, never chasing them.
+ */
+static void a_folder_refilled_with_new_subfolders_stops_well_before_its_writers(void) {
+    int stopped = 0;
+    for (int round = 0; round < SUBFOLDER_ROUNDS && !stopped; round++) {
+        stopped = subfolder_round(round);
+    }
+    CHECK(stopped);
+}
+
+#define WIDE_SUBFOLDERS 4000
+
+/**
+ * Each folder's listing is read once and carried on after each subfolder, so the removal reads each name a bounded
+ * number of times; listing the folder again after every subfolder would read about WIDE_SUBFOLDERS squared over two.
+ */
+static void a_wide_folder_is_removed_in_linear_work(void) {
+    fresh("wide");
+    make_checkout(at("clone"), "wide");
+    for (int index = 0; index < WIDE_SUBFOLDERS; index++) {
+        char name[64];
+        snprintf(name, sizeof name, "clone/d%06d", index);
+        make_folder(at(name));
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    size_t listed_before = naula_disk_test_names_listed();
+    long long started = clock_milliseconds();
+    naula_status status = apply_plan();
+    long long took = clock_milliseconds() - started;
+    size_t listed = naula_disk_test_names_listed() - listed_before;
+    printf("a_wide_folder_is_removed_in_linear_work: %d subfolders removed in %lld ms, %zu names listed: %d %s\n",
+           WIDE_SUBFOLDERS, took, listed, (int)status, status == NAULA_OK ? "" : refusal.code);
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(listed <= 2 * WIDE_SUBFOLDERS + 64);
+    finish("wide");
+}
+
+#ifdef __linux__
+static int mount_on(const char *mount_arguments, const char *folder) {
+    char command[PATH_SIZE * 3];
+    snprintf(command, sizeof command, "mount %s '%s' 2>/dev/null", mount_arguments, folder);
+    return system(command) == 0;
+}
+
+static void unmount(const char *folder) {
+    char command[PATH_SIZE * 2];
+    snprintf(command, sizeof command, "umount -l '%s' 2>/dev/null", folder);
+    if (system(command) != 0) {
+        fprintf(stderr, "cannot unmount %s\n", folder);
+        check_failures++;
+    }
+}
+
+/** A bind mount shares its file system's device, so only its mount tells it apart; tmpfs is another device as well. */
+static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
+    fresh("mount");
+    char outside[PATH_SIZE];
+    char keep[PATH_SIZE];
+    char bind_arguments[PATH_SIZE * 2];
+    compose(outside, base, "/mount/outside", NULL);
+    compose(keep, outside, "/keep.txt", NULL);
+    make_folder(outside);
+    write_text(keep, "must survive");
+    char *before = snapshot("mount/outside");
+    make_checkout(at("clone"), "clone");
+    make_folder(at("clone/mnt"));
+    snprintf(bind_arguments, sizeof bind_arguments, "--bind '%s'", outside);
+    if (!mount_on(bind_arguments, at("clone/mnt"))) {
+        printf("a_file_system_mounted_inside_a_clone_is_never_entered: skipped, mounting needs root and "
+               "CAP_SYS_ADMIN\n");
+        free(before);
+        finish("mount");
+        return;
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "mount-inside"));
+    unmount(at("clone/mnt"));
+    char *after = snapshot("mount/outside");
+    CHECK(strcmp(before, after) == 0);
+    CHECK(file_holds(keep, "must survive"));
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    if (mount_on("-t tmpfs tmpfs", at("clone/mnt"))) {
+        write_text(at("clone/mnt/on-tmpfs.txt"), "tmpfs");
+        CHECK(journal_file != NULL && refused_with(resume(journal_file), "mount-inside"));
+        CHECK(file_holds(at("clone/mnt/on-tmpfs.txt"), "tmpfs"));
+        unmount(at("clone/mnt"));
+    }
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(file_holds(keep, "must survive"));
+    naula_memory_release(journal_file);
+    free(before);
+    free(after);
+    finish("mount");
+}
+
+/**
+ * The clone's own folder is a mount point, a bind mount of a checkout outside the root and then a tmpfs holding one:
+ * nothing is removed, and once it is unmounted the resume removes the folder beneath.
+ */
+static void a_clone_that_is_itself_a_mount_point_is_never_emptied(void) {
+    fresh("mount-at");
+    char outside[PATH_SIZE];
+    char bind_arguments[PATH_SIZE * 2];
+    compose(outside, base, "/mount-at/outside", NULL);
+    make_checkout(outside, "outside checkout");
+    char *before = snapshot("mount-at/outside");
+    make_checkout(at("clone"), "beneath");
+    snprintf(bind_arguments, sizeof bind_arguments, "--bind '%s'", outside);
+    if (!mount_on(bind_arguments, at("clone"))) {
+        printf("a_clone_that_is_itself_a_mount_point_is_never_emptied: skipped, mounting needs root and "
+               "CAP_SYS_ADMIN\n");
+        free(before);
+        finish("mount-at");
+        return;
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "mount-inside"));
+    unmount(at("clone"));
+    char *after = snapshot("mount-at/outside");
+    CHECK(strcmp(before, after) == 0);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    if (mount_on("-t tmpfs tmpfs", at("clone"))) {
+        make_folder(at("clone/.git"));
+        write_text(at("clone/on-tmpfs.txt"), "tmpfs");
+        CHECK(journal_file != NULL && refused_with(resume(journal_file), "mount-inside"));
+        CHECK(kind_at(at("clone/.git")) == 1);
+        CHECK(file_holds(at("clone/on-tmpfs.txt"), "tmpfs"));
+        unmount(at("clone"));
+    }
+    CHECK(file_holds(at("clone/README.md"), "beneath"));
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    free(after);
+    after = snapshot("mount-at/outside");
+    CHECK(strcmp(before, after) == 0);
+    naula_memory_release(journal_file);
+    free(before);
+    free(after);
+    finish("mount-at");
+}
+
+/** A file bind-mounted from outside shares the clone's device, so only its mount tells it apart from the clone's. */
+static void a_file_bind_mounted_inside_a_clone_is_never_removed(void) {
+    fresh("mount-file");
+    char outside[PATH_SIZE];
+    char bind_arguments[PATH_SIZE * 2];
+    compose(outside, base, "/mount-file/outside.txt", NULL);
+    write_text(outside, "must survive");
+    make_checkout(at("clone"), "clone");
+    write_text(at("clone/target.txt"), "placeholder");
+    snprintf(bind_arguments, sizeof bind_arguments, "--bind '%s'", outside);
+    if (!mount_on(bind_arguments, at("clone/target.txt"))) {
+        printf("a_file_bind_mounted_inside_a_clone_is_never_removed: skipped, mounting needs root and CAP_SYS_ADMIN\n");
+        finish("mount-file");
+        return;
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "mount-inside"));
+    CHECK(file_holds(at("clone/target.txt"), "must survive"));
+    unmount(at("clone/target.txt"));
+    CHECK(file_holds(outside, "must survive"));
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    CHECK(file_holds(outside, "must survive"));
+    naula_memory_release(journal_file);
+    finish("mount-file");
+}
+
+/**
+ * Linux before 5.8 has no mount id in statx; the one a file handle carries tells every mount apart there as well. A
+ * test folder on a file system that names no file by handle, as overlayfs without nfs_export, cannot show it.
+ */
+static int names_files_by_handle(const char *path) {
+    _Alignas(struct file_handle) unsigned char room[sizeof(struct file_handle) + MAX_HANDLE_SZ];
+    struct file_handle *handle = (struct file_handle *)room;
+    handle->handle_bytes = MAX_HANDLE_SZ;
+    int mount_id = 0;
+    return name_to_handle_at(AT_FDCWD, path, handle, &mount_id, 0) == 0;
+}
+
+static void mounts_inside_a_clone_are_told_apart_without_statx(void) {
+    if (!names_files_by_handle(base)) {
+        printf("mounts_inside_a_clone_are_told_apart_without_statx: skipped, the test folder's file system names no "
+               "file by handle\n");
+        return;
+    }
+    fresh("by-handle");
+    make_checkout(at("clone"), "clone");
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_disk_test_mount_ids(0, 1);
+    naula_status status = apply_plan();
+    if (status != NAULA_OK) {
+        fprintf(stderr, "removing a clone by file handle mount ids: %s %s\n", refusal.code, refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    finish("by-handle");
+    a_file_system_mounted_inside_a_clone_is_never_entered();
+    a_clone_that_is_itself_a_mount_point_is_never_emptied();
+    a_file_bind_mounted_inside_a_clone_is_never_removed();
+    naula_disk_test_mount_ids(1, 1);
+}
+
+/** Where neither gives a mount id, a bind mount cannot be told from the clone, so nothing of the clone is removed. */
+static void a_clone_whose_mounts_cannot_be_told_apart_is_refused(void) {
+    fresh("unverifiable");
+    make_checkout(at("clone"), "clone");
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_disk_test_mount_ids(0, 0);
+    naula_status status = apply_plan();
+    naula_disk_test_mount_ids(1, 1);
+    CHECK(refused_with(status, "mount-unverifiable"));
+    CHECK(file_holds(at("clone/README.md"), "clone"));
+    CHECK(kind_at(at("clone/.git/HEAD")) == 2);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL && resume(journal_file) == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    naula_memory_release(journal_file);
+    finish("unverifiable");
+}
+#elif defined(_WIN32)
+/**
+ * A volume mount point is a reparse point of the junction's own tag, and making one needs an elevated process, so
+ * the junction stands in for it: it is removed itself and never entered.
+ */
+static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
+    fresh("mount");
+    char outside[PATH_SIZE];
+    compose(outside, base, "/mount/outside", NULL);
+    make_folder(outside);
+    char keep[PATH_SIZE];
+    compose(keep, outside, "/keep.txt", NULL);
+    write_text(keep, "must survive");
+    char *before = snapshot("mount/outside");
+    make_checkout(at("clone"), "clone");
+    make_link(at("clone/mnt"), outside);
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA(at("clone/mnt"), &entry);
+    CHECK(search != INVALID_HANDLE_VALUE);
+    if (search != INVALID_HANDLE_VALUE) {
+        CHECK((entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+        CHECK(entry.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
+        FindClose(search);
+    }
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    char *after = snapshot("mount/outside");
+    CHECK(strcmp(before, after) == 0);
+    free(before);
+    free(after);
+    finish("mount");
+}
+#else
+static void a_file_system_mounted_inside_a_clone_is_never_entered(void) {
+    printf("a_file_system_mounted_inside_a_clone_is_never_entered: skipped, mounting needs an elevated process here\n");
+}
+#endif
+
+/** An outside copy of `org/clone`, for a link that stands in for `org` to point at. */
+static void lay_out_an_outside_org(const char *outside) {
+    char path[PATH_SIZE];
+    remove_tree(outside);
+    make_folder(outside);
+    compose(path, outside, "/clone", NULL);
+    make_checkout(path, "outside");
+    compose(path, outside, "/clone/keep.txt", NULL);
+    write_text(path, "must survive");
+}
+
+static void removing_a_clone_refuses_a_folder_above_it_that_is_a_link(void) {
+    fresh("above");
+    char outside[PATH_SIZE];
+    compose(outside, base, "/above/outside-org", NULL);
+    lay_out_an_outside_org(outside);
+    char *before = snapshot("above/outside-org");
+    make_link(at("org"), outside);
+    disk_removal_refusal reason = DISK_REMOVAL_REFUSED;
+    unsigned long error = 0;
+    CHECK(disk_tree_remove(root, "org/clone", &reason, &error) == NAULA_REFUSED);
+    char *after = snapshot("above/outside-org");
+    CHECK(strcmp(before, after) == 0);
+    free(before);
+    free(after);
+    unlink_link(at("org"));
+    finish("above");
+}
+
+#ifdef __linux__
+/**
+ * A folder above the clone under the root is a mount: a bind mount of a folder outside the root, which shares the
+ * root's device, or a tmpfs, which does not. Either way the clone below it is not the root's to remove.
+ */
+static void a_mount_above_the_clone_stops_the_removal(void) {
+    for (int by_bind = 0; by_bind < 2; by_bind++) {
+        fresh("mount-above");
+        char outside[PATH_SIZE];
+        char keep[PATH_SIZE];
+        char arguments[PATH_SIZE * 2];
+        compose(outside, base, "/mount-above/outside-org", NULL);
+        lay_out_an_outside_org(outside);
+        make_folder(at("org"));
+        if (by_bind) {
+            snprintf(arguments, sizeof arguments, "--bind '%s'", outside);
+        } else {
+            snprintf(arguments, sizeof arguments, "-t tmpfs tmpfs");
+        }
+        if (!mount_on(arguments, at("org"))) {
+            printf("a_mount_above_the_clone_stops_the_removal: skipped, this process cannot mount\n");
+            finish("mount-above");
+            return;
+        }
+        if (!by_bind) {
+            make_checkout(at("org/clone"), "on tmpfs");
+            write_text(at("org/clone/keep.txt"), "must survive");
+        }
+        compose(keep, at("org/clone/keep.txt"), NULL);
+        plan_start();
+        plan_add(NAULA_REMOVE_CLONE, at("org/clone"), NULL, NULL);
+        CHECK(refused_with(apply_plan(), "mount-inside"));
+        CHECK(file_holds(keep, "must survive"));
+        CHECK(kind_at(at("org/clone/.git/HEAD")) == 2);
+        unmount(at("org"));
+        finish("mount-above");
+    }
+}
+
+/** Takes away the link lay_out_an_org made in `folder`, which the test's own removal never enters. */
+static void unlink_an_org(const char *folder) {
+    char link[PATH_SIZE];
+    compose(link, folder, "/link", NULL);
+    if (kind_at(link) == 3) {
+        unlink_link(link);
+    }
+}
+
+/**
+ * `org` under the root is a bind mount of a folder outside it, which shares the root's device: every call that changes
+ * the disk below it is refused as a mount, and so is the applier's move of a checkout inside it, so nothing outside
+ * changes.
+ */
+static void every_change_refuses_a_mount_above_it(void) {
+    char outside[PATH_SIZE];
+    char arguments[PATH_SIZE * 2];
+    for (int change = 0; change <= CHANGE_COUNT; change++) {
+        fresh("mount-change");
+        make_folder(at("repos"));
+        compose(outside, base, "/mount-change/outside-org", NULL);
+        lay_out_an_org(outside);
+        lay_out_an_org(at("org"));
+        make_checkout(at("clone"), "inside");
+        char *before = snapshot("mount-change/outside-org");
+        snprintf(arguments, sizeof arguments, "--bind '%s'", outside);
+        if (!mount_on(arguments, at("org"))) {
+            printf("every_change_refuses_a_mount_above_it: skipped, this process cannot mount\n");
+            free(before);
+            unlink_an_org(outside);
+            unlink_an_org(at("org"));
+            finish("mount-change");
+            return;
+        }
+        unsigned long error = 0;
+        naula_status status = NAULA_REFUSED;
+        int is_mount = 0;
+        if (change < CHANGE_COUNT) {
+            status = make_change((swapped_change)change, &error);
+            is_mount = disk_error_is_mount(error);
+        } else {
+            plan_start();
+            plan_add(NAULA_MOVE_CHECKOUT, at("org/clone"), at("org/moved"), NULL);
+            status = apply_plan();
+            is_mount = status == NAULA_REFUSED && strcmp(refusal.code, "mount-inside") == 0;
+        }
+        unmount(at("org"));
+        char *after = snapshot("mount-change/outside-org");
+        const char *name = change < CHANGE_COUNT ? CHANGE_NAMES[change] : "the applier's move";
+        if (status != NAULA_REFUSED || !is_mount || strcmp(before, after) != 0 || kind_at(at("moved")) != 0) {
+            fprintf(stderr, "%s through a bind mount: status %d, error %lu, %s, outside now:\n%s\n", name, (int)status,
+                    error, refusal.code, after);
+            check_failures++;
+        }
+        free(before);
+        free(after);
+        unlink_an_org(outside);
+        unlink_an_org(at("org"));
+        finish("mount-change");
+    }
+}
+#endif
+
+#ifndef _WIN32
+/** The FIFO that stands in for the file the applier found, put there the moment before it is read. */
+typedef struct fifo_swap {
+    char path[PATH_SIZE];
+    int swapped_in;
+} fifo_swap;
+
+static void swap_file_for_fifo(disk_test_point point, const char *name, void *context) {
+    fifo_swap *swap = context;
+    if (point == DISK_TEST_BEFORE_FILE_OPEN && !swap->swapped_in && strcmp(name, swap->path) == 0) {
+        swap->swapped_in = unlink(swap->path) == 0 && mkfifo(swap->path, 0666) == 0;
+    }
+}
+
+/** Reading a FIFO with no writer waits for ever, so the alarm turns a read that waits into a failed run. */
+static void a_fifo_swapped_in_for_a_file_is_refused_without_waiting(void) {
+    fresh("fifo");
+    write_text(at("CLAUDE.md"), "hand written\n");
+    fifo_swap swap;
+    memset(&swap, 0, sizeof swap);
+    compose(swap.path, at("CLAUDE.md"), NULL);
+    plan_start();
+    plan_add(NAULA_WRITE_FILE, at("CLAUDE.md"), NULL, "@docs/RULES.md\n");
+    naula_disk_test_hook(swap_file_for_fifo, &swap);
+    alarm(60);
+    naula_status status = apply_plan();
+    alarm(0);
+    naula_disk_test_hook(NULL, NULL);
+    CHECK(swap.swapped_in);
+    CHECK(refused_with(status, "path-unreadable"));
+    finish("fifo");
+}
+#else
+static void a_fifo_swapped_in_for_a_file_is_refused_without_waiting(void) {
+    printf("a_fifo_swapped_in_for_a_file_is_refused_without_waiting: skipped, Windows has no FIFO in a folder\n");
+}
+#endif
+
+typedef struct above_race {
+    char lock[PATH_SIZE];
+    char org[PATH_SIZE];
+    char moved[PATH_SIZE];
+    char outside[PATH_SIZE];
+    unsigned long delay;
+    volatile int removal_returned;
+    int swapped_in;
+} above_race;
+
+static void swap_above_once_the_run_starts(above_race *race) {
+    while (kind_at(race->lock) == 0 && !race->removal_returned) {
+    }
+    for (volatile unsigned long spin = 0; spin < race->delay; spin++) {
+    }
+#ifdef _WIN32
+    int moved = MoveFileA(race->org, race->moved) != 0;
+#else
+    int moved = rename(race->org, race->moved) == 0;
+#endif
+    if (moved) {
+        race->swapped_in = link_made(race->org, race->outside);
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI above_thread(LPVOID context) {
+    swap_above_once_the_run_starts(context);
+    return 0;
+}
+#else
+static void *above_thread(void *context) {
+    swap_above_once_the_run_starts(context);
+    return NULL;
+}
+#endif
+
+/** Best effort: the folder above the clone is swapped for a link while the run checks and removes it. */
+static void removing_a_clone_never_follows_a_folder_above_it_swapped_for_a_link(void) {
+    char outside[PATH_SIZE];
+    compose(outside, base, "/above-race-outside", NULL);
+    lay_out_an_outside_org(outside);
+    char *before = snapshot("above-race-outside");
+    int swaps = 0;
+    for (unsigned long round = 0; round < SWAP_ROUNDS; round++) {
+        fresh("above-race");
+        make_folder(at("org"));
+        make_checkout(at("org/clone"), "inside");
+        for (int index = 0; index < 200; index++) {
+            char name[64];
+            snprintf(name, sizeof name, "org/clone/f%04d.txt", index);
+            write_text(at(name), "x");
+        }
+        above_race race;
+        memset(&race, 0, sizeof race);
+        compose(race.lock, at(".naula-journal/lock"), NULL);
+        compose(race.org, at("org"), NULL);
+        compose(race.moved, base, "/above-race/org-moved", NULL);
+        compose(race.outside, outside, NULL);
+        race.delay = round * 20000ul;
+        plan_start();
+        plan_add(NAULA_REMOVE_CLONE, at("org/clone"), NULL, NULL);
+#ifdef _WIN32
+        HANDLE thread = CreateThread(NULL, 0, above_thread, &race, 0, NULL);
+        naula_status status = apply_plan();
+        race.removal_returned = 1;
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+#else
+        pthread_t thread;
+        pthread_create(&thread, NULL, above_thread, &race);
+        naula_status status = apply_plan();
+        race.removal_returned = 1;
+        pthread_join(thread, NULL);
+#endif
+        CHECK(status == NAULA_OK || status == NAULA_REFUSED);
+        char *after = snapshot("above-race-outside");
+        if (strcmp(before, after) != 0) {
+            fprintf(stderr, "round %lu: the folder outside the root changed:\n%s\n", round, after);
+            check_failures++;
+        }
+        free(after);
+        swaps += race.swapped_in;
+        if (kind_at(at("org")) == 3) {
+            unlink_link(at("org"));
+        }
+        finish("above-race");
+    }
+    printf("removing_a_clone_never_follows_a_folder_above_it_swapped_for_a_link: %d of %d rounds swapped\n", swaps,
+           SWAP_ROUNDS);
+    free(before);
+    remove_tree(outside);
+}
+
+#ifdef _WIN32
+typedef HANDLE folder_handle;
+#define NO_FOLDER INVALID_HANDLE_VALUE
+
+typedef LONG(NTAPI *test_nt_create_file)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
+                                         ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+
+#define DEEP_ACCESS (FILE_LIST_DIRECTORY | FILE_ADD_SUBDIRECTORY | FILE_TRAVERSE | SYNCHRONIZE)
+#define DEEP_SHARE (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+
+static folder_handle open_folder_handle(const char *path) {
+    return CreateFileA(path, DEEP_ACCESS, DEEP_SHARE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+}
+
+static void close_folder_handle(folder_handle folder) {
+    CloseHandle(folder);
+}
+
+/** Makes `d` in `parent` relative to its handle, so no path length limits how deep a test goes, and opens it. */
+static folder_handle open_deeper(folder_handle parent) {
+    static test_nt_create_file create;
+    if (create == NULL) {
+        create = (test_nt_create_file)(void (*)(void))GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile");
+    }
+    WCHAR name[] = L"d";
+    UNICODE_STRING relative = {sizeof(WCHAR), sizeof(WCHAR), name};
+    OBJECT_ATTRIBUTES attributes;
+    InitializeObjectAttributes(&attributes, &relative, OBJ_CASE_INSENSITIVE, parent, NULL);
+    IO_STATUS_BLOCK io;
+    HANDLE child = INVALID_HANDLE_VALUE;
+    LONG result = create(&child, DEEP_ACCESS, &attributes, &io, NULL, 0, DEEP_SHARE, 3 /* FILE_OPEN_IF */,
+                         0x1 /* FILE_DIRECTORY_FILE */ | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+    return result < 0 ? NO_FOLDER : child;
+}
+#else
+typedef int folder_handle;
+#define NO_FOLDER (-1)
+
+static folder_handle open_folder_handle(const char *path) {
+    return open(path, O_RDONLY | O_DIRECTORY);
+}
+
+static void close_folder_handle(folder_handle folder) {
+    close(folder);
+}
+
+static folder_handle open_deeper(folder_handle parent) {
+    mkdirat(parent, "d", 0777);
+    return openat(parent, "d", O_RDONLY | O_DIRECTORY);
+}
+#endif
+
+/** One more folder `d` below `deepest`, which it closes, and the new deepest held open. */
+static folder_handle go_deeper(folder_handle deepest) {
+    folder_handle deeper = open_deeper(deepest);
+    close_folder_handle(deepest);
+    return deeper;
+}
+
+/** `levels` nested folders `d` below `path`, made relative to each other, since their full path passes any limit. */
+static void make_deep(const char *path, size_t levels) {
+    folder_handle folder = open_folder_handle(path);
+    for (size_t level = 0; level < levels && folder != NO_FOLDER; level++) {
+        folder = go_deeper(folder);
+    }
+    if (folder == NO_FOLDER) {
+        fprintf(stderr, "cannot make the deep folders\n");
+        check_failures++;
+        return;
+    }
+    close_folder_handle(folder);
+}
+
+/** Removes a `levels` deep `clone` below the root that the removal refused, in two halves each within its bound. */
+static void remove_deep_clone(size_t levels) {
+    size_t half = levels / 2;
+    char *below = malloc(6 + half * 2 + 1);
+    memcpy(below, "clone", 6);
+    for (size_t level = 0; level < half; level++) {
+        memcpy(below + 5 + level * 2, "/d", 3);
+    }
+    disk_removal_refusal reason = DISK_REMOVAL_REFUSED;
+    unsigned long error = 0;
+    CHECK(half == 0 || disk_tree_remove(root, below, &reason, &error) == NAULA_OK);
+    CHECK(disk_tree_remove(root, "clone", &reason, &error) == NAULA_OK);
+    free(below);
+}
+
+/**
+ * The bound the deep tests reach: the system's own, except on Windows, where NTFS opens slow down with depth so far
+ * that a tree at the real bound would take the test many minutes; there the bound is lowered and its value checked.
+ */
+static size_t depth_bound_for_tests(void) {
+#ifdef _WIN32
+    CHECK(disk_removal_depth_limit() == 16383);
+    naula_disk_test_depth_limit(1024);
+#endif
+    return disk_removal_depth_limit();
+}
+
+/** A clone exactly as deep as the removal's bound, which no checkout passes, is removed. */
+static void a_clone_as_deep_as_any_checkout_is_removed(void) {
+    size_t levels = depth_bound_for_tests();
+    fresh("deep");
+    make_checkout(at("clone"), "deep");
+    make_deep(at("clone"), levels);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_status status = apply_plan();
+    if (status != NAULA_OK) {
+        fprintf(stderr, "removing a clone %zu folders deep: %d %s %s\n", levels, (int)status, refusal.code,
+                refusal.detail);
+    }
+    CHECK(status == NAULA_OK);
+    CHECK(kind_at(at("clone")) == 0);
+    if (kind_at(at("clone")) == 1) {
+        remove_deep_clone(levels);
+    }
+    finish("deep");
+    naula_disk_test_depth_limit(0);
+}
+
+static void a_clone_deeper_than_any_checkout_is_refused(void) {
+    size_t levels = depth_bound_for_tests() + 1;
+    fresh("too-deep");
+    make_checkout(at("clone"), "deep");
+    make_deep(at("clone"), levels);
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "folder-too-deep"));
+    CHECK(kind_at(at("clone")) == 1);
+    char *journal_file = unfinished_journal();
+    CHECK(journal_file != NULL);
+    naula_memory_release(journal_file);
+    remove_deep_clone(levels);
+    finish("too-deep");
+    naula_disk_test_depth_limit(0);
+}
+
+/** Another program making one new folder below the deepest each time the removal goes a level down. */
+typedef struct deep_writer {
+    folder_handle deepest;
+    size_t levels;
+    size_t most;
+} deep_writer;
+
+static void write_one_level_deeper(disk_test_point point, const char *name, void *context) {
+    deep_writer *writer = context;
+    if (point != DISK_TEST_BEFORE_ENTRY_OPEN || strcmp(name, "d") != 0 || writer->deepest == NO_FOLDER) {
+        return;
+    }
+    if (writer->levels >= writer->most) {
+        close_folder_handle(writer->deepest);
+        writer->deepest = NO_FOLDER;
+        return;
+    }
+    writer->deepest = go_deeper(writer->deepest);
+    writer->levels += writer->deepest != NO_FOLDER;
+}
+
+/**
+ * Every folder the writer makes is filled only once, so no per-folder bound stops it; the depth bound does, at the
+ * same level whatever the writer's speed. It stops making folders well past the bound, so a removal that misses the
+ * bound still ends, and empties the clone.
+ */
+static void a_writer_making_ever_deeper_folders_is_stopped(void) {
+    size_t limit = depth_bound_for_tests();
+    fresh("deep-writer");
+    make_checkout(at("clone"), "deep");
+    make_folder(at("clone/d"));
+    deep_writer writer = {open_folder_handle(at("clone/d")), 1, limit + 64};
+    plan_start();
+    plan_add(NAULA_REMOVE_CLONE, at("clone"), NULL, NULL);
+    naula_disk_test_hook(write_one_level_deeper, &writer);
+    naula_status status = apply_plan();
+    naula_disk_test_hook(NULL, NULL);
+    if (writer.deepest != NO_FOLDER) {
+        close_folder_handle(writer.deepest);
+    }
+    CHECK(refused_with(status, "folder-too-deep"));
+    CHECK(writer.levels <= limit + 2);
+    if (kind_at(at("clone")) == 1) {
+        remove_deep_clone(writer.levels);
+    }
+    finish("deep-writer");
+    naula_disk_test_depth_limit(0);
 }
 
 static void a_repointed_recorded_link_is_forgotten_by_the_scan(void) {
@@ -1903,7 +3368,7 @@ static void a_move_never_replaces_an_empty_folder(void) {
     make_folder(at("to"));
     int held = 0;
     unsigned long error = 0;
-    CHECK(disk_move(at("from"), at("to"), &held, &error) == NAULA_REFUSED);
+    CHECK(disk_move(root, "from", "to", &held, &error) == NAULA_REFUSED);
     CHECK(file_holds(at("from/work.txt"), "work"));
     CHECK(kind_at(at("to")) == 1);
     CHECK(kind_at(at("to/work.txt")) == 0);
@@ -1923,6 +3388,7 @@ static const named_test TESTS[] = {
     {"apply_stops_at_a_held_folder_and_resumes", apply_stops_at_a_held_folder_and_resumes},
     {"apply_renames_the_memory_bank_of_a_moved_checkout", apply_renames_the_memory_bank_of_a_moved_checkout},
     {"apply_refuses_an_existing_memory_bank_target", apply_refuses_an_existing_memory_bank_target},
+    {"a_memory_banks_folder_that_is_a_link_moves_each_bank", a_memory_banks_folder_that_is_a_link_moves_each_bank},
     {"removing_a_link_leaves_its_target_intact", removing_a_link_leaves_its_target_intact},
     {"remove_link_refuses_a_folder", remove_link_refuses_a_folder},
     {"remove_link_refuses_a_link_to_another_target", remove_link_refuses_a_link_to_another_target},
@@ -1957,10 +3423,38 @@ static const named_test TESTS[] = {
     {"a_journal_torn_inside_its_opening_append_reads_as_stopped", a_journal_torn_inside_its_opening_append_reads_as_stopped},
     {"a_clone_holding_a_read_only_folder_is_removed", a_clone_holding_a_read_only_folder_is_removed},
     {"removing_a_clone_leaves_a_hard_linked_read_only_file_read_only", removing_a_clone_leaves_a_hard_linked_read_only_file_read_only},
-    {"a_step_naming_an_entry_by_an_alias_is_refused", a_step_naming_an_entry_by_an_alias_is_refused},
+    {"a_step_naming_naulas_files_by_an_alias_is_refused_on_windows", a_step_naming_naulas_files_by_an_alias_is_refused_on_windows},
+    {"a_name_with_a_tilde_moves_on_every_platform", a_name_with_a_tilde_moves_on_every_platform},
+    {"a_name_windows_opens_as_another_is_refused_everywhere", a_name_windows_opens_as_another_is_refused_everywhere},
+    {"a_path_with_a_trailing_separator_is_refused_as_input", a_path_with_a_trailing_separator_is_refused_as_input},
+    {"a_journal_stamped_in_the_future_never_blocks_a_resume", a_journal_stamped_in_the_future_never_blocks_a_resume},
+    {"removing_a_clone_refuses_a_folder_above_it_that_is_a_link", removing_a_clone_refuses_a_folder_above_it_that_is_a_link},
+    {"removing_a_clone_never_follows_a_folder_above_it_swapped_for_a_link", removing_a_clone_never_follows_a_folder_above_it_swapped_for_a_link},
+    {"a_clone_as_deep_as_any_checkout_is_removed", a_clone_as_deep_as_any_checkout_is_removed},
+    {"a_clone_deeper_than_any_checkout_is_refused", a_clone_deeper_than_any_checkout_is_refused},
+    {"a_writer_making_ever_deeper_folders_is_stopped", a_writer_making_ever_deeper_folders_is_stopped},
+    {"every_change_refuses_a_folder_above_it_swapped_for_a_link", every_change_refuses_a_folder_above_it_swapped_for_a_link},
+    {"a_fifo_swapped_in_for_a_file_is_refused_without_waiting", a_fifo_swapped_in_for_a_file_is_refused_without_waiting},
     {"a_repointed_recorded_link_is_forgotten_by_the_scan", a_repointed_recorded_link_is_forgotten_by_the_scan},
     {"writing_the_root_file_takes_the_roots_lock", writing_the_root_file_takes_the_roots_lock},
     {"a_move_never_replaces_an_empty_folder", a_move_never_replaces_an_empty_folder},
+    {"a_journal_sequence_past_the_largest_refuses_the_run", a_journal_sequence_past_the_largest_refuses_the_run},
+    {"two_journals_of_one_sequence_refuse_the_run_and_the_resume", two_journals_of_one_sequence_refuse_the_run_and_the_resume},
+    {"a_step_into_naulas_files_is_refused_by_their_identity", a_step_into_naulas_files_is_refused_by_their_identity},
+    {"an_alias_windows_generates_for_naulas_files_is_refused", an_alias_windows_generates_for_naulas_files_is_refused},
+    {"a_folder_that_keeps_refilling_stops_the_removal", a_folder_that_keeps_refilling_stops_the_removal},
+    {"a_folder_refilled_with_new_subfolders_stops_well_before_its_writers", a_folder_refilled_with_new_subfolders_stops_well_before_its_writers},
+    {"a_wide_folder_is_removed_in_linear_work", a_wide_folder_is_removed_in_linear_work},
+    {"a_file_held_without_read_sharing_is_removed", a_file_held_without_read_sharing_is_removed},
+    {"a_file_system_mounted_inside_a_clone_is_never_entered", a_file_system_mounted_inside_a_clone_is_never_entered},
+#ifdef __linux__
+    {"a_clone_that_is_itself_a_mount_point_is_never_emptied", a_clone_that_is_itself_a_mount_point_is_never_emptied},
+    {"a_file_bind_mounted_inside_a_clone_is_never_removed", a_file_bind_mounted_inside_a_clone_is_never_removed},
+    {"mounts_inside_a_clone_are_told_apart_without_statx", mounts_inside_a_clone_are_told_apart_without_statx},
+    {"a_clone_whose_mounts_cannot_be_told_apart_is_refused", a_clone_whose_mounts_cannot_be_told_apart_is_refused},
+    {"a_mount_above_the_clone_stops_the_removal", a_mount_above_the_clone_stops_the_removal},
+    {"every_change_refuses_a_mount_above_it", every_change_refuses_a_mount_above_it},
+#endif
 };
 
 /** With a test's name as its argument, runs that test alone, so a mutation shows which test it turns red. */

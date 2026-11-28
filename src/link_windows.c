@@ -5,6 +5,7 @@
 #include <wchar.h>
 
 #include "disk.h"
+#include "disk_windows_internal.h"
 #include "naula/memory.h"
 #include "wide_path.h"
 
@@ -203,63 +204,86 @@ static naula_status mount_point_buffer(const wchar_t *full, unsigned char **buff
     return NAULA_OK;
 }
 
-static naula_status set_mount_point(const wchar_t *wide, const unsigned char *buffer, DWORD size,
-                                    unsigned long *error) {
-    HANDLE handle = CreateFileW(wide, GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
-                                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
-    if (handle == INVALID_HANDLE_VALUE) {
-        return refused(error);
+#define LINK_MAKE_ACCESS (FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE)
+#define LINK_REMOVE_ACCESS (DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE)
+
+/** Makes the empty folder `name` in the walked folder and turns it into the mount point `buffer` describes. */
+static naula_status make_mount_point(const disk_walk *walk, const unsigned char *buffer, DWORD size,
+                                     unsigned long *error) {
+    HANDLE made = INVALID_HANDLE_VALUE;
+    naula_status status = disk_open_at(&walk->opener, walk->parent, walk->name, walk->name_bytes, LINK_MAKE_ACCESS, 0,
+                                       FILE_CREATE, FILE_DIRECTORY_FILE | DISK_OPEN_OPTIONS, &made, error);
+    if (status != NAULA_OK) {
+        return status;
     }
     DWORD returned = 0;
-    BOOL set = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, (LPVOID)buffer, size, NULL, 0, &returned, NULL);
-    naula_status status = set ? NAULA_OK : refused(error);
-    CloseHandle(handle);
+    if (!DeviceIoControl(made, FSCTL_SET_REPARSE_POINT, (LPVOID)buffer, size, NULL, 0, &returned, NULL)) {
+        status = refused(error);
+        unsigned long ignored = 0;
+        disk_delete_by_handle(made, FILE_ATTRIBUTE_DIRECTORY, &ignored);
+    }
+    CloseHandle(made);
     return status;
 }
 
-naula_status disk_link_make(const char *path, const char *target, unsigned long *error) {
-    wchar_t *wide = NULL;
+naula_status disk_link_make(const char *root, const char *below, const char *target, unsigned long *error) {
     wchar_t *full = NULL;
     unsigned char *buffer = NULL;
     DWORD size = 0;
     *error = 0;
-    naula_status status = wide_path(path, &wide);
-    if (status == NAULA_OK) {
-        status = full_target(target, &full);
-    }
+    naula_status status = full_target(target, &full);
     if (status == NAULA_OK) {
         status = mount_point_buffer(full, &buffer, &size);
     }
-    if (status == NAULA_OK && !CreateDirectoryW(wide, NULL)) {
-        status = refused(error);
-    } else if (status == NAULA_OK) {
-        status = set_mount_point(wide, buffer, size, error);
-        if (status != NAULA_OK) {
-            RemoveDirectoryW(wide);
-        }
+    disk_walk walk;
+    walk.parent = INVALID_HANDLE_VALUE;
+    walk.below = NULL;
+    if (status == NAULA_OK) {
+        status = disk_walk_to_parent(root, below, &walk, error);
     }
+    if (status == NAULA_OK) {
+        status = make_mount_point(&walk, buffer, size, error);
+    }
+    disk_walk_release(&walk);
     naula_memory_release(buffer);
     naula_memory_release(full);
-    naula_memory_release(wide);
     return status;
 }
 
-naula_status disk_link_remove(const char *path, unsigned long *error) {
-    wchar_t *wide = NULL;
-    *error = 0;
-    naula_status status = wide_path(path, &wide);
-    if (status != NAULA_OK) {
-        return status;
+/** Only a junction or a symlink, judged by the handle that removes it, never by a path read before. */
+static naula_status refuse_unless_link(HANDLE handle, DWORD *attributes, unsigned long *error) {
+    FILE_ATTRIBUTE_TAG_INFO tag;
+    if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &tag, sizeof tag)) {
+        return refused(error);
     }
-    DWORD attributes = GetFileAttributesW(wide);
-    if (attributes == INVALID_FILE_ATTRIBUTES) {
-        status = refused(error);
-    } else if (!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    *attributes = tag.FileAttributes;
+    if (!(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || !is_link_tag(tag.ReparseTag)) {
         *error = ERROR_NOT_A_REPARSE_POINT;
-        status = NAULA_REFUSED;
-    } else if (attributes & FILE_ATTRIBUTE_DIRECTORY ? !RemoveDirectoryW(wide) : !DeleteFileW(wide)) {
-        status = refused(error);
+        return NAULA_REFUSED;
     }
-    naula_memory_release(wide);
+    return NAULA_OK;
+}
+
+naula_status disk_link_remove(const char *root, const char *below, unsigned long *error) {
+    *error = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    HANDLE link = INVALID_HANDLE_VALUE;
+    if (status == NAULA_OK) {
+        status = disk_open_at(&walk.opener, walk.parent, walk.name, walk.name_bytes, LINK_REMOVE_ACCESS,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, DISK_OPEN_OPTIONS, &link,
+                              error);
+    }
+    DWORD attributes = 0;
+    if (status == NAULA_OK) {
+        status = refuse_unless_link(link, &attributes, error);
+    }
+    if (status == NAULA_OK) {
+        status = disk_delete_by_handle(link, attributes, error);
+    }
+    if (link != INVALID_HANDLE_VALUE) {
+        CloseHandle(link);
+    }
+    disk_walk_release(&walk);
     return status;
 }

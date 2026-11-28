@@ -67,7 +67,9 @@ naula_status apply_refuse_disk(naula_refusal *refusal, const char *code, const c
     return NAULA_REFUSED;
 }
 
-static naula_status require_folder(const char *path, int make, const char *link_code, naula_refusal *refusal) {
+/** `path` is `below` under `root`, or `root` itself when `below` is NULL, which is never made. */
+static naula_status require_folder(const char *root, const char *below, const char *path, int make,
+                                   const char *link_code, naula_refusal *refusal) {
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
     naula_status read = disk_kind_of(path, &kind, &error);
@@ -76,8 +78,8 @@ static naula_status require_folder(const char *path, int make, const char *link_
                                                          error)
                                      : read;
     }
-    if (kind == DISK_MISSING && make) {
-        naula_status status = disk_folder_make(path, &error);
+    if (kind == DISK_MISSING && make && below != NULL) {
+        naula_status status = disk_folder_make(root, below, &error);
         return status == NAULA_REFUSED ? apply_refuse_disk(refusal, "root-unwritable", RECORD_FIX, "cannot make", path,
                                                            error)
                                        : status;
@@ -94,7 +96,7 @@ static naula_status require_folder(const char *path, int make, const char *link_
 }
 
 naula_status apply_check_root(const char *root, int make, naula_refusal *refusal) {
-    naula_status status = require_folder(root, 0, "root-is-link", refusal);
+    naula_status status = require_folder(root, NULL, root, 0, "root-is-link", refusal);
     if (status == NAULA_NOT_FOUND) {
         naula_refuse(refusal, "root-missing", "make the root folder, or name the one the plan was made for",
                      "the root %s does not exist", root);
@@ -105,7 +107,7 @@ naula_status apply_check_root(const char *root, int make, naula_refusal *refusal
         return NAULA_OUT_OF_MEMORY;
     }
     if (status == NAULA_OK) {
-        status = require_folder(journal_folder, make, "record-is-link", refusal);
+        status = require_folder(root, APPLY_JOURNAL_FOLDER, journal_folder, make, "record-is-link", refusal);
         status = status == NAULA_NOT_FOUND ? NAULA_OK : status;
     }
     naula_memory_release(journal_folder);
@@ -266,7 +268,8 @@ static naula_status write_record(const char *root, const link_record *record, na
     }
     unsigned long error = 0;
     if (status == NAULA_OK) {
-        status = disk_file_replace(path, (const uint8_t *)text, strlen(text), &error);
+        status = disk_file_replace(root, APPLY_JOURNAL_FOLDER "/" APPLY_LINK_RECORD, (const uint8_t *)text, strlen(text),
+                                   &error);
         if (status == NAULA_REFUSED) {
             status = apply_refuse_disk(refusal, "record-unwritable", RECORD_FIX, "cannot write", path, error);
         }

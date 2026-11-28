@@ -16,6 +16,13 @@ const char *apply_below(const char *root, const char *path);
 /** Whether two link targets are the same text once separators read alike. */
 int apply_same_target(const char *left, const char *right);
 
+/**
+ * Refuses, as `apply-input-invalid`, a step whose `path` or `target` has a first component below `root` that the disk
+ * opens as `.naula-journal` or `.naula.json`, compared by file identity, never through a link. It runs after the rule
+ * on names, which catches the aliases Windows is known to make, for any alias that rule does not know.
+ */
+naula_status apply_check_aliases(const char *root, const naula_layout_plan *plan, naula_refusal *refusal);
+
 /** Fills `refusal` with the path and the system's text for `error`. Answers NAULA_REFUSED. */
 naula_status apply_refuse_disk(naula_refusal *refusal, const char *code, const char *fix, const char *what,
                                const char *path, unsigned long error);
@@ -54,6 +61,45 @@ typedef struct journal {
     char *path;
 } journal;
 
+#define JOURNAL_SEQUENCE_WIDTH 10
+#define JOURNAL_SEQUENCE_DIGITS_LIMIT 19
+#define JOURNAL_SEQUENCE_LARGEST 9999999999999999999ull
+
+typedef enum journal_name_kind {
+    JOURNAL_NAME_OTHER = 0,
+    JOURNAL_NAME_SEQUENCED = 1,
+    JOURNAL_NAME_UNREADABLE = 2
+} journal_name_kind;
+
+/**
+ * Reads a name of a journal's form, `<sequence>-<UTC yyyymmddThhmmssZ>.jsonl`: SEQUENCED, with `sequence` set, when the
+ * sequence has 10 to 19 digits, which always fits; UNREADABLE when it has fewer or more, which no listing may pass
+ * over as no journal; OTHER for any other name. Journals are ordered by the sequence and never by the time, which a
+ * clock set back would reorder.
+ *
+ * @implNote A journal named in the form before sequences, `<UTC yyyymmddThhmmssZ>.jsonl`, is OTHER and never read,
+ * since naula supports no outdated form of its own files.
+ */
+journal_name_kind journal_name_read(const char *name, unsigned long long *sequence);
+
+typedef struct journal_name {
+    char *name;
+    unsigned long long sequence;
+} journal_name;
+
+typedef struct journal_listing {
+    journal_name *journals;
+    size_t count;
+} journal_listing;
+
+/**
+ * The journals directly in `folder`, the largest sequence first. A name of a journal's form whose sequence cannot be
+ * read refuses the listing as `journal-sequence-invalid`, and two journals of one sequence, as a copied journal
+ * leaves, as `journal-sequence-duplicate` naming both, so every run and resume stops until the file is moved.
+ */
+naula_status journal_list(const char *folder, journal_listing *listing, naula_refusal *refusal);
+void journal_listing_release(journal_listing *listing);
+
 /** Creates a new journal for `plan` at `root`, holding the root and every step before any step runs. */
 naula_status journal_start(const char *root, const naula_layout_plan *plan, journal *journal, naula_refusal *refusal);
 /** Appends one progress line for `step`; `code` and `previous` are written only when set. */
@@ -82,7 +128,9 @@ typedef struct journal_contents {
  */
 naula_status journal_load(const char *path, journal_contents *contents, naula_refusal *refusal);
 /** Opens an existing journal to append to, first ending a line a crash cut short. */
-naula_status journal_reopen(const char *path, int ends_mid_line, journal *journal, naula_refusal *refusal);
+/** Reopens the journal `path` names below `root`, by a walk from the root. */
+naula_status journal_reopen(const char *root, const char *path, int ends_mid_line, journal *journal,
+                            naula_refusal *refusal);
 void journal_contents_release(journal_contents *contents);
 
 /** The memory bank folder of `real_path` under `banks`, NULL when memory runs out or the key does not fit. */

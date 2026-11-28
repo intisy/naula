@@ -49,7 +49,10 @@ int layout_path_strictly_encloses(const char *outer, const char *inner);
 int layout_path_equal(const char *left, const char *right);
 /** 1 for `/`, 3 for a drive letter, a colon and a separator, 0 for a path that is not absolute. */
 size_t layout_filesystem_root_length(const char *path);
+/** An absolute path with no empty, `.`, `..` or colon-holding segment and no trailing separator. */
 int layout_is_clean_absolute(const char *path);
+/** Whether every segment of the relative `path` is a name Windows holds as itself, see windows_name_is_safe. */
+int layout_is_portable_relative(const char *path);
 const char *layout_basename(const char *path);
 char *layout_relative(const char *from, const char *to);
 const char *layout_below_root(const char *root, const char *path);

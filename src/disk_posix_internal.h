@@ -1,13 +1,41 @@
 #ifndef NAULA_DISK_POSIX_INTERNAL_H
 #define NAULA_DISK_POSIX_INTERNAL_H
 
+#include "disk.h"
 #include "naula/status.h"
 
+/** The folder a walk from a root reached, held open, and the last component of its `below`, to act on by name. */
+typedef struct disk_walk {
+    int parent;
+    const char *name;
+    char *below;
+} disk_walk;
+
 /**
- * Flushes the folder holding `path`, so a name made, renamed or removed there survives a power cut. Out of memory is
- * answered after the change it follows was made, which the journal's missing `done` line leaves to a resume to
- * confirm.
+ * Opens `root`, then every component of `below` but the last relative to the folder before it, never through a link,
+ * refusing a component that is empty, `.` or `..`. Release `walk` with disk_walk_release whatever this answers.
  */
-naula_status disk_sync_parent(const char *path);
+naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error);
+void disk_walk_release(disk_walk *walk);
+
+#ifdef NAULA_TEST_HOOKS
+void disk_test_reach(disk_test_point point, const char *name);
+#else
+static inline void disk_test_reach(disk_test_point point, const char *name) {
+    (void)point;
+    (void)name;
+}
+#endif
+
+#if defined(NAULA_TEST_HOOKS) && defined(__linux__)
+/**
+ * Lets a removal read mount ids by statx, by file handle, both or neither, so a test stands in for a Linux before 5.8
+ * or a file system that names no file by handle; both is the default.
+ *
+ * @implNote Defined only when NAULA_TEST_HOOKS is set, which only the naula_test_hooks library does; the shipped
+ * library carries no such symbol and always tries both.
+ */
+void naula_disk_test_mount_ids(int by_statx, int by_file_handle);
+#endif
 
 #endif
