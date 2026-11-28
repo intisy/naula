@@ -7,6 +7,7 @@
 #include "naula/memory.h"
 #include "repo_file_internal.h"
 #include "repo_file_rules.h"
+#include "windows_name.h"
 
 static const char *const UNKNOWN_MEMBER_FIX = "remove the member, or spell it as repo.json format 2 does";
 static const char *const TOPIC_FIX = "list at most " REPO_FILE_TEXT_OF(REPO_FILE_TOPIC_COUNT_LIMIT)
@@ -194,21 +195,8 @@ static int is_named(const char *segment, size_t length, const char *name) {
     return 1;
 }
 
-/** Windows opens the device for these names with any extension, so such a folder can never be created there. */
-static int is_device_name(const char *segment, size_t length) {
-    const char *dot = memchr(segment, '.', length);
-    size_t base = dot == NULL ? length : (size_t)(dot - segment);
-    if (is_named(segment, base, "con") || is_named(segment, base, "prn") || is_named(segment, base, "aux") ||
-        is_named(segment, base, "nul")) {
-        return 1;
-    }
-    int is_port = base == 4 && (is_named(segment, 3, "com") || is_named(segment, 3, "lpt"));
-    return is_port && segment[3] >= '1' && segment[3] <= '9';
-}
-
 static int is_path_segment(const char *segment, size_t length) {
-    if (length == 0 || segment[length - 1] == '.' || is_named(segment, length, ".git") ||
-        is_device_name(segment, length)) {
+    if (length == 0 || is_named(segment, length, ".git") || !windows_name_is_safe(segment, length)) {
         return 0;
     }
     for (size_t index = 0; index < length; index++) {

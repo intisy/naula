@@ -10,6 +10,7 @@
 #include "disk_windows_internal.h"
 #include "naula/memory.h"
 #include "wide_path.h"
+#include "windows_name.h"
 
 #define FILE_LIMIT (16 * 1024 * 1024)
 #define WRITE_CHUNK 65536u
@@ -552,6 +553,25 @@ static int is_walkable_name(const wchar_t *name, size_t length) {
     return length > 0 && !(length == 1 && name[0] == L'.') && !(length == 2 && name[0] == L'.' && name[1] == L'.');
 }
 
+/**
+ * Whether every component of `below` is a name NtCreateFile makes as Win32 opens it.
+ *
+ * @implNote A relative open hands the name to NTFS raw, so `clone.` or `CON` would be made literally, a name no Win32
+ * program then opens as itself.
+ */
+static int is_win32_named(const char *below) {
+    for (const char *component = below;;) {
+        size_t length = strcspn(component, "/\\");
+        if (!windows_name_is_safe(component, length)) {
+            return 0;
+        }
+        if (component[length] == '\0') {
+            return 1;
+        }
+        component += length + 1;
+    }
+}
+
 naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error) {
     walk->parent = INVALID_HANDLE_VALUE;
     walk->below = NULL;
@@ -560,6 +580,10 @@ naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk 
     disk_test_reach(DISK_TEST_BEFORE_WALK, below);
     if (!relative_opener_load(&walk->opener)) {
         *error = ERROR_PROC_NOT_FOUND;
+        return NAULA_REFUSED;
+    }
+    if (!is_win32_named(below)) {
+        *error = ERROR_INVALID_NAME;
         return NAULA_REFUSED;
     }
     naula_status status = wide_text(below, &walk->below);

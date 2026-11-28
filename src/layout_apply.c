@@ -130,14 +130,12 @@ static int is_naula_short_alias(const char *first) {
 }
 
 /**
- * A path below the root that names naula's own files there, which no step may touch. On Windows that includes the
- * names Windows opens as them: a trailing dot or space is dropped (`.naula-journal.`), and an 8.3 alias stands in.
+ * A path below the root that names naula's own files there, which no step may touch. On Windows that includes an 8.3
+ * alias, which opens them by another name; a trailing dot or space, which Windows drops, is refused as no portable
+ * name before this is asked.
  */
 static int names_naula_files(const char *below) {
     size_t length = strcspn(below, "/\\");
-    while (WINDOWS_ALIASES && length > 0 && (below[length - 1] == '.' || below[length - 1] == ' ')) {
-        length--;
-    }
     char first[32];
     if (length >= sizeof first) {
         return 0;
@@ -150,7 +148,8 @@ static int names_naula_files(const char *below) {
 
 static int is_usable_path(const char *root, const char *path) {
     const char *below = path == NULL ? NULL : apply_below(root, path);
-    return below != NULL && layout_is_clean_absolute(path) && !names_naula_files(below);
+    return below != NULL && layout_is_clean_absolute(path) && layout_is_portable_relative(below) &&
+           !names_naula_files(below);
 }
 
 static naula_status refuse_input(naula_refusal *refusal, const char *why, size_t index) {
@@ -170,8 +169,8 @@ static naula_status check_step(const char *root, const naula_layout_step *step, 
         return NAULA_OK;
     }
     if (!is_usable_path(root, step->path)) {
-        return refuse_input(refusal, "has a path that is not a clean absolute path below the root, or names naula's "
-                                     "own files there",
+        return refuse_input(refusal, "has a path that is not a clean absolute path below the root, holds a name "
+                                     "Windows cannot hold as itself, or names naula's own files there",
                             index);
     }
     if (needs_target(step->kind) && !is_usable_path(root, step->target)) {

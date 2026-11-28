@@ -9,11 +9,12 @@
  * A call that changes the disk takes a folder `root` and a path `below` it, opens `root` once and every component of
  * `below` but the last relative to the folder before it, never through a link, and acts on the last component by its
  * name in the folder it holds open, never by a full path. So a link swapped in anywhere below `root` after the caller
- * checked the path is refused rather than followed. A component that is empty, `.` or `..` is refused. On POSIX the
- * mount `root` is on is recorded and every folder the walk opens is judged against it: one on another file system or
- * mount, a bind mount included, is refused with an error disk_error_is_mount names, so no change lands in data mounted
- * under the root from elsewhere. On Linux a folder whose mount id cannot be read is judged by its device alone, except
- * by a removal. On Windows a mounted folder is a reparse point, refused on the walk like a link.
+ * checked the path is refused rather than followed. A component that is empty, `.` or `..` is refused, and on Windows
+ * one windows_name_is_safe refuses. On POSIX the mount `root` is on is recorded and every folder the walk opens is
+ * judged against it: one on another file system or mount, a bind mount included, is refused with an error
+ * disk_error_is_mount names, so no change lands in data mounted under the root from elsewhere. On Linux a folder whose
+ * mount id cannot be read is judged by its device alone, except by a removal. On Windows a mounted folder is a reparse
+ * point, refused on the walk like a link.
  */
 
 #include <stddef.h>

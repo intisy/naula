@@ -2,6 +2,7 @@
 
 #include "layout_internal.h"
 #include "naula/memory.h"
+#include "windows_name.h"
 
 static const char *const RESERVED_NAMES[] = {"repos",   "archive",     "CLAUDE.md",      "CLAUDE.local.md",
                                              ".claude", ".naula.json", ".naula-journal", NULL};
@@ -66,9 +67,6 @@ int layout_is_clean_absolute(const char *path) {
         return 0;
     }
     size_t end = strlen(path);
-    while (end > start && is_separator(path[end - 1])) {
-        end--;
-    }
     size_t segment = start;
     for (size_t index = start; index <= end; index++) {
         if (index == end || is_separator(path[index])) {
@@ -79,6 +77,19 @@ int layout_is_clean_absolute(const char *path) {
         }
     }
     return 1;
+}
+
+int layout_is_portable_relative(const char *path) {
+    for (const char *segment = path;;) {
+        size_t length = strcspn(segment, "/\\");
+        if (!windows_name_is_safe(segment, length)) {
+            return 0;
+        }
+        if (segment[length] == '\0') {
+            return 1;
+        }
+        segment += length + 1;
+    }
 }
 
 char *layout_concatenate(const char *first, const char *second) {

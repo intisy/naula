@@ -2033,6 +2033,7 @@ static void refused_as_input(const char *relative) {
     plan_add(NAULA_MAKE_FOLDER, at(relative), NULL, NULL);
     if (!refused_with(apply_plan(), "apply-input-invalid")) {
         fprintf(stderr, "  for %s\n", relative);
+        check_failures++;
     }
 }
 #endif
@@ -2053,11 +2054,9 @@ static void a_step_naming_naulas_files_by_an_alias_is_refused_on_windows(void) {
     refused_as_input("NAU~1");
     refused_as_input("NA1B2C~1");
 #else
-    int aliased = is_same_entry(at("NAULA-~1"), at(".naula-journal")) ||
-                  is_same_entry(at(".naula-journal."), at(".naula-journal"));
+    int aliased = is_same_entry(at("NAULA-~1"), at(".naula-journal"));
     plan_start();
     plan_add(NAULA_MAKE_FOLDER, at("NAULA-~1"), NULL, NULL);
-    plan_add(NAULA_MAKE_FOLDER, at(".naula-journal."), NULL, NULL);
     if (aliased) {
         printf("a_step_naming_naulas_files_by_an_alias_is_refused_on_windows: this file system opens Windows' "
                "aliases\n");
@@ -2070,7 +2069,7 @@ static void a_step_naming_naulas_files_by_an_alias_is_refused_on_windows(void) {
     finish("alias");
 }
 
-/** A tilde, a trailing dot or space is an ordinary name everywhere when it cannot stand for naula's own files. */
+/** A tilde is an ordinary name everywhere when it cannot stand for naula's own files. */
 static void a_name_with_a_tilde_moves_on_every_platform(void) {
     fresh("tilde");
     make_folder(at("repos"));
@@ -2090,6 +2089,65 @@ static void a_name_with_a_tilde_moves_on_every_platform(void) {
     CHECK(kind_at(at("notes~1/inner")) == 1);
     unlink_link(at("repos/a~b"));
     finish("tilde");
+}
+
+static const char *const NAMES_WINDOWS_OPENS_AS_ANOTHER[] = {
+    "clone.", "clone ", "CON", "con.txt", "Nul", "aux .log", "PRN.tar.gz", "COM1", "lpt9.md", "COM\xc2\xb9",
+    "lpt\xc2\xb3.txt", "CONIN$", "conout$.x", NULL};
+
+/**
+ * A name Windows drops a trailing dot or space from, or opens as a device, is refused on every platform before any
+ * change, so a plan that applies on one system applies on every one; and on Windows the disk refuses it itself, since
+ * NTFS would make it literally where Win32 opens something else by it.
+ */
+static void a_name_windows_opens_as_another_is_refused_everywhere(void) {
+    fresh("windows-names");
+    make_folder(at("org"));
+    for (size_t index = 0; NAMES_WINDOWS_OPENS_AS_ANOTHER[index] != NULL; index++) {
+        const char *name = NAMES_WINDOWS_OPENS_AS_ANOTHER[index];
+        char path[PATH_SIZE];
+        compose(path, "org/", name, "/inner", NULL);
+        plan_start();
+        plan_add(NAULA_MAKE_FOLDER, at(path), NULL, NULL);
+        if (!refused_with(apply_plan(), "apply-input-invalid")) {
+            fprintf(stderr, "  for the name %s\n", name);
+            check_failures++;
+        }
+#ifdef _WIN32
+        unsigned long error = 0;
+        compose(path, "org/", name, NULL);
+        if (disk_folder_make(root, path, &error) != NAULA_REFUSED || error != ERROR_INVALID_NAME) {
+            fprintf(stderr, "the disk made the folder %s: %lu\n", name, error);
+            check_failures++;
+        }
+#endif
+    }
+    names found = list_names(at("org"));
+    CHECK(found.count == 0);
+    release_names(&found);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/console.d"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("org/com10"), NULL, NULL);
+    plan_add(NAULA_MAKE_FOLDER, at("org/a.b"), NULL, NULL);
+    CHECK(apply_plan() == NAULA_OK);
+    CHECK(kind_at(at("org/console.d")) == 1 && kind_at(at("org/com10")) == 1 && kind_at(at("org/a.b")) == 1);
+    finish("windows-names");
+}
+
+/** A clean path has no trailing separator, so a step whose path ends in one is refused before any change. */
+static void a_path_with_a_trailing_separator_is_refused_as_input(void) {
+    fresh("trailing");
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/"), NULL, NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    CHECK(kind_at(at("org")) == 0);
+    CHECK(unfinished_journal() == NULL);
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org"), NULL, NULL);
+    plan_add(NAULA_MAKE_LINK, at("name"), at("org/"), NULL);
+    CHECK(refused_with(apply_plan(), "apply-input-invalid"));
+    CHECK(kind_at(at("org")) == 0);
+    finish("trailing");
 }
 
 /**
@@ -3367,6 +3425,8 @@ static const named_test TESTS[] = {
     {"removing_a_clone_leaves_a_hard_linked_read_only_file_read_only", removing_a_clone_leaves_a_hard_linked_read_only_file_read_only},
     {"a_step_naming_naulas_files_by_an_alias_is_refused_on_windows", a_step_naming_naulas_files_by_an_alias_is_refused_on_windows},
     {"a_name_with_a_tilde_moves_on_every_platform", a_name_with_a_tilde_moves_on_every_platform},
+    {"a_name_windows_opens_as_another_is_refused_everywhere", a_name_windows_opens_as_another_is_refused_everywhere},
+    {"a_path_with_a_trailing_separator_is_refused_as_input", a_path_with_a_trailing_separator_is_refused_as_input},
     {"a_journal_stamped_in_the_future_never_blocks_a_resume", a_journal_stamped_in_the_future_never_blocks_a_resume},
     {"removing_a_clone_refuses_a_folder_above_it_that_is_a_link", removing_a_clone_refuses_a_folder_above_it_that_is_a_link},
     {"removing_a_clone_never_follows_a_folder_above_it_swapped_for_a_link", removing_a_clone_never_follows_a_folder_above_it_swapped_for_a_link},

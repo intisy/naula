@@ -13,10 +13,12 @@
  * Before any change, every step is checked against the disk: no component of its `path` or `target` below the root
  * may be a link or other reparse point, except the link a MAKE_LINK replaces or a REMOVE_LINK removes. A step that
  * finds the disk already as it asks changes nothing, so a plan applied twice changes nothing the second time. A step
- * whose `path` or `target` names `.naula-journal` or `.naula.json` is refused as `apply-input-invalid`, on Windows
- * also by a name Windows opens as one of them: with a trailing dot or space, or as an 8.3 alias such as `NAULA-~1`;
- * and on every platform by any first component below the root that the disk opens as one of them, compared by file
- * identity without following a link, so an alias no rule on names knows is refused as well.
+ * whose `path` or `target` ends in a separator, or holds below the root a name Windows does not hold as itself (one
+ * ending in a dot or a space, or a DOS device name such as `CON` or `com1.txt`), is refused as `apply-input-invalid`
+ * on every platform, so a plan applies alike everywhere. So is one that names `.naula-journal` or `.naula.json`, on
+ * Windows also by an 8.3 alias such as `NAULA-~1`, and on every platform by any first component below the root that
+ * the disk opens as one of them, compared by file identity without following a link, so an alias no rule on names
+ * knows is refused as well.
  *
  * Every change opens the root and walks to the folder it changes in, never through a link. On POSIX a folder on that
  * walk mounted from elsewhere, a bind mount included, stops the run with `mount-inside` before the change is made.
