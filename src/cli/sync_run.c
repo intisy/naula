@@ -302,7 +302,9 @@ static void report_applied(void *context, const naula_layout_step *step, naula_s
 static char *memory_banks(void) {
     char *named = cli_environment("NAULA_MEMORY_BANKS");
     if (named != NULL) {
-        return named;
+        char *absolute = cli_absolute_path(named);
+        naula_memory_release(named);
+        return absolute;
     }
 #if defined(_WIN32)
     char *home = cli_environment("USERPROFILE");

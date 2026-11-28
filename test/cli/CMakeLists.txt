@@ -47,7 +47,8 @@ foreach(name IN ITEMS check_refuses_a_rebased_root check_warns_on_a_narrow_at_an
         check_fails_closed_past_its_finding_limit check_takes_zeros_as_no_previous check_ignores_an_inherited_git_dir
         check_prints_findings_as_json_with_the_verdict check_exempts_uses_only_as_a_step_key
         check_reads_a_repo_in_a_folder_named_outside_the_code_page sync_resumes_a_move_with_its_memory_bank
-        check_counts_an_unheard_home_as_unverifiable sync_takes_the_lock_before_cloning)
+        check_counts_an_unheard_home_as_unverifiable sync_takes_the_lock_before_cloning
+        init_and_sync_take_a_root_with_a_trailing_separator)
     add_test(NAME cli/${name} COMMAND cli_test ${name})
     set_tests_properties(cli/${name} PROPERTIES TIMEOUT 300 ENVIRONMENT "${NAULA_CLI_ENVIRONMENT}")
 endforeach()

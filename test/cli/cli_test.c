@@ -1177,6 +1177,22 @@ static void sync_resumes_a_move_with_its_memory_bank(void) {
     check_text(name, key, "the memory bank follows the resumed move");
 }
 
+static void init_and_sync_take_a_root_with_a_trailing_separator(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char given[1100];
+    make_orgs(alpha, beta_app, gamma);
+    path_in(root, "root");
+    snprintf(given, sizeof given, "%s/", root);
+    expect_exit(naula("init", given, "forge:101", NULL), 0, "init with a trailing separator");
+    expect_path(root, "tools/tool", 1, "the tool link");
+    expect_exit(naula("sync", "--root", given, NULL), 0, "sync with a trailing separator");
+    expect_output("unlink ", 0, "the same root, not another");
+}
+
 static void check_counts_an_unheard_home_as_unverifiable(void) {
     start_case();
     char file[TEXT_SIZE];
@@ -1261,6 +1277,7 @@ static const test_entry tests[] = {
      check_reads_a_repo_in_a_folder_named_outside_the_code_page},
     {"sync_resumes_a_move_with_its_memory_bank", sync_resumes_a_move_with_its_memory_bank},
     {"check_counts_an_unheard_home_as_unverifiable", check_counts_an_unheard_home_as_unverifiable},
+    {"init_and_sync_take_a_root_with_a_trailing_separator", init_and_sync_take_a_root_with_a_trailing_separator},
     {"sync_takes_the_lock_before_cloning", sync_takes_the_lock_before_cloning},
 };
 
