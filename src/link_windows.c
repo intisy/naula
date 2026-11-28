@@ -226,7 +226,8 @@ static naula_status make_mount_point(const disk_walk *walk, const unsigned char 
     return status;
 }
 
-naula_status disk_link_make(const char *root, const char *below, const char *target, unsigned long *error) {
+naula_status disk_link_make(const char *root, const char *below, const char *target, disk_walk_purpose purpose,
+                            unsigned long *error) {
     wchar_t *full = NULL;
     unsigned char *buffer = NULL;
     DWORD size = 0;
@@ -239,7 +240,7 @@ naula_status disk_link_make(const char *root, const char *below, const char *tar
     walk.parent = INVALID_HANDLE_VALUE;
     walk.below = NULL;
     if (status == NAULA_OK) {
-        status = disk_walk_to_parent(root, below, &walk, error);
+        status = disk_walk_to_parent(root, below, purpose, &walk, error);
     }
     if (status == NAULA_OK) {
         status = make_mount_point(&walk, buffer, size, error);
@@ -264,10 +265,10 @@ static naula_status refuse_unless_link(HANDLE handle, DWORD *attributes, unsigne
     return NAULA_OK;
 }
 
-naula_status disk_link_remove(const char *root, const char *below, unsigned long *error) {
+naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
     HANDLE link = INVALID_HANDLE_VALUE;
     if (status == NAULA_OK) {
         status = disk_open_at(&walk.opener, walk.parent, walk.name, walk.name_bytes, LINK_REMOVE_ACCESS,

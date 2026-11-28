@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,7 +262,7 @@ static int link_made(const char *path, const char *target) {
     char parent[PATH_SIZE];
     const char *name = split_at_parent(path, parent);
     unsigned long error = 0;
-    return disk_link_make(parent, name, target, &error) == NAULA_OK;
+    return disk_link_make(parent, name, target, DISK_FOR_PLAN_STEP, &error) == NAULA_OK;
 }
 
 static void make_link(const char *path, const char *target) {
@@ -275,7 +276,7 @@ static void unlink_link(const char *path) {
     char parent[PATH_SIZE];
     const char *name = split_at_parent(path, parent);
     unsigned long error = 0;
-    if (disk_link_remove(parent, name, &error) != NAULA_OK) {
+    if (disk_link_remove(parent, name, DISK_FOR_PLAN_STEP, &error) != NAULA_OK) {
         fprintf(stderr, "cannot remove the link %s: %lu\n", path, error);
         check_failures++;
     }
@@ -1747,17 +1748,17 @@ static naula_status make_change(swapped_change change, unsigned long *error) {
         disk_appender_close(appender);
         return status;
     case CHANGE_FOLDER_MAKE:
-        return disk_folder_make(root, "org/made", error);
+        return disk_folder_make(root, "org/made", DISK_FOR_PLAN_STEP, error);
     case CHANGE_FILE_REPLACE:
-        return disk_file_replace(root, "org/file.txt", (const uint8_t *)"new", 3, error);
+        return disk_file_replace(root, "org/file.txt", (const uint8_t *)"new", 3, DISK_FOR_PLAN_STEP, error);
     case CHANGE_LINK_MAKE:
-        return disk_link_make(root, "org/made-link", at("repos"), error);
+        return disk_link_make(root, "org/made-link", at("repos"), DISK_FOR_PLAN_STEP, error);
     case CHANGE_LINK_REMOVE:
-        return disk_link_remove(root, "org/link", error);
+        return disk_link_remove(root, "org/link", DISK_FOR_PLAN_STEP, error);
     case CHANGE_MOVE_FROM:
-        return disk_move(root, "org/clone", "moved", &held, error);
+        return disk_move(root, "org/clone", "moved", DISK_FOR_PLAN_STEP, &held, error);
     default:
-        return disk_move(root, "clone", "org/moved", &held, error);
+        return disk_move(root, "clone", "org/moved", DISK_FOR_PLAN_STEP, &held, error);
     }
 }
 
@@ -2116,7 +2117,7 @@ static void a_name_windows_opens_as_another_is_refused_everywhere(void) {
 #ifdef _WIN32
         unsigned long error = 0;
         compose(path, "org/", name, NULL);
-        if (disk_folder_make(root, path, &error) != NAULA_REFUSED || error != ERROR_INVALID_NAME) {
+        if (disk_folder_make(root, path, DISK_FOR_PLAN_STEP, &error) != NAULA_REFUSED || error != ERROR_INVALID_NAME) {
             fprintf(stderr, "the disk made the folder %s: %lu\n", name, error);
             check_failures++;
         }
@@ -2994,6 +2995,75 @@ static void every_change_refuses_a_mount_above_it(void) {
         finish("mount-change");
     }
 }
+
+static const char *const UNVERIFIABLE_CHANGE_NAMES[] = {"the move", "the link made", "the file written"};
+
+/**
+ * Where no mount id can be read, a bind mount over `org` of a folder outside the root shares the root's device, so its
+ * device cannot tell it apart: a plan's move, link and file write below it each stop with `mount-unverifiable`, and
+ * naula's own files at the root, judged by the root itself, still take the lock and the journal that report it.
+ */
+static void a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused(void) {
+    char outside[PATH_SIZE];
+    char arguments[PATH_SIZE * 2];
+    for (int change = 0; change < 3; change++) {
+        fresh("mount-unverifiable");
+        make_folder(at("repos"));
+        compose(outside, base, "/mount-unverifiable/outside-org", NULL);
+        lay_out_an_org(outside);
+        lay_out_an_org(at("org"));
+        char *before = snapshot("mount-unverifiable/outside-org");
+        snprintf(arguments, sizeof arguments, "--bind '%s'", outside);
+        if (!mount_on(arguments, at("org"))) {
+            printf("a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused: skipped, this process cannot mount\n");
+            free(before);
+            unlink_an_org(outside);
+            unlink_an_org(at("org"));
+            finish("mount-unverifiable");
+            return;
+        }
+        plan_start();
+        if (change == 0) {
+            plan_add(NAULA_MOVE_CHECKOUT, at("org/clone"), at("org/moved"), NULL);
+        } else if (change == 1) {
+            plan_add(NAULA_MAKE_LINK, at("org/made-link"), at("repos"), NULL);
+        } else {
+            plan_add(NAULA_WRITE_FILE, at("org/file.txt"), NULL, "new");
+        }
+        naula_disk_test_mount_ids(0, 0);
+        naula_status status = apply_plan();
+        naula_disk_test_mount_ids(1, 1);
+        unmount(at("org"));
+        char *after = snapshot("mount-unverifiable/outside-org");
+        if (!refused_with(status, "mount-unverifiable") || strcmp(before, after) != 0) {
+            fprintf(stderr, "%s through a bind mount it cannot tell apart, outside now:\n%s\n",
+                    UNVERIFIABLE_CHANGE_NAMES[change], after);
+            check_failures++;
+        }
+        free(before);
+        free(after);
+        unlink_an_org(outside);
+        unlink_an_org(at("org"));
+        finish("mount-unverifiable");
+    }
+}
+
+/** A file system that does not support a call naula makes is a failed change with the system's text, not a mount. */
+static void a_change_the_system_does_not_support_is_refused_as_a_change(void) {
+    fresh("unsupported");
+    make_folder(at("org"));
+    plan_start();
+    plan_add(NAULA_MAKE_FOLDER, at("org/made"), NULL, NULL);
+    naula_disk_test_fail_folder_make("made", ENOTSUP);
+    naula_status status = apply_plan();
+    naula_disk_test_fail_folder_make(NULL, 0);
+    char system_text[64];
+    snprintf(system_text, sizeof system_text, "(errno %d)", ENOTSUP);
+    CHECK(refused_with(status, "change-refused"));
+    CHECK(strstr(refusal.detail, system_text) != NULL);
+    CHECK(kind_at(at("org/made")) == 0);
+    finish("unsupported");
+}
 #endif
 
 #ifndef _WIN32
@@ -3368,7 +3438,7 @@ static void a_move_never_replaces_an_empty_folder(void) {
     make_folder(at("to"));
     int held = 0;
     unsigned long error = 0;
-    CHECK(disk_move(root, "from", "to", &held, &error) == NAULA_REFUSED);
+    CHECK(disk_move(root, "from", "to", DISK_FOR_PLAN_STEP, &held, &error) == NAULA_REFUSED);
     CHECK(file_holds(at("from/work.txt"), "work"));
     CHECK(kind_at(at("to")) == 1);
     CHECK(kind_at(at("to/work.txt")) == 0);
@@ -3454,6 +3524,8 @@ static const named_test TESTS[] = {
     {"a_clone_whose_mounts_cannot_be_told_apart_is_refused", a_clone_whose_mounts_cannot_be_told_apart_is_refused},
     {"a_mount_above_the_clone_stops_the_removal", a_mount_above_the_clone_stops_the_removal},
     {"every_change_refuses_a_mount_above_it", every_change_refuses_a_mount_above_it},
+    {"a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused", a_plan_change_below_a_mount_it_cannot_tell_apart_is_refused},
+    {"a_change_the_system_does_not_support_is_refused_as_a_change", a_change_the_system_does_not_support_is_refused_as_a_change},
 #endif
 };
 

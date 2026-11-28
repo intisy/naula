@@ -58,10 +58,11 @@ naula_status disk_link_target(const char *path, char **target, unsigned long *er
     return NAULA_REFUSED;
 }
 
-naula_status disk_link_make(const char *root, const char *below, const char *target, unsigned long *error) {
+naula_status disk_link_make(const char *root, const char *below, const char *target, disk_walk_purpose purpose,
+                            unsigned long *error) {
     *error = 0;
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
     if (status == NAULA_OK && symlinkat(target, walk.parent, walk.name) != 0) {
         *error = (unsigned long)errno;
         status = NAULA_REFUSED;
@@ -73,10 +74,10 @@ naula_status disk_link_make(const char *root, const char *below, const char *tar
     return status;
 }
 
-naula_status disk_link_remove(const char *root, const char *below, unsigned long *error) {
+naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
     struct stat found;
     if (status == NAULA_OK && fstatat(walk.parent, walk.name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
         *error = (unsigned long)errno;

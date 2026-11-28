@@ -79,7 +79,7 @@ static naula_status require_folder(const char *root, const char *below, const ch
                                      : read;
     }
     if (kind == DISK_MISSING && make && below != NULL) {
-        naula_status status = disk_folder_make(root, below, &error);
+        naula_status status = disk_folder_make(root, below, DISK_FOR_NAULA_FILE, &error);
         return status == NAULA_REFUSED ? apply_refuse_disk(refusal, "root-unwritable", RECORD_FIX, "cannot make", path,
                                                            error)
                                        : status;
@@ -269,7 +269,7 @@ static naula_status write_record(const char *root, const link_record *record, na
     unsigned long error = 0;
     if (status == NAULA_OK) {
         status = disk_file_replace(root, APPLY_JOURNAL_FOLDER "/" APPLY_LINK_RECORD, (const uint8_t *)text, strlen(text),
-                                   &error);
+                                   DISK_FOR_NAULA_FILE, &error);
         if (status == NAULA_REFUSED) {
             status = apply_refuse_disk(refusal, "record-unwritable", RECORD_FIX, "cannot write", path, error);
         }

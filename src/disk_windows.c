@@ -572,7 +572,9 @@ static int is_win32_named(const char *below) {
     }
 }
 
-naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error) {
+naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk_purpose purpose, disk_walk *walk,
+                                 unsigned long *error) {
+    (void)purpose;
     walk->parent = INVALID_HANDLE_VALUE;
     walk->below = NULL;
     walk->name = NULL;
@@ -637,7 +639,7 @@ void disk_walk_release(disk_walk *walk) {
 static naula_status walk_to_clone(const char *root, const char *below, relative_opener *opener, HANDLE *clone,
                                   unsigned long *error) {
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, DISK_FOR_PLAN_STEP, &walk, error);
     *opener = walk.opener;
     if (status == NAULA_OK) {
         status = open_relative(&walk.opener, walk.parent, walk.name, walk.name_bytes, REMOVAL_ACCESS, REMOVAL_SHARE,
@@ -654,10 +656,10 @@ static naula_status walk_to_clone(const char *root, const char *below, relative_
     return status;
 }
 
-naula_status disk_folder_make(const char *root, const char *below, unsigned long *error) {
+naula_status disk_folder_make(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
     HANDLE made = INVALID_HANDLE_VALUE;
     if (status == NAULA_OK) {
         status = disk_open_at(&walk.opener, walk.parent, walk.name, walk.name_bytes, FILE_LIST_DIRECTORY | SYNCHRONIZE,
@@ -688,16 +690,17 @@ static naula_status move_walked(const disk_walk *from, const disk_walk *to, int 
     return status;
 }
 
-naula_status disk_move(const char *root, const char *from, const char *to, int *held, unsigned long *error) {
+naula_status disk_move(const char *root, const char *from, const char *to, disk_walk_purpose purpose, int *held,
+                       unsigned long *error) {
     *held = 0;
     *error = 0;
     disk_walk source;
     disk_walk target;
-    naula_status status = disk_walk_to_parent(root, from, &source, error);
+    naula_status status = disk_walk_to_parent(root, from, purpose, &source, error);
     target.parent = INVALID_HANDLE_VALUE;
     target.below = NULL;
     if (status == NAULA_OK) {
-        status = disk_walk_to_parent(root, to, &target, error);
+        status = disk_walk_to_parent(root, to, purpose, &target, error);
     }
     if (status == NAULA_OK) {
         status = move_walked(&source, &target, held, error);
@@ -947,10 +950,10 @@ static naula_status write_and_rename(const disk_walk *walk, const wchar_t *tempo
 }
 
 naula_status disk_file_replace(const char *root, const char *below, const uint8_t *bytes, size_t length,
-                               unsigned long *error) {
+                               disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
     size_t characters = walk.name_bytes / sizeof(wchar_t);
     wchar_t *temporary = status == NAULA_OK ? naula_memory_allocate((characters + 11) * sizeof *temporary) : NULL;
     if (status == NAULA_OK && temporary == NULL) {
@@ -1031,7 +1034,7 @@ naula_status disk_appender_open(const char *root, const char *below, int create,
     *appender = NULL;
     *error = 0;
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, DISK_FOR_NAULA_FILE, &walk, error);
     HANDLE file = INVALID_HANDLE_VALUE;
     if (status == NAULA_OK) {
         status = disk_open_at(&walk.opener, walk.parent, walk.name, walk.name_bytes, FILE_APPEND_DATA | SYNCHRONIZE,
@@ -1075,6 +1078,10 @@ void disk_utc_stamp(char stamp[17]) {
 
 int disk_error_is_mount(unsigned long error) {
     return error == ERROR_NOT_SAME_DEVICE;
+}
+
+int disk_error_is_mount_unverifiable(unsigned long error) {
+    return error == DISK_ERROR_MOUNT_UNVERIFIABLE;
 }
 
 void disk_error_text(unsigned long error, char *text, size_t capacity) {
@@ -1128,7 +1135,7 @@ naula_status disk_owned_file_create(const char *root, const char *below, const u
         return NAULA_OUT_OF_MEMORY;
     }
     disk_walk walk;
-    naula_status status = disk_walk_to_parent(root, below, &walk, error);
+    naula_status status = disk_walk_to_parent(root, below, DISK_FOR_NAULA_FILE, &walk, error);
     made->name = status == NAULA_OK ? naula_memory_allocate(walk.name_bytes + sizeof(wchar_t)) : NULL;
     if (status == NAULA_OK && made->name == NULL) {
         status = NAULA_OUT_OF_MEMORY;

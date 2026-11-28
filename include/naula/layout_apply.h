@@ -21,7 +21,12 @@
  * knows is refused as well.
  *
  * Every change opens the root and walks to the folder it changes in, never through a link. On POSIX a folder on that
- * walk mounted from elsewhere, a bind mount included, stops the run with `mount-inside` before the change is made.
+ * walk mounted from elsewhere, a bind mount included, stops the run with `mount-inside` before the change is made. On
+ * Linux only a mount id tells a bind mount from the root's own file system, so where neither statx nor a file handle
+ * gives one (Linux before 5.8 on a file system without file handles), a step whose walk passes any folder below the
+ * root, or below the memory banks folder, stops the run with `mount-unverifiable` before its change is made. naula's
+ * own files, `.naula.json` and what `.naula-journal` holds, are judged there by their folder's device alone, so the
+ * lock and the journal still report that refusal.
  */
 
 #include <stddef.h>

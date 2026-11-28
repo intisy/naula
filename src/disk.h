@@ -12,15 +12,32 @@
  * checked the path is refused rather than followed. A component that is empty, `.` or `..` is refused, and on Windows
  * one windows_name_is_safe refuses. On POSIX the mount `root` is on is recorded and every folder the walk opens is
  * judged against it: one on another file system or mount, a bind mount included, is refused with an error
- * disk_error_is_mount names, so no change lands in data mounted under the root from elsewhere. On Linux a folder whose
- * mount id cannot be read is judged by its device alone, except by a removal. On Windows a mounted folder is a reparse
- * point, refused on the walk like a link.
+ * disk_error_is_mount names, so no change lands in data mounted under the root from elsewhere. On Linux a bind mount
+ * shares its file system's device and only a mount id tells it apart; what a walk does where none can be read is set
+ * by its disk_walk_purpose. On Windows a mounted folder is a reparse point, refused on the walk like a link.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "naula/status.h"
+
+/**
+ * What a walk from a root reaches, which sets what it asks of a folder whose mount id Linux gives none of, from neither
+ * statx nor a file handle. A removal always walks as DISK_FOR_PLAN_STEP. Elsewhere than Linux the two walk alike.
+ */
+typedef enum disk_walk_purpose {
+    /**
+     * naula's own files in the root's own folder, its journal folder included: such a folder is judged by its device
+     * alone, so the lock and the journal still report a refusal on a system that gives no mount id.
+     */
+    DISK_FOR_NAULA_FILE = 0,
+    /**
+     * A change a plan's step asks for, anywhere below the root, or below the memory banks folder: such a folder is
+     * refused with an error disk_error_is_mount_unverifiable names, since a bind mount there shares the root's device.
+     */
+    DISK_FOR_PLAN_STEP = 1
+} disk_walk_purpose;
 
 /** DISK_LINK is a junction or a symlink; DISK_OTHER is any other reparse point or special file. */
 typedef enum disk_kind { DISK_MISSING = 0, DISK_FOLDER = 1, DISK_FILE = 2, DISK_LINK = 3, DISK_OTHER = 4 } disk_kind;
@@ -45,19 +62,21 @@ naula_status disk_identity_of(const char *path, disk_identity *identity, unsigne
 naula_status disk_link_target(const char *path, char **target, unsigned long *error);
 
 /** A junction on Windows and a symlink elsewhere, at `below` under `root`, which must not exist. */
-naula_status disk_link_make(const char *root, const char *below, const char *target, unsigned long *error);
+naula_status disk_link_make(const char *root, const char *below, const char *target, disk_walk_purpose purpose,
+                            unsigned long *error);
 
 /** Removes the link at `below` under `root` and never what it points at; anything but a link there is refused. */
-naula_status disk_link_remove(const char *root, const char *below, unsigned long *error);
+naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
 
 /** Makes the one folder `below` under `root`; its parent must exist. */
-naula_status disk_folder_make(const char *root, const char *below, unsigned long *error);
+naula_status disk_folder_make(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
 
 /**
  * Renames `from` to `to`, both below `root`, in one call, never replacing what is at `to` and never copying. `held` is
  * set when Windows refused because a process holds something inside `from`.
  */
-naula_status disk_move(const char *root, const char *from, const char *to, int *held, unsigned long *error);
+naula_status disk_move(const char *root, const char *from, const char *to, disk_walk_purpose purpose, int *held,
+                       unsigned long *error);
 
 /**
  * Removes the real folder `below` names under the folder `root`, and everything in it. The walk from `root` follows
@@ -150,7 +169,7 @@ naula_status disk_file_read(const char *path, uint8_t **bytes, size_t *length, u
  * `below`, so a crash leaves either the old file or the new one.
  */
 naula_status disk_file_replace(const char *root, const char *below, const uint8_t *bytes, size_t length,
-                               unsigned long *error);
+                               disk_walk_purpose purpose, unsigned long *error);
 
 /**
  * A file this process created and will remove, its folder held open and its name kept, so the removal reaches the
@@ -199,6 +218,16 @@ naula_status disk_real_folder(const char *path, char **real, unsigned long *erro
 
 /** Whether a change refused with `error` because its walk reached a folder mounted from elsewhere. */
 int disk_error_is_mount(unsigned long error);
+
+/**
+ * The error a walk answers when it could read no mount id for a folder it needs one for, which only Linux does. It
+ * lies above every errno value and every Windows system error code, so no system call answers it and a call the
+ * system does not support is never taken for it.
+ */
+#define DISK_ERROR_MOUNT_UNVERIFIABLE ((1UL << 30) + 1UL)
+
+/** Whether a walk refused with `error` for want of a folder's mount id: DISK_ERROR_MOUNT_UNVERIFIABLE. */
+int disk_error_is_mount_unverifiable(unsigned long error);
 
 /** The system's text for `error`, for a refusal's detail, cut to fit `text`. */
 void disk_error_text(unsigned long error, char *text, size_t capacity);
