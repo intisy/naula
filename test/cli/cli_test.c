@@ -31,6 +31,12 @@
 #error "NAULA_STOPPED_MOVE names the helper that leaves an unfinished move"
 #endif
 
+/**
+ * Every fixture git stops looking for a repository at the scratch folder: a case folder whose own repo is missing or
+ * half removed would otherwise reach the repository the build folder sits in and commit the fixture there.
+ */
+#define FIXTURE_GIT_CEILING "GIT_CEILING_DIRECTORIES=" NAULA_TEST_SCRATCH
+
 #define TEXT_SIZE 4096
 #define FORGE_LIMIT 32
 #define SNAPSHOT_SIZE (64 * 1024)
@@ -90,7 +96,7 @@ static void git(const char *directory, const char *first, ...) {
     snprintf(committer_date, sizeof committer_date, "GIT_COMMITTER_DATE=%u +0000", 1700000000u + here.clock);
     const char *environment[] = {author_date, committer_date, "GIT_AUTHOR_NAME=Fixture",
                                  "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture",
-                                 "GIT_COMMITTER_EMAIL=fixture@example.invalid", NULL};
+                                 "GIT_COMMITTER_EMAIL=fixture@example.invalid", FIXTURE_GIT_CEILING, NULL};
     naula_run_result result;
     if (run_in(directory, arguments, environment, &result) && result.exit_code != 0) {
         fprintf(stderr, "git %s in %s exited %d: %s\n", first, directory == NULL ? "." : directory, result.exit_code,
