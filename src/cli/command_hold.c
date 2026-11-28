@@ -179,8 +179,11 @@ static naula_status remove_rules_file(const char *root, const char *path, naula_
     naula_status read = status == NAULA_OK ? cli_read_file(path, &bytes, &length, refusal) : status;
     if (read == NAULA_OK && is_generated_rules(bytes, length)) {
         unsigned long error = 0;
-        if (cli_remove_file(path, &error) == NAULA_OK) {
+        naula_status removed = disk_file_remove(root, path + root_length + 1, DISK_FOR_PLAN_STEP, &error);
+        if (removed == NAULA_OK || removed == NAULA_NOT_FOUND) {
             printf("remove %s\n", path);
+        } else if (removed == NAULA_OUT_OF_MEMORY) {
+            status = removed;
         } else {
             char text[256];
             disk_error_text(error, text, sizeof text);

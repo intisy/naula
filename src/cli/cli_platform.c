@@ -221,7 +221,7 @@ static naula_status make_one_folder(const char *path, unsigned long *error) {
     if (parent == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
-    naula_status status = disk_folder_make(parent, slash + 1, error);
+    naula_status status = disk_folder_make(parent, slash + 1, DISK_FOR_NAULA_FILE, error);
     naula_memory_release(parent);
     return status;
 }
@@ -259,21 +259,37 @@ naula_status cli_make_folders(const char *path, naula_refusal *refusal) {
     return status;
 }
 
-naula_status cli_remove_file(const char *path, unsigned long *error) {
-#if defined(_WIN32)
-    wchar_t *wide = widen(path);
-    if (wide == NULL) {
-        return NAULA_OUT_OF_MEMORY;
+static naula_status refuse_folder(const char *path, unsigned long error, naula_refusal *refusal) {
+    char text[256];
+    disk_error_text(error, text, sizeof text);
+    naula_refuse(refusal, "folder-not-made", "check the folder can be written", "cannot make %s: %s", path, text);
+    return NAULA_REFUSED;
+}
+
+naula_status cli_make_folders_below(const char *root, const char *below, naula_refusal *refusal) {
+    naula_status status = NAULA_OK;
+    for (const char *end = below; status == NAULA_OK && *end != '\0';) {
+        while (*end != '\0' && *end != '/') {
+            end++;
+        }
+        char *prefix = cli_format("%.*s", (int)(end - below), below);
+        char *path = prefix == NULL ? NULL : cli_join(root, prefix);
+        if (path == NULL) {
+            naula_memory_release(prefix);
+            return NAULA_OUT_OF_MEMORY;
+        }
+        unsigned long error = 0;
+        if (!cli_is_folder(path)) {
+            status = disk_folder_make(root, prefix, DISK_FOR_PLAN_STEP, &error);
+            status = status == NAULA_OUT_OF_MEMORY ? status
+                     : status == NAULA_OK          ? NAULA_OK
+                                                   : refuse_folder(path, error, refusal);
+        }
+        naula_memory_release(path);
+        naula_memory_release(prefix);
+        end += *end == '/';
     }
-    int removed = DeleteFileW(wide) != 0;
-    *error = removed ? 0 : GetLastError();
-    naula_memory_release(wide);
-    return removed ? NAULA_OK : NAULA_REFUSED;
-#else
-    int removed = unlink(path) == 0;
-    *error = removed ? 0 : (unsigned long)errno;
-    return removed ? NAULA_OK : NAULA_REFUSED;
-#endif
+    return status;
 }
 
 naula_status cli_read_file(const char *path, uint8_t **bytes, size_t *length, naula_refusal *refusal) {

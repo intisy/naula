@@ -222,7 +222,7 @@ static char *parent_of(const char *path) {
     return slash == NULL ? NULL : cli_format("%.*s", (int)(slash - path), path);
 }
 
-static naula_status clone_one(sync_repo *repo, const char *checkout, naula_refusal *refusal) {
+static naula_status clone_one(const char *root, sync_repo *repo, const char *checkout, naula_refusal *refusal) {
     const char *url = repo->resolved && repo->resolution.primary_repository.clone_url != NULL
                           ? repo->resolution.primary_repository.clone_url
                           : repo->clone_url;
@@ -233,7 +233,16 @@ static naula_status clone_one(sync_repo *repo, const char *checkout, naula_refus
     }
     char *parent = parent_of(checkout);
     char *remote = cli_format("naula::git:%s", repo->layout.id.commit);
-    naula_status status = parent == NULL || remote == NULL ? NAULA_OUT_OF_MEMORY : cli_make_folders(parent, refusal);
+    size_t root_length = strlen(root);
+    naula_status status = parent == NULL || remote == NULL ? NAULA_OUT_OF_MEMORY : NAULA_OK;
+    if (status == NAULA_OK && (strncmp(parent, root, root_length) != 0 || parent[root_length] != '/')) {
+        naula_refuse(refusal, "path-outside-root", "lay the repo out below the root", "%s is not below the root %s",
+                     parent, root);
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK) {
+        status = cli_make_folders_below(root, parent + root_length + 1, refusal);
+    }
     int development = repo->working_branch != NULL && strcmp(repo->working_branch, "development") == 0;
     const char *with_branch[] = {"clone", "--quiet", "--branch", "development", "--", url, checkout, NULL};
     const char *plain[] = {"clone", "--quiet", "--", url, checkout, NULL};
@@ -269,7 +278,7 @@ static naula_status clone_missing(const sync_request *request, sync_model *model
         char *checkout = planned_checkout(plan, &repo->layout.id);
         naula_status status = NAULA_OK;
         if (checkout != NULL && is_in_filtered_org(request, model->orgs[0].declaration, checkout)) {
-            status = clone_one(repo, checkout, refusal);
+            status = clone_one(request->root, repo, checkout, refusal);
             if (status == NAULA_OK) {
                 repo->layout.current_path = checkout;
                 repo->layout.clean_and_pushed = 1;

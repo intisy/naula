@@ -694,7 +694,7 @@ static void make_folder(const char *path) {
 
 static void make_link(const char *folder, const char *name, const char *target) {
     unsigned long error = 0;
-    CHECK(disk_link_make(folder, name, target, &error) == NAULA_OK);
+    CHECK(disk_link_make(folder, name, target, DISK_FOR_PLAN_STEP, &error) == NAULA_OK);
 }
 
 static void remove_file(const char *path) {

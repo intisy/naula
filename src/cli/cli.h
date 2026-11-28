@@ -65,15 +65,19 @@ char *cli_environment(const char *name);
 /** `path` made absolute against the working folder, with `/` separators and no `.` or `..` segment. */
 char *cli_absolute_path(const char *path);
 
-/** Makes `path` and every missing folder above it; a link on the way is followed, since the folder is the user's. */
+/**
+ * Makes `path` and every missing folder above it, each by path under its parent; a link on the way is followed, since
+ * the folder is the user's. Only for folders outside any root, and a root's own ancestors at `init`: a folder below a
+ * root is made with cli_make_folders_below.
+ */
 naula_status cli_make_folders(const char *path, naula_refusal *refusal);
+
+/** Makes every missing folder of `below` under `root` by the walk from the root, which refuses a link on the way. */
+naula_status cli_make_folders_below(const char *root, const char *below, naula_refusal *refusal);
 
 /** Whether `path` itself is a folder, never what a link there points at. */
 int cli_is_folder(const char *path);
 int cli_exists(const char *path);
-
-/** Removes the one file at `path`, a link there itself rather than what it points at. */
-naula_status cli_remove_file(const char *path, unsigned long *error);
 
 /** The whole file, NUL-terminated past `length`; NAULA_NOT_FOUND when there is none. */
 naula_status cli_read_file(const char *path, uint8_t **bytes, size_t *length, naula_refusal *refusal);
