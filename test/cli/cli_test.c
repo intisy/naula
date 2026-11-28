@@ -1170,6 +1170,54 @@ static void sync_resumes_a_move_with_its_memory_bank(void) {
     check_text(name, key, "the memory bank follows the resumed move");
 }
 
+static void check_counts_an_unheard_home_as_unverifiable(void) {
+    start_case();
+    char file[TEXT_SIZE];
+    app_file(file, "app", "alpha", NULL);
+    const char *files[] = {"repo.json", file, NULL};
+    make_repo("host", files);
+    serve(921, "alpha", "app", "host", NULL);
+    char host[1024];
+    path_in(host, "host");
+    here.environment[0] = "NAULA_FETCH_TIME_LIMIT_MS=1";
+    expect_exit(naula("check", "--repo", host, NULL), 0, "a home whose history cannot be read in time");
+    expect_output("name-unverifiable", 1, "the warning");
+    expect_output("name-taken", 0, "never taken for unheard");
+}
+
+static void sync_takes_the_lock_before_cloning(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char tool[1024];
+    char tool_root[65];
+    char checkout[128];
+    char path[1200];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    path_in(tool, "alpha-tool");
+    root_commit(tool, tool_root);
+    checkout_of(tool_root, checkout, NULL);
+    snprintf(path, sizeof path, "%s/%s", root, checkout);
+    const char *remove[] = {NAULA_CMAKE, "-E", "remove_directory", path, NULL};
+    naula_run_result result;
+    if (run_in(NULL, remove, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
+    char lock[1100];
+    char holder[32];
+    snprintf(lock, sizeof lock, "%s/.naula-journal/lock", root);
+    snprintf(holder, sizeof holder, "%lu\n", disk_process_id());
+    write_text(lock, holder);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a root another naula holds");
+    expect_output("root-locked", 1, "the lock");
+    CHECK(!exists(path));
+    unsigned long error = 0;
+    disk_file_remove(lock, &error);
+}
+
 typedef struct test_entry {
     const char *name;
     void (*run)(void);
@@ -1205,6 +1253,8 @@ static const test_entry tests[] = {
     {"check_reads_a_repo_in_a_folder_named_outside_the_code_page",
      check_reads_a_repo_in_a_folder_named_outside_the_code_page},
     {"sync_resumes_a_move_with_its_memory_bank", sync_resumes_a_move_with_its_memory_bank},
+    {"check_counts_an_unheard_home_as_unverifiable", check_counts_an_unheard_home_as_unverifiable},
+    {"sync_takes_the_lock_before_cloning", sync_takes_the_lock_before_cloning},
 };
 
 int main(int count, char **values) {
