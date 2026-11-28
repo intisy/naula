@@ -74,6 +74,29 @@ naula_status disk_link_make(const char *root, const char *below, const char *tar
     return status;
 }
 
+naula_status disk_file_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
+    *error = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
+    struct stat found;
+    if (status == NAULA_OK && fstatat(walk.parent, walk.name, &found, AT_SYMLINK_NOFOLLOW) != 0) {
+        *error = (unsigned long)errno;
+        status = errno == ENOENT ? NAULA_NOT_FOUND : NAULA_REFUSED;
+    } else if (status == NAULA_OK && !S_ISREG(found.st_mode)) {
+        *error = EINVAL;
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK && unlinkat(walk.parent, walk.name, 0) != 0) {
+        *error = (unsigned long)errno;
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK) {
+        fsync(walk.parent);
+    }
+    disk_walk_release(&walk);
+    return status;
+}
+
 naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;

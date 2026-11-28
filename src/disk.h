@@ -68,6 +68,9 @@ naula_status disk_link_make(const char *root, const char *below, const char *tar
 /** Removes the link at `below` under `root` and never what it points at; anything but a link there is refused. */
 naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
 
+/** Removes the regular file at `below` under `root`; a link, a folder or anything else there is refused. */
+naula_status disk_file_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
+
 /** Makes the one folder `below` under `root`; its parent must exist. */
 naula_status disk_folder_make(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error);
 

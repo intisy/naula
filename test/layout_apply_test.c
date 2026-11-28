@@ -1726,11 +1726,13 @@ typedef enum swapped_change {
     CHANGE_MOVE_TO,
     CHANGE_OWNED_FILE,
     CHANGE_APPENDER,
+    CHANGE_FILE_REMOVE,
     CHANGE_COUNT
 } swapped_change;
 
-static const char *const CHANGE_NAMES[CHANGE_COUNT] = {
-    "folder make", "file replace", "link make", "link remove", "move from", "move to", "owned file", "appender"};
+static const char *const CHANGE_NAMES[CHANGE_COUNT] = {"folder make", "file replace", "link make",
+                                                       "link remove", "move from",    "move to",
+                                                       "owned file",  "appender",     "file remove"};
 
 static naula_status make_change(swapped_change change, unsigned long *error) {
     int held = 0;
@@ -1755,6 +1757,8 @@ static naula_status make_change(swapped_change change, unsigned long *error) {
         return disk_link_make(root, "org/made-link", at("repos"), DISK_FOR_PLAN_STEP, error);
     case CHANGE_LINK_REMOVE:
         return disk_link_remove(root, "org/link", DISK_FOR_PLAN_STEP, error);
+    case CHANGE_FILE_REMOVE:
+        return disk_file_remove(root, "org/file.txt", DISK_FOR_PLAN_STEP, error);
     case CHANGE_MOVE_FROM:
         return disk_move(root, "org/clone", "moved", DISK_FOR_PLAN_STEP, &held, error);
     default:
@@ -1820,6 +1824,26 @@ static void every_change_refuses_a_folder_above_it_swapped_for_a_link(void) {
         }
         finish("swap-change");
     }
+}
+
+/** Removing a file removes a regular file and refuses a link to one, a folder, and a name with nothing there. */
+static void removing_a_file_removes_only_a_regular_file(void) {
+    fresh("file-remove");
+    write_text(at("plain.txt"), "plain");
+    write_text(at("target.txt"), "target");
+    make_folder(at("folder"));
+    make_link(at("folder-link"), at("folder"));
+    unsigned long error = 0;
+    CHECK(disk_file_remove(root, "plain.txt", DISK_FOR_PLAN_STEP, &error) == NAULA_OK);
+    CHECK(kind_at(at("plain.txt")) == 0);
+    CHECK(disk_file_remove(root, "folder", DISK_FOR_PLAN_STEP, &error) == NAULA_REFUSED);
+    CHECK(kind_at(at("folder")) == 1);
+    CHECK(disk_file_remove(root, "folder-link", DISK_FOR_PLAN_STEP, &error) == NAULA_REFUSED);
+    CHECK(kind_at(at("folder-link")) == 3);
+    CHECK(disk_file_remove(root, "missing.txt", DISK_FOR_PLAN_STEP, &error) == NAULA_NOT_FOUND);
+    CHECK(kind_at(at("target.txt")) == 2);
+    unlink_link(at("folder-link"));
+    finish("file-remove");
 }
 
 static void a_resumed_move_refused_after_its_checkout_moved_stays_unfinished(void) {
@@ -3504,6 +3528,7 @@ static const named_test TESTS[] = {
     {"a_clone_deeper_than_any_checkout_is_refused", a_clone_deeper_than_any_checkout_is_refused},
     {"a_writer_making_ever_deeper_folders_is_stopped", a_writer_making_ever_deeper_folders_is_stopped},
     {"every_change_refuses_a_folder_above_it_swapped_for_a_link", every_change_refuses_a_folder_above_it_swapped_for_a_link},
+    {"removing_a_file_removes_only_a_regular_file", removing_a_file_removes_only_a_regular_file},
     {"a_fifo_swapped_in_for_a_file_is_refused_without_waiting", a_fifo_swapped_in_for_a_file_is_refused_without_waiting},
     {"a_repointed_recorded_link_is_forgotten_by_the_scan", a_repointed_recorded_link_is_forgotten_by_the_scan},
     {"writing_the_root_file_takes_the_roots_lock", writing_the_root_file_takes_the_roots_lock},

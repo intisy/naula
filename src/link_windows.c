@@ -265,6 +265,37 @@ static naula_status refuse_unless_link(HANDLE handle, DWORD *attributes, unsigne
     return NAULA_OK;
 }
 
+naula_status disk_file_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
+    *error = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    if (status == NAULA_OK) {
+        status = disk_open_at(&walk.opener, walk.parent, walk.name, walk.name_bytes, LINK_REMOVE_ACCESS,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+                              FILE_NON_DIRECTORY_FILE | DISK_OPEN_OPTIONS, &file, error);
+        if (status == NAULA_REFUSED && (*error == ERROR_FILE_NOT_FOUND || *error == ERROR_PATH_NOT_FOUND)) {
+            status = NAULA_NOT_FOUND;
+        }
+    }
+    FILE_ATTRIBUTE_TAG_INFO tag;
+    if (status == NAULA_OK && !GetFileInformationByHandleEx(file, FileAttributeTagInfo, &tag, sizeof tag)) {
+        status = refused(error);
+    } else if (status == NAULA_OK &&
+               (tag.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        *error = ERROR_INVALID_FUNCTION;
+        status = NAULA_REFUSED;
+    }
+    if (status == NAULA_OK) {
+        status = disk_delete_by_handle(file, tag.FileAttributes, error);
+    }
+    if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+    }
+    disk_walk_release(&walk);
+    return status;
+}
+
 naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
