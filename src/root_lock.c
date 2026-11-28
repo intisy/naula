@@ -60,11 +60,18 @@ static naula_status refuse_held(const char *path, naula_refusal *refusal) {
     return NAULA_REFUSED;
 }
 
+static disk_owned_file *held_lock;
+static char *held_lock_path;
+
 naula_status root_lock_take(const char *root, disk_owned_file **lock, naula_refusal *refusal) {
     *lock = NULL;
     char *lock_path = lock_path_of(root);
     if (lock_path == NULL) {
         return NAULA_OUT_OF_MEMORY;
+    }
+    if (held_lock_path != NULL && strcmp(lock_path, held_lock_path) == 0) {
+        naula_memory_release(lock_path);
+        return NAULA_OK;
     }
     disk_kind kind = DISK_MISSING;
     unsigned long error = 0;
@@ -94,4 +101,34 @@ naula_status root_lock_take(const char *root, disk_owned_file **lock, naula_refu
 
 void root_lock_release(disk_owned_file *lock) {
     disk_owned_file_remove(lock);
+}
+
+naula_status naula_root_hold(const char *root, naula_refusal *refusal) {
+    if (held_lock_path != NULL) {
+        naula_refuse(refusal, "root-already-held", "let go of the root this process holds first",
+                     "this process already holds the root lock %s", held_lock_path);
+        return NAULA_REFUSED;
+    }
+    naula_status status = apply_check_root(root, 1, refusal);
+    disk_owned_file *lock = NULL;
+    if (status == NAULA_OK) {
+        status = root_lock_take(root, &lock, refusal);
+    }
+    char *path = status == NAULA_OK ? lock_path_of(root) : NULL;
+    if (status == NAULA_OK && path == NULL) {
+        root_lock_release(lock);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    held_lock = lock;
+    held_lock_path = path;
+    return status;
+}
+
+void naula_root_unhold(void) {
+    disk_owned_file *lock = held_lock;
+    char *path = held_lock_path;
+    held_lock = NULL;
+    held_lock_path = NULL;
+    root_lock_release(lock);
+    naula_memory_release(path);
 }

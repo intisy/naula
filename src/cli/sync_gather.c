@@ -263,23 +263,37 @@ static int cannot_be_heard(naula_status status) {
     return status == NAULA_TIMED_OUT || status == NAULA_UNREACHABLE;
 }
 
-static void note_skipped(const char *code, const naula_place *place, const naula_refusal *refusal) {
+/** Names a repo that got no definite answer; the gather goes on, so every such repo is named, then refuses. */
+static void record_unread(sync_model *model, const char *code, const char *what, const naula_refusal *refusal) {
+    fprintf(stderr, "naula: unread %s: %s: %s: %s\n", what, code, refusal->code, refusal->detail);
+    if (model->unread_count++ == 0) {
+        naula_refuse(&model->first_unread, "repos-unread",
+                     "run again once every repo answers; a repo refused for its own content (its branch, its repo.json, "
+                     "its confirmation) needs that fixed first",
+                     "%s: %s: %s", what, code, refusal->code);
+    }
+}
+
+static void record_unread_place(sync_model *model, const char *code, const naula_place *place,
+                                const naula_refusal *refusal) {
     char *text = naula_place_text(place);
-    printf("note %s: %s: %s: %s\n", code, text == NULL ? "(home)" : text, refusal->code, refusal->detail);
+    record_unread(model, code, text == NULL ? "(home)" : text, refusal);
     naula_memory_release(text);
 }
 
 /** The repo.json the listed home holds on its working branch; `*file` stays empty for an unadopted repo. */
-static naula_status read_listed_file(cli_context *context, sync_repo *repo, naula_repo_file *file, int *adopted,
-                                     naula_refusal *refusal) {
+static naula_status read_listed_file(cli_context *context, sync_model *model, sync_repo *repo,
+                                     naula_repo_file *file, int *adopted, int *skipped, naula_refusal *refusal) {
     uint8_t *bytes = NULL;
     size_t length = 0;
     *adopted = 0;
     naula_status status = cli_read_home_file(context, &repo->place, repo->working_branch, &bytes, &length, refusal);
-    if (status == NAULA_NOT_FOUND || status == NAULA_REFUSED) {
-        if (status == NAULA_REFUSED) {
-            note_skipped("repo-file-unreadable", &repo->place, refusal);
-        }
+    if (status == NAULA_NOT_FOUND) {
+        return NAULA_OK;
+    }
+    if (status == NAULA_REFUSED) {
+        record_unread_place(model, "repo-file-unreadable", &repo->place, refusal);
+        *skipped = 1;
         return NAULA_OK;
     }
     if (status != NAULA_OK) {
@@ -292,8 +306,9 @@ static naula_status read_listed_file(cli_context *context, sync_repo *repo, naul
         return status;
     }
     if (status != NAULA_OK) {
-        note_skipped("repo-file-invalid", &repo->place, &parsed);
+        record_unread_place(model, "repo-file-invalid", &repo->place, &parsed);
         naula_repo_file_release(file);
+        *skipped = 1;
         return NAULA_OK;
     }
     *adopted = 1;
@@ -384,14 +399,15 @@ static naula_status add_found_org(sync_model *model, const sync_request *request
 }
 
 /** Derives the id from the listed home's history, then reads its file, taking a stated id as the fork exception. */
-static naula_status derive_listed_id(cli_context *context, sync_repo *repo, const naula_repository *listed,
-                                     naula_repo_file *file, int *adopted, naula_refusal *refusal) {
+static naula_status derive_listed_id(cli_context *context, sync_model *model, sync_repo *repo,
+                                     const naula_repository *listed, naula_repo_file *file, int *adopted, int *skipped,
+                                     naula_refusal *refusal) {
     naula_status status = cli_history_id(context->history, repo->clone_url, listed->default_branch, NULL,
                                          &repo->layout.id, &repo->working_branch, refusal);
     if (status == NAULA_OK) {
-        status = read_listed_file(context, repo, file, adopted, refusal);
+        status = read_listed_file(context, model, repo, file, adopted, skipped, refusal);
     }
-    if (status == NAULA_OK && *adopted && file->id != NULL) {
+    if (status == NAULA_OK && !*skipped && *adopted && file->id != NULL) {
         naula_id_release(&repo->layout.id);
         naula_memory_release(repo->working_branch);
         repo->working_branch = NULL;
@@ -401,7 +417,8 @@ static naula_status derive_listed_id(cli_context *context, sync_repo *repo, cons
     return status;
 }
 
-static naula_status confirm_listed(cli_context *context, sync_repo *repo, naula_refusal *refusal, int *skipped) {
+static naula_status confirm_listed(cli_context *context, sync_model *model, sync_repo *repo, naula_refusal *refusal,
+                                   int *skipped) {
     char *id_text = cli_format("git:%s", repo->layout.id.commit);
     if (id_text == NULL) {
         return NAULA_OUT_OF_MEMORY;
@@ -417,7 +434,8 @@ static naula_status confirm_listed(cli_context *context, sync_repo *repo, naula_
     naula_memory_release(id_text);
     repo->resolved = status == NAULA_OK;
     if (status == NAULA_REFUSED || status == NAULA_NOT_FOUND) {
-        note_skipped("unconfirmed", &repo->place, &confirmed);
+        record_unread_place(model, "unconfirmed", &repo->place, &confirmed);
+        cli_print_verdicts(&repo->resolution);
         *skipped = 1;
         return NAULA_OK;
     }
@@ -451,20 +469,20 @@ static naula_status gather_listed(cli_context *context, const sync_request *requ
     naula_refusal derived = cli_fresh_refusal();
     naula_status status = NAULA_REFUSED;
     if (cli_clone_url_is_allowed(listed->clone_url)) {
-        status = derive_listed_id(context, repo, listed, &file, &adopted, &derived);
+        status = derive_listed_id(context, model, repo, listed, &file, &adopted, &skipped, &derived);
     } else {
         naula_refuse(&derived, "clone-url-refused", "ask the host for an https clone url",
                      "the host answered no clone url naula hands to git");
     }
     if (status == NAULA_REFUSED) {
-        note_skipped("unreadable", &repo->place, &derived);
+        record_unread_place(model, "unreadable", &repo->place, &derived);
         skipped = 1;
         status = NAULA_OK;
     } else if (status != NAULA_OK && refusal != NULL) {
         *refusal = derived;
     }
     if (status == NAULA_OK && !skipped && adopted && !listed->archived) {
-        status = confirm_listed(context, repo, refusal, &skipped);
+        status = confirm_listed(context, model, repo, refusal, &skipped);
     }
     if (status == NAULA_OK && !skipped) {
         status = repo->resolved ? fill_from_resolution(repo) : fill_from_host(context, provider, listed, &file, repo);
@@ -509,12 +527,12 @@ int sync_model_holds(const sync_model *model, const naula_id *id) {
 }
 
 naula_status sync_gather_extra(cli_context *context, sync_model *model, const naula_reference *reference,
-                                 naula_refusal *refusal) {
+                               naula_refusal *refusal) {
     naula_id id;
     if (reference->id == NULL || parse_id(reference->id, &id, NULL) != NAULA_OK) {
-        printf("note extra-unverifiable: %s is kept by url, which naula cannot confirm\n",
-               reference->url == NULL ? "(reference)" : reference->url);
-        return NAULA_OK;
+        naula_refuse(refusal, "extra-by-url", "keep the repo by its id and at, as naula clone writes it",
+                     "%s is kept by url, which naula cannot confirm", reference->url == NULL ? "(reference)" : reference->url);
+        return NAULA_REFUSED;
     }
     if (sync_model_holds(model, &id)) {
         naula_id_release(&id);
@@ -530,10 +548,11 @@ naula_status sync_gather_extra(cli_context *context, sync_model *model, const na
     naula_status status = cli_resolve(context, reference, &repo->resolution, &resolved);
     repo->resolved = status == NAULA_OK;
     if (status == NAULA_REFUSED || status == NAULA_NOT_FOUND) {
-        printf("note extra-unconfirmed: %s: %s: %s\n", reference->id, resolved.code, resolved.detail);
+        naula_refuse(refusal, "extra-unconfirmed", resolved.fix == NULL ? "run again once its homes confirm it" : resolved.fix,
+                     "%s: %s: %s", reference->id, resolved.code, resolved.detail);
         cli_print_verdicts(&repo->resolution);
         drop_last_repo(model);
-        return NAULA_OK;
+        return NAULA_REFUSED;
     }
     if (status != NAULA_OK && refusal != NULL) {
         *refusal = resolved;
@@ -696,7 +715,23 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
         status = gather_accounts(context, request, model, refusal);
     }
     for (size_t index = 0; status == NAULA_OK && index < request->root_file.extra_count; index++) {
-        status = sync_gather_extra(context, model, &request->root_file.extra[index], refusal);
+        const naula_reference *extra = &request->root_file.extra[index];
+        naula_refusal kept = cli_fresh_refusal();
+        status = sync_gather_extra(context, model, extra, &kept);
+        if (status == NAULA_REFUSED) {
+            record_unread(model, "extra", extra->id == NULL ? "(kept repo)" : extra->id, &kept);
+            status = NAULA_OK;
+        } else if (status != NAULA_OK && refusal != NULL) {
+            *refusal = kept;
+        }
+    }
+    if (status == NAULA_OK && model->unread_count > 0) {
+        if (refusal != NULL) {
+            naula_refuse(refusal, "repos-unread", model->first_unread.fix,
+                         "%zu repos of this root got no definite answer, so nothing was changed; the first: %s",
+                         model->unread_count, model->first_unread.detail);
+        }
+        status = NAULA_REFUSED;
     }
     if (status == NAULA_OK && cli_is_folder(request->root)) {
         status = scan_checkouts(model, request->root, 0);

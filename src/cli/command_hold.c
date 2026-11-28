@@ -1,5 +1,7 @@
+#include <stdio.h>
 #include <string.h>
 
+#include "disk.h"
 #include "naula/memory.h"
 #include "sync_internal.h"
 
@@ -150,6 +152,91 @@ static naula_status release_org(cli_context *context, sync_request *request, con
     return status;
 }
 
+static int is_listed(char *const *paths, size_t count, const char *path) {
+    for (size_t index = 0; index < count; index++) {
+        if (strcmp(paths[index], path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** What naula writes as an org's CLAUDE.md: one line importing the rules, `@<path>`, and nothing else. */
+static int is_generated_rules(const uint8_t *bytes, size_t length) {
+    return length > 2 && bytes[0] == '@' && bytes[length - 1] == '\n' && memchr(bytes, '\n', length - 1) == NULL &&
+           memchr(bytes, '\r', length) == NULL;
+}
+
+/** Removes a CLAUDE.md naula wrote for an org this root no longer lays out; one someone edited is left and named. */
+static naula_status remove_rules_file(const char *root, const char *path, naula_refusal *refusal) {
+    size_t root_length = strlen(root);
+    if (strncmp(path, root, root_length) != 0 || path[root_length] != '/') {
+        return NAULA_OK;
+    }
+    naula_status status = cli_refuse_links_below(root, path + root_length + 1, refusal);
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    naula_status read = status == NAULA_OK ? cli_read_file(path, &bytes, &length, refusal) : status;
+    if (read == NAULA_OK && is_generated_rules(bytes, length)) {
+        unsigned long error = 0;
+        if (disk_file_remove(path, &error) == NAULA_OK) {
+            printf("remove %s\n", path);
+        } else {
+            char text[256];
+            disk_error_text(error, text, sizeof text);
+            naula_refuse(refusal, "file-not-removed", "remove it by hand", "cannot remove %s: %s", path, text);
+            status = NAULA_REFUSED;
+        }
+    } else if (read == NAULA_OK) {
+        printf("left-alone rules-file-edited: %s: it is not the import naula wrote, so it stays\n", path);
+    } else if (read != NAULA_NOT_FOUND) {
+        status = read;
+    }
+    naula_memory_release(bytes);
+    return status;
+}
+
+static naula_status remove_released_rules(const sync_request *request, char *const *before, size_t before_count,
+                                          naula_refusal *refusal) {
+    naula_status status = naula_root_hold(request->root, refusal);
+    for (size_t index = 0; status == NAULA_OK && index < before_count; index++) {
+        if (!is_listed(request->rules_files, request->rules_file_count, before[index])) {
+            status = remove_rules_file(request->root, before[index], refusal);
+        }
+    }
+    naula_root_unhold();
+    return status;
+}
+
+/**
+ * The org's links go with the plan made without it; its CLAUDE.md, which no plan writes once the org is left out, is
+ * found by planning the root as it stood first and removed once the release is applied.
+ */
+static naula_status release_and_sync(cli_context *context, sync_request *request, const char *name,
+                                     naula_refusal *refusal) {
+    request->plan_only = 1;
+    naula_status status = sync_run(context, request, refusal);
+    request->plan_only = 0;
+    char **before = request->rules_files;
+    size_t before_count = request->rules_file_count;
+    request->rules_files = NULL;
+    request->rules_file_count = 0;
+    if (status == NAULA_OK) {
+        status = release_org(context, request, name, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = sync_run(context, request, refusal);
+    }
+    if (status == NAULA_OK) {
+        status = remove_released_rules(request, before, before_count, refusal);
+    }
+    for (size_t index = 0; index < before_count; index++) {
+        naula_memory_release(before[index]);
+    }
+    naula_memory_release(before);
+    return status;
+}
+
 int cli_command_release(int count, char **values) {
     cli_arguments arguments;
     if (!cli_parse_arguments("release", count, values, CLI_ALLOW_ROOT | CLI_ALLOW_ACCEPT, 1, 1, &arguments)) {
@@ -162,10 +249,7 @@ int cli_command_release(int count, char **values) {
     if (status != NAULA_OK) {
         return cli_refused(status, &refusal);
     }
-    status = release_org(&context, &request, arguments.positional[0], &refusal);
-    if (status == NAULA_OK) {
-        status = sync_run(&context, &request, &refusal);
-    }
+    status = release_and_sync(&context, &request, arguments.positional[0], &refusal);
     sync_request_release(&request);
     cli_context_close(&context);
     return status == NAULA_OK ? CLI_DONE : cli_refused(status, &refusal);

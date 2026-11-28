@@ -9,10 +9,43 @@
 
 static const char *const note_codes[] = {"unadopted", "not-held", "path-outside-root", "suborg-declares-itself"};
 
+void sync_rules_files_release(sync_request *request) {
+    for (size_t index = 0; index < request->rules_file_count; index++) {
+        naula_memory_release(request->rules_files[index]);
+    }
+    naula_memory_release(request->rules_files);
+    request->rules_files = NULL;
+    request->rules_file_count = 0;
+}
+
 void sync_request_release(sync_request *request) {
+    sync_rules_files_release(request);
     naula_memory_release(request->root);
     naula_root_file_release(&request->root_file);
     memset(request, 0, sizeof *request);
+}
+
+static int is_rules_file(const naula_layout_step *step) {
+    size_t length = step->path == NULL ? 0 : strlen(step->path);
+    return step->kind == NAULA_WRITE_FILE && length >= 10 && strcmp(step->path + length - 10, "/CLAUDE.md") == 0;
+}
+
+static naula_status collect_rules_files(sync_request *request, const naula_layout_plan *plan) {
+    sync_rules_files_release(request);
+    request->rules_files = naula_memory_allocate((plan->step_count + 1) * sizeof *request->rules_files);
+    if (request->rules_files == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    for (size_t index = 0; index < plan->step_count; index++) {
+        if (is_rules_file(&plan->steps[index])) {
+            char *copy = naula_memory_duplicate_text(plan->steps[index].path);
+            if (copy == NULL) {
+                return NAULA_OUT_OF_MEMORY;
+            }
+            request->rules_files[request->rules_file_count++] = copy;
+        }
+    }
+    return NAULA_OK;
 }
 
 naula_status sync_find_root(const cli_arguments *arguments, char **root, naula_refusal *refusal) {
@@ -309,12 +342,15 @@ static naula_status resume_unfinished(const sync_request *request, naula_refusal
     }
     if (status == NAULA_OK) {
         printf("resume %s\n", journal);
+        char *banks = memory_banks();
         naula_apply_options options;
         memset(&options, 0, sizeof options);
         options.size = sizeof options;
         options.root = request->root;
+        options.memory_banks = banks;
         options.report = report_applied;
         status = naula_journal_resume(journal, &options, refusal);
+        naula_memory_release(banks);
     }
     naula_memory_release(journal);
     return status;
@@ -344,9 +380,12 @@ static naula_status keep_cloned(cli_context *context, sync_request *request, syn
     if (held) {
         return NAULA_OK;
     }
-    status = sync_root_add_extra(&request->root_file, request->clone);
-    request->write_root_file = status == NAULA_OK;
-    return status == NAULA_OK ? sync_gather_extra(context, model, request->clone, refusal) : status;
+    status = sync_gather_extra(context, model, request->clone, refusal);
+    if (status == NAULA_OK) {
+        status = sync_root_add_extra(&request->root_file, request->clone);
+        request->write_root_file = request->write_root_file || status == NAULA_OK;
+    }
+    return status;
 }
 
 static int declares_name(const naula_org_declaration *declaration, const char *name) {
@@ -370,7 +409,8 @@ static int holds_org_named(const sync_model *model, const char *name) {
     return 0;
 }
 
-static naula_status lay_out(cli_context *context, sync_request *request, sync_model *model, naula_refusal *refusal) {
+static naula_status lay_out(cli_context *context, sync_request *request, sync_model *model, int *held,
+                            naula_refusal *refusal) {
     naula_status status = sync_gather(context, request, model, refusal);
     if (status == NAULA_OK && request->org_filter != NULL && !holds_org_named(model, request->org_filter)) {
         naula_refuse(refusal, "org-not-held", "name an org this root holds, or hold it first",
@@ -387,11 +427,20 @@ static naula_status lay_out(cli_context *context, sync_request *request, sync_mo
     if (status != NAULA_OK) {
         return status;
     }
-    if (request->write_root_file) {
+    if (request->plan_only) {
+        status = collect_rules_files(request, &plan);
+        naula_layout_plan_release(&plan);
+        return status;
+    }
+    if (!*held) {
         status = cli_make_folders(request->root, refusal);
         if (status == NAULA_OK) {
-            status = naula_root_file_write(request->root, &request->root_file, refusal);
+            status = naula_root_hold(request->root, refusal);
         }
+        *held = status == NAULA_OK;
+    }
+    if (status == NAULA_OK && request->write_root_file) {
+        status = naula_root_file_write(request->root, &request->root_file, refusal);
     }
     int cloned = 0;
     if (status == NAULA_OK) {
@@ -405,20 +454,34 @@ static naula_status lay_out(cli_context *context, sync_request *request, sync_mo
         print_reports(&plan);
         status = apply(request, &plan, refusal);
     }
+    if (status == NAULA_OK) {
+        status = collect_rules_files(request, &plan);
+    }
     naula_layout_plan_release(&plan);
     return status;
 }
 
 naula_status sync_run(cli_context *context, sync_request *request, naula_refusal *refusal) {
-    naula_status status = resume_unfinished(request, refusal);
+    int held = 0;
+    naula_status status = NAULA_OK;
+    if (cli_is_folder(request->root)) {
+        status = naula_root_hold(request->root, refusal);
+        held = status == NAULA_OK;
+    }
+    if (status == NAULA_OK && !request->plan_only) {
+        status = resume_unfinished(request, refusal);
+    }
     sync_model model;
     memset(&model, 0, sizeof model);
     if (status == NAULA_OK) {
-        status = lay_out(context, request, &model, refusal);
+        status = lay_out(context, request, &model, &held, refusal);
     }
     if (status != NAULA_OK) {
         cli_print_questions(context);
     }
     sync_model_release(&model);
+    if (held) {
+        naula_root_unhold();
+    }
     return status;
 }
