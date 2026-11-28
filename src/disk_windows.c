@@ -1049,6 +1049,10 @@ void disk_utc_stamp(char stamp[17]) {
              (unsigned)now.wDay, (unsigned)now.wHour, (unsigned)now.wMinute, (unsigned)now.wSecond);
 }
 
+int disk_error_is_mount(unsigned long error) {
+    return error == ERROR_NOT_SAME_DEVICE;
+}
+
 void disk_error_text(unsigned long error, char *text, size_t capacity) {
     if (capacity == 0) {
         return;

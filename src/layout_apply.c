@@ -24,6 +24,8 @@ static const char *const UNVERIFIABLE_FIX = "check that nothing is mounted insid
 static const char *const DEEP_FIX = "remove the folder by hand, or stop the program that keeps making folders inside "
                                     "it, then run naula sync again to resume";
 static const char *const BANK_FIX = "merge or remove one of the two memory banks by hand, then run naula sync again";
+static const char *const CHANGE_MOUNT_FIX = "unmount what is mounted at or above the path under the root, then run "
+                                            "naula sync again to resume";
 
 /** `memory_banks` is the real folder options->memory_banks names, NULL when there is none. */
 typedef struct applier {
@@ -633,6 +635,12 @@ static naula_status decide(applier *applying, const naula_layout_step *step, int
 
 static naula_status refuse_change(applier *applying, naula_status status, const char *what, const char *path,
                                   unsigned long error) {
+    if (status == NAULA_REFUSED && disk_error_is_mount(error)) {
+        naula_refuse(applying->refusal, "mount-inside", CHANGE_MOUNT_FIX,
+                     "%s %s: it is, or lies below, a folder mounted there from elsewhere, which naula never changes",
+                     what, path);
+        return NAULA_REFUSED;
+    }
     return status == NAULA_REFUSED ? apply_refuse_disk(applying->refusal, "change-refused", DISK_FIX, what, path,
                                                        error)
                                    : status;
@@ -668,6 +676,9 @@ static naula_status perform_move(applier *applying, const naula_layout_step *ste
     naula_status status = NAULA_REFUSED;
     if (bank_from != NULL && bank_to != NULL) {
         status = disk_move(applying->memory_banks, bank_from, bank_to, &held, &error);
+    }
+    if (status == NAULA_REFUSED && disk_error_is_mount(error)) {
+        return refuse_change(applying, status, "cannot rename the memory bank", decided->bank_from, error);
     }
     return status == NAULA_REFUSED ? apply_refuse_disk(applying->refusal, "memory-bank-move-failed", HELD_FIX,
                                                        "cannot rename the memory bank", decided->bank_from, error)

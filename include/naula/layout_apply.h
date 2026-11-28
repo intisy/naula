@@ -17,6 +17,9 @@
  * also by a name Windows opens as one of them: with a trailing dot or space, or as an 8.3 alias such as `NAULA-~1`;
  * and on every platform by any first component below the root that the disk opens as one of them, compared by file
  * identity without following a link, so an alias no rule on names knows is refused as well.
+ *
+ * Every change opens the root and walks to the folder it changes in, never through a link. On POSIX a folder on that
+ * walk mounted from elsewhere, a bind mount included, stops the run with `mount-inside` before the change is made.
  */
 
 #include <stddef.h>
@@ -93,11 +96,11 @@ typedef struct naula_apply_options {
  *   reparse point, removed itself.
  * - REPORT changes nothing.
  *
- * What it does not guard: each step but REMOVE_CLONE reads the disk and then changes it, so another program that swaps
- * a folder above a step's path for a link, or makes something at a target, between that check and that change is not
- * caught. A move never replaces its target on Windows and on Linux (renameat2 with RENAME_NOREPLACE); elsewhere, or on
- * a Linux file system without it, it checks that the target is missing and then renames, since rename(2) would replace
- * an empty folder there. The lock covers naula against itself only, never another program.
+ * What it does not guard: each step reads the disk and then changes it, so another program that makes something at a
+ * target between that check and that change is not caught by the check; a link swapped in above the path is refused by
+ * the change's walk. A move never replaces its target on Windows and on Linux (renameat2 with RENAME_NOREPLACE);
+ * elsewhere, or on a Linux file system without it, it checks that the target is missing and then renames, since
+ * rename(2) would replace an empty folder there. The lock covers naula against itself only, never another program.
  */
 naula_status naula_layout_apply(const naula_layout_plan *plan, const naula_apply_options *options,
                                 naula_refusal *refusal);

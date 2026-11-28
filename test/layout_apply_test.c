@@ -1731,8 +1731,7 @@ typedef enum swapped_change {
 static const char *const CHANGE_NAMES[CHANGE_COUNT] = {
     "folder make", "file replace", "link make", "link remove", "move from", "move to", "owned file", "appender"};
 
-static naula_status make_change(swapped_change change) {
-    unsigned long error = 0;
+static naula_status make_change(swapped_change change, unsigned long *error) {
     int held = 0;
     int exists = 0;
     disk_owned_file *owned = NULL;
@@ -1740,25 +1739,25 @@ static naula_status make_change(swapped_change change) {
     naula_status status = NAULA_OK;
     switch (change) {
     case CHANGE_OWNED_FILE:
-        status = disk_owned_file_create(root, "org/lock", (const uint8_t *)"1\n", 2, &exists, &owned, &error);
+        status = disk_owned_file_create(root, "org/lock", (const uint8_t *)"1\n", 2, &exists, &owned, error);
         disk_owned_file_abandon(owned);
         return status;
     case CHANGE_APPENDER:
-        status = disk_appender_open(root, "org/journal.txt", 1, &appender, &error);
+        status = disk_appender_open(root, "org/journal.txt", 1, &appender, error);
         disk_appender_close(appender);
         return status;
     case CHANGE_FOLDER_MAKE:
-        return disk_folder_make(root, "org/made", &error);
+        return disk_folder_make(root, "org/made", error);
     case CHANGE_FILE_REPLACE:
-        return disk_file_replace(root, "org/file.txt", (const uint8_t *)"new", 3, &error);
+        return disk_file_replace(root, "org/file.txt", (const uint8_t *)"new", 3, error);
     case CHANGE_LINK_MAKE:
-        return disk_link_make(root, "org/made-link", at("repos"), &error);
+        return disk_link_make(root, "org/made-link", at("repos"), error);
     case CHANGE_LINK_REMOVE:
-        return disk_link_remove(root, "org/link", &error);
+        return disk_link_remove(root, "org/link", error);
     case CHANGE_MOVE_FROM:
-        return disk_move(root, "org/clone", "moved", &held, &error);
+        return disk_move(root, "org/clone", "moved", &held, error);
     default:
-        return disk_move(root, "clone", "org/moved", &held, &error);
+        return disk_move(root, "clone", "org/moved", &held, error);
     }
 }
 
@@ -1794,7 +1793,8 @@ static void every_change_refuses_a_folder_above_it_swapped_for_a_link(void) {
         folder_swap swap;
         prepare_swap(&swap, at("org"), moved_to, outside, DISK_TEST_BEFORE_WALK, "org/", 1);
         naula_disk_test_hook(swap_folder_for_link, &swap);
-        naula_status status = make_change((swapped_change)change);
+        unsigned long error = 0;
+        naula_status status = make_change((swapped_change)change, &error);
         naula_disk_test_hook(NULL, NULL);
         char *after = snapshot("swap-change/outside-org");
         if (!swap.swapped_in || status != NAULA_REFUSED || strcmp(before, after) != 0 ||
@@ -2874,6 +2874,68 @@ static void a_mount_above_the_clone_stops_the_removal(void) {
         finish("mount-above");
     }
 }
+
+/** Takes away the link lay_out_an_org made in `folder`, which the test's own removal never enters. */
+static void unlink_an_org(const char *folder) {
+    char link[PATH_SIZE];
+    compose(link, folder, "/link", NULL);
+    if (kind_at(link) == 3) {
+        unlink_link(link);
+    }
+}
+
+/**
+ * `org` under the root is a bind mount of a folder outside it, which shares the root's device: every call that changes
+ * the disk below it is refused as a mount, and so is the applier's move of a checkout inside it, so nothing outside
+ * changes.
+ */
+static void every_change_refuses_a_mount_above_it(void) {
+    char outside[PATH_SIZE];
+    char arguments[PATH_SIZE * 2];
+    for (int change = 0; change <= CHANGE_COUNT; change++) {
+        fresh("mount-change");
+        make_folder(at("repos"));
+        compose(outside, base, "/mount-change/outside-org", NULL);
+        lay_out_an_org(outside);
+        lay_out_an_org(at("org"));
+        make_checkout(at("clone"), "inside");
+        char *before = snapshot("mount-change/outside-org");
+        snprintf(arguments, sizeof arguments, "--bind '%s'", outside);
+        if (!mount_on(arguments, at("org"))) {
+            printf("every_change_refuses_a_mount_above_it: skipped, this process cannot mount\n");
+            free(before);
+            unlink_an_org(outside);
+            unlink_an_org(at("org"));
+            finish("mount-change");
+            return;
+        }
+        unsigned long error = 0;
+        naula_status status = NAULA_REFUSED;
+        int is_mount = 0;
+        if (change < CHANGE_COUNT) {
+            status = make_change((swapped_change)change, &error);
+            is_mount = disk_error_is_mount(error);
+        } else {
+            plan_start();
+            plan_add(NAULA_MOVE_CHECKOUT, at("org/clone"), at("org/moved"), NULL);
+            status = apply_plan();
+            is_mount = status == NAULA_REFUSED && strcmp(refusal.code, "mount-inside") == 0;
+        }
+        unmount(at("org"));
+        char *after = snapshot("mount-change/outside-org");
+        const char *name = change < CHANGE_COUNT ? CHANGE_NAMES[change] : "the applier's move";
+        if (status != NAULA_REFUSED || !is_mount || strcmp(before, after) != 0 || kind_at(at("moved")) != 0) {
+            fprintf(stderr, "%s through a bind mount: status %d, error %lu, %s, outside now:\n%s\n", name, (int)status,
+                    error, refusal.code, after);
+            check_failures++;
+        }
+        free(before);
+        free(after);
+        unlink_an_org(outside);
+        unlink_an_org(at("org"));
+        finish("mount-change");
+    }
+}
 #endif
 
 #ifndef _WIN32
@@ -3331,6 +3393,7 @@ static const named_test TESTS[] = {
     {"mounts_inside_a_clone_are_told_apart_without_statx", mounts_inside_a_clone_are_told_apart_without_statx},
     {"a_clone_whose_mounts_cannot_be_told_apart_is_refused", a_clone_whose_mounts_cannot_be_told_apart_is_refused},
     {"a_mount_above_the_clone_stops_the_removal", a_mount_above_the_clone_stops_the_removal},
+    {"every_change_refuses_a_mount_above_it", every_change_refuses_a_mount_above_it},
 #endif
 };
 

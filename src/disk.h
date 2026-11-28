@@ -9,7 +9,11 @@
  * A call that changes the disk takes a folder `root` and a path `below` it, opens `root` once and every component of
  * `below` but the last relative to the folder before it, never through a link, and acts on the last component by its
  * name in the folder it holds open, never by a full path. So a link swapped in anywhere below `root` after the caller
- * checked the path is refused rather than followed. A component that is empty, `.` or `..` is refused.
+ * checked the path is refused rather than followed. A component that is empty, `.` or `..` is refused. On POSIX the
+ * mount `root` is on is recorded and every folder the walk opens is judged against it: one on another file system or
+ * mount, a bind mount included, is refused with an error disk_error_is_mount names, so no change lands in data mounted
+ * under the root from elsewhere. On Linux a folder whose mount id cannot be read is judged by its device alone, except
+ * by a removal. On Windows a mounted folder is a reparse point, refused on the walk like a link.
  */
 
 #include <stddef.h>
@@ -66,12 +70,12 @@ naula_status disk_move(const char *root, const char *from, const char *to, int *
  * folder more than disk_removal_depth_limit() levels below the clone is DISK_REMOVAL_TOO_DEEP, which is what stops a
  * writer making ever deeper new folders, since each of those is filled only once.
  *
- * On POSIX the mount `root` is on is recorded, and every folder from `root` down to the clone, the clone, and every
- * folder and file in it is judged against it: one on another file system or mount, a bind mount included, is
- * DISK_REMOVAL_MOUNT_INSIDE and never entered or removed, so a mount at or above the clone stops the removal before
- * anything is removed, a deliberate one included. On Linux a bind mount is told apart only by its mount id, from statx
- * or else a file handle; where neither gives one, the removal stops as DISK_REMOVAL_MOUNT_UNVERIFIABLE. On Windows a
- * mounted folder is a reparse point, refused on the way to the clone like a link and removed itself inside it.
+ * On POSIX the clone and every folder and file in it are judged against the root's mount as the walk's folders are:
+ * one on another file system or mount, a bind mount included, is DISK_REMOVAL_MOUNT_INSIDE and never entered or
+ * removed, so a mount at or above the clone stops the removal before anything is removed, a deliberate one included.
+ * On Linux a bind mount is told apart only by its mount id, from statx or else a file handle; where neither gives one,
+ * the removal stops as DISK_REMOVAL_MOUNT_UNVERIFIABLE. On Windows a mounted folder is a reparse point, refused on the
+ * way to the clone like a link and removed itself inside it.
  */
 typedef enum disk_removal_refusal {
     DISK_REMOVAL_REFUSED = 0,
@@ -191,6 +195,9 @@ void disk_utc_stamp(char stamp[17]);
  * nothing is there; anything but a folder is refused. Release with naula_memory_release.
  */
 naula_status disk_real_folder(const char *path, char **real, unsigned long *error);
+
+/** Whether a change refused with `error` because its walk reached a folder mounted from elsewhere. */
+int disk_error_is_mount(unsigned long error);
 
 /** The system's text for `error`, for a refusal's detail, cut to fit `text`. */
 void disk_error_text(unsigned long error, char *text, size_t capacity);

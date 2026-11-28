@@ -68,68 +68,6 @@ static int open_folder_at(int folder, const char *name) {
     return openat(folder, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
 }
 
-static int is_walkable_name(const char *name) {
-    return name[0] != '\0' && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
-}
-
-/** Judges the root and every folder a walk opens on its way down, refusing one; NULL judges none. */
-typedef naula_status (*walk_judge)(void *context, int folder, unsigned long *error);
-
-static naula_status refuse_name(unsigned long *error) {
-    *error = EINVAL;
-    return NAULA_REFUSED;
-}
-
-/**
- * Opens `root`, then every component of `below` but the last relative to the folder before it, never through a link,
- * and hands back the last folder and where the last component starts. Cuts `below` while it works.
- */
-static naula_status walk_from_root(const char *root, char *below, walk_judge judge, void *context, int *parent,
-                                   const char **name, unsigned long *error) {
-    *parent = -1;
-    disk_test_reach(DISK_TEST_BEFORE_WALK, below);
-    int folder = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-    if (folder < 0) {
-        return refused(error);
-    }
-    naula_status status = judge == NULL ? NAULA_OK : judge(context, folder, error);
-    char *component = below;
-    for (char *slash = strchr(component, '/'); status == NAULA_OK && slash != NULL; slash = strchr(component, '/')) {
-        *slash = '\0';
-        int next = is_walkable_name(component) ? open_folder_at(folder, component) : -1;
-        status = next >= 0 ? NAULA_OK : is_walkable_name(component) ? refused(error) : refuse_name(error);
-        *slash = '/';
-        close(folder);
-        folder = next;
-        if (status == NAULA_OK && judge != NULL) {
-            status = judge(context, folder, error);
-        }
-        component = slash + 1;
-    }
-    if (status == NAULA_OK && !is_walkable_name(component)) {
-        status = refuse_name(error);
-    }
-    if (status != NAULA_OK) {
-        if (folder >= 0) {
-            close(folder);
-        }
-        return status;
-    }
-    *parent = folder;
-    *name = component;
-    return NAULA_OK;
-}
-
-naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error) {
-    walk->parent = -1;
-    walk->name = NULL;
-    walk->below = copy_of(below, strlen(below));
-    if (walk->below == NULL) {
-        return NAULA_OUT_OF_MEMORY;
-    }
-    return walk_from_root(root, walk->below, NULL, NULL, &walk->parent, &walk->name, error);
-}
-
 void disk_walk_release(disk_walk *walk) {
     if (walk->parent >= 0) {
         close(walk->parent);
@@ -360,64 +298,132 @@ static int mount_identity_at(int folder, const char *name, dev_t device, mount_i
 #endif
 }
 
-typedef struct removal {
-    int parent;
-    removal_frame *frames;
-    size_t depth;
-    size_t capacity;
-    mount_identity root_mount;
+/**
+ * The mount a walk's root is on, recorded from the root, and why a folder was refused as on another one.
+ * `needs_mount_id` refuses as unverifiable a folder whose mount id cannot be read on Linux, where only a mount id tells
+ * a bind mount apart; without it such a folder is judged by its device alone.
+ */
+typedef struct mount_judge {
+    mount_identity root;
     int root_judged;
+    int needs_mount_id;
     disk_removal_refusal reason;
-} removal;
+} mount_judge;
 
-static naula_status refuse_mount(removal *removing, disk_removal_refusal reason, unsigned long code,
+static naula_status refuse_mount(mount_judge *judge, disk_removal_refusal reason, unsigned long code,
                                  unsigned long *error) {
-    removing->reason = reason;
+    judge->reason = reason;
     *error = code;
     return NAULA_REFUSED;
 }
 
-/**
- * NAULA_OK when `found` is on the mount `expected` is on. On Linux an entry whose mount id neither way can read
- * cannot be told from a bind mount on the same device, so it is refused as unverifiable.
- */
-static naula_status judge_mount(removal *removing, const mount_identity *expected, const mount_identity *found,
-                                unsigned long *error) {
-    if (found->device != expected->device) {
-        return refuse_mount(removing, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
+/** NAULA_OK when `found` is on the mount the root is on. */
+static naula_status judge_mount(mount_judge *judge, const mount_identity *found, unsigned long *error) {
+    if (found->device != judge->root.device) {
+        return refuse_mount(judge, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
     }
 #ifdef __linux__
-    if (!expected->has_mount || !found->has_mount) {
-        return refuse_mount(removing, DISK_REMOVAL_MOUNT_UNVERIFIABLE, ENOTSUP, error);
+    if (!judge->root.has_mount || !found->has_mount) {
+        return judge->needs_mount_id ? refuse_mount(judge, DISK_REMOVAL_MOUNT_UNVERIFIABLE, ENOTSUP, error)
+                                     : NAULA_OK;
     }
-    if (found->mount != expected->mount) {
-        return refuse_mount(removing, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
+    if (found->mount != judge->root.mount) {
+        return refuse_mount(judge, DISK_REMOVAL_MOUNT_INSIDE, EXDEV, error);
     }
 #endif
     return NAULA_OK;
 }
 
-/** A folder of the clone, the clone included, must be on the root's mount before anything in it is touched. */
-static naula_status check_mount(removal *removing, int folder, const struct stat *found, unsigned long *error) {
+static naula_status judge_folder(mount_judge *judge, int folder, const struct stat *found, unsigned long *error) {
     mount_identity identity;
     mount_identity_at(folder, "", found->st_dev, &identity);
-    return judge_mount(removing, &removing->root_mount, &identity, error);
+    return judge_mount(judge, &identity, error);
 }
 
-/** Records the root's mount from the first folder of the walk, and judges every later one against it. */
-static naula_status judge_walked_folder(void *context, int folder, unsigned long *error) {
-    removal *removing = context;
+/** Records the root's mount from the first folder of a walk, and judges every later one against it. */
+static naula_status judge_walked_folder(mount_judge *judge, int folder, unsigned long *error) {
     struct stat found;
     if (fstat(folder, &found) != 0) {
         return refused(error);
     }
-    if (removing->root_judged) {
-        return check_mount(removing, folder, &found, error);
+    if (judge->root_judged) {
+        return judge_folder(judge, folder, &found, error);
     }
-    removing->root_judged = 1;
-    mount_identity_at(folder, "", found.st_dev, &removing->root_mount);
+    judge->root_judged = 1;
+    mount_identity_at(folder, "", found.st_dev, &judge->root);
     return NAULA_OK;
 }
+
+static int is_walkable_name(const char *name) {
+    return name[0] != '\0' && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+}
+
+static naula_status refuse_name(unsigned long *error) {
+    *error = EINVAL;
+    return NAULA_REFUSED;
+}
+
+/**
+ * Opens `root`, then every component of `below` but the last relative to the folder before it, never through a link,
+ * judging each folder's mount against the root's, and hands back the last folder and where the last component starts.
+ * Cuts `below` while it works.
+ */
+static naula_status walk_from_root(const char *root, char *below, mount_judge *judge, int *parent, const char **name,
+                                   unsigned long *error) {
+    *parent = -1;
+    disk_test_reach(DISK_TEST_BEFORE_WALK, below);
+    int folder = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (folder < 0) {
+        return refused(error);
+    }
+    naula_status status = judge_walked_folder(judge, folder, error);
+    char *component = below;
+    for (char *slash = strchr(component, '/'); status == NAULA_OK && slash != NULL; slash = strchr(component, '/')) {
+        *slash = '\0';
+        int next = is_walkable_name(component) ? open_folder_at(folder, component) : -1;
+        status = next >= 0 ? NAULA_OK : is_walkable_name(component) ? refused(error) : refuse_name(error);
+        *slash = '/';
+        close(folder);
+        folder = next;
+        if (status == NAULA_OK) {
+            status = judge_walked_folder(judge, folder, error);
+        }
+        component = slash + 1;
+    }
+    if (status == NAULA_OK && !is_walkable_name(component)) {
+        status = refuse_name(error);
+    }
+    if (status != NAULA_OK) {
+        if (folder >= 0) {
+            close(folder);
+        }
+        return status;
+    }
+    *parent = folder;
+    *name = component;
+    return NAULA_OK;
+}
+
+naula_status disk_walk_to_parent(const char *root, const char *below, disk_walk *walk, unsigned long *error) {
+    walk->parent = -1;
+    walk->name = NULL;
+    walk->below = copy_of(below, strlen(below));
+    if (walk->below == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    mount_judge judge;
+    memset(&judge, 0, sizeof judge);
+    return walk_from_root(root, walk->below, &judge, &walk->parent, &walk->name, error);
+}
+
+typedef struct removal {
+    int parent;
+    removal_frame *frames;
+    size_t depth;
+    size_t capacity;
+    mount_judge mounts;
+    disk_removal_refusal reason;
+} removal;
 
 static naula_status refuse_too_deep(removal *removing, unsigned long *error) {
     removing->reason = DISK_REMOVAL_TOO_DEEP;
@@ -429,8 +435,8 @@ static naula_status refuse_too_deep(removal *removing, unsigned long *error) {
 static naula_status push_frame(removal *removing, int folder, char *name, unsigned long *error) {
     struct stat found;
     naula_status status = removing->depth > disk_removal_depth_limit() ? refuse_too_deep(removing, error)
-                          : fstat(folder, &found) == 0             ? check_mount(removing, folder, &found, error)
-                                                                   : refused(error);
+                          : fstat(folder, &found) == 0 ? judge_folder(&removing->mounts, folder, &found, error)
+                                                       : refused(error);
     if (status == NAULA_OK) {
         status = let_owner_empty(folder, error);
     }
@@ -540,7 +546,7 @@ static naula_status remove_entry(removal *removing, int folder, const char *name
     if (mount_identity_at(folder, name, found->st_dev, &identity) == ENOENT) {
         return NAULA_OK;
     }
-    naula_status status = judge_mount(removing, &removing->root_mount, &identity, error);
+    naula_status status = judge_mount(&removing->mounts, &identity, error);
     if (status != NAULA_OK) {
         return status;
     }
@@ -704,7 +710,8 @@ naula_status disk_tree_remove(const char *root, const char *below, disk_removal_
     memset(&removing, 0, sizeof removing);
     int parent = -1;
     const char *name = NULL;
-    naula_status status = walk_from_root(root, copy, judge_walked_folder, &removing, &parent, &name, error);
+    removing.mounts.needs_mount_id = 1;
+    naula_status status = walk_from_root(root, copy, &removing.mounts, &parent, &name, error);
     if (status == NAULA_OK) {
         status = remove_tree_at(&removing, parent, name, error);
     }
@@ -715,7 +722,7 @@ naula_status disk_tree_remove(const char *root, const char *below, disk_removal_
         close(parent);
     }
     naula_memory_release(copy);
-    *reason = removing.reason;
+    *reason = removing.mounts.reason != DISK_REMOVAL_REFUSED ? removing.mounts.reason : removing.reason;
     if (status == NAULA_REFUSED && *reason == DISK_REMOVAL_REFUSED && *error == EBUSY) {
         *reason = DISK_REMOVAL_HELD;
     }
@@ -992,6 +999,10 @@ void disk_utc_stamp(char stamp[17]) {
     snprintf(stamp, 17, "%04u%02u%02uT%02u%02u%02uZ", (unsigned)(parts.tm_year + 1900) % 10000u,
              (unsigned)(parts.tm_mon + 1) % 100u, (unsigned)parts.tm_mday % 100u, (unsigned)parts.tm_hour % 100u,
              (unsigned)parts.tm_min % 100u, (unsigned)parts.tm_sec % 100u);
+}
+
+int disk_error_is_mount(unsigned long error) {
+    return error == EXDEV;
 }
 
 void disk_error_text(unsigned long error, char *text, size_t capacity) {
