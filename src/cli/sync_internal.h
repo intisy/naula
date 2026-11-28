@@ -18,7 +18,9 @@ typedef struct sync_request {
     const char *org_filter;
     const naula_reference *clone;
     int plan_only;
+    int root_held;
     char **rules_files;
+    char **rules_contents;
     size_t rules_file_count;
 } sync_request;
 
@@ -50,13 +52,24 @@ typedef struct sync_org {
     naula_id id;
 } sync_org;
 
-/** A listed repo a home it lists disowns, or a fork of the repo that holds the id: skipped unless naula linked it. */
+/**
+ * A listed repo a home it lists disowns, or a fork of the repo that holds the id: skipped unless naula recorded a link
+ * for it, one carrying its `name` to a checkout of its id.
+ */
 typedef struct sync_copy {
     naula_id id;
     char *place;
+    char *name;
     char code[64];
     char detail[256];
 } sync_copy;
+
+/** A listed repo whose history holds no commit yet, judged once the links are read: a note unless naula linked it. */
+typedef struct sync_empty {
+    char *place;
+    char *name;
+    char detail[1024];
+} sync_empty;
 
 typedef struct sync_model {
     sync_org *orgs;
@@ -75,6 +88,8 @@ typedef struct sync_model {
     naula_refusal first_unread;
     sync_copy *copies;
     size_t copy_count;
+    sync_empty *empties;
+    size_t empty_count;
 } sync_model;
 
 /**
@@ -82,7 +97,8 @@ typedef struct sync_model {
  * checkouts and the links under the root. Any home that cannot be heard, and any listed or kept repo that got no
  * definite answer (refused, unreadable, without its branch, with an invalid repo.json, or unconfirmed), refuses the
  * whole read as `repos-unread`, each named on standard error: a plan made from part of a root would remove the links
- * of what it could not see, and a dropped org-declaring repo would drop its sub-orgs and accounts with it.
+ * of what it could not see, and a dropped org-declaring repo would drop its sub-orgs and accounts with it. So does a
+ * copy or an empty repo naula recorded a link for, and a repo given a checkout naula linked for another repo of its id.
  */
 naula_status sync_gather(cli_context *context, const sync_request *request, sync_model *model,
                          naula_refusal *refusal);
@@ -108,8 +124,9 @@ void sync_model_release(sync_model *model);
 
 /**
  * Plans, clones what is missing, and applies, writing nothing when the plan is refused, all under the root's lock,
- * taken before the first write. `rules_files` ends holding every org `CLAUDE.md` the final plan writes; with
- * `plan_only` the run stops there, having applied and cloned nothing.
+ * taken before the first write unless `root_held` says the command holds it already. `rules_files` ends holding every
+ * org `CLAUDE.md` the final plan writes and `rules_contents` what it writes there; with `plan_only` the run stops
+ * there, having applied and cloned nothing.
  */
 naula_status sync_run(cli_context *context, sync_request *request, naula_refusal *refusal);
 

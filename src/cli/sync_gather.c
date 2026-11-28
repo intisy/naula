@@ -124,8 +124,14 @@ void sync_model_release(sync_model *model) {
     for (size_t index = 0; index < model->copy_count; index++) {
         naula_id_release(&model->copies[index].id);
         naula_memory_release(model->copies[index].place);
+        naula_memory_release(model->copies[index].name);
     }
     naula_memory_release(model->copies);
+    for (size_t index = 0; index < model->empty_count; index++) {
+        naula_memory_release(model->empties[index].place);
+        naula_memory_release(model->empties[index].name);
+    }
+    naula_memory_release(model->empties);
     memset(model, 0, sizeof *model);
 }
 
@@ -434,7 +440,7 @@ static const naula_verdict *copy_verdict(const sync_repo *repo) {
     return NULL;
 }
 
-static naula_status add_copy(sync_model *model, sync_repo *repo, const naula_verdict *verdict) {
+static naula_status add_copy(sync_model *model, sync_repo *repo, const char *name, const naula_verdict *verdict) {
     sync_copy *grown = naula_memory_reallocate(model->copies, (model->copy_count + 1) * sizeof *grown);
     if (grown == NULL) {
         return NAULA_OUT_OF_MEMORY;
@@ -443,7 +449,10 @@ static naula_status add_copy(sync_model *model, sync_repo *repo, const naula_ver
     sync_copy *copy = &model->copies[model->copy_count];
     memset(copy, 0, sizeof *copy);
     copy->place = naula_place_text(&repo->place);
-    if (copy->place == NULL) {
+    copy->name = copy_text(name);
+    if (copy->place == NULL || (name != NULL && copy->name == NULL)) {
+        naula_memory_release(copy->place);
+        naula_memory_release(copy->name);
         return NAULA_OUT_OF_MEMORY;
     }
     copy->id = repo->layout.id;
@@ -455,8 +464,8 @@ static naula_status add_copy(sync_model *model, sync_repo *repo, const naula_ver
     return NAULA_OK;
 }
 
-static naula_status confirm_listed(cli_context *context, sync_model *model, sync_repo *repo, naula_refusal *refusal,
-                                   int *skipped) {
+static naula_status confirm_listed(cli_context *context, sync_model *model, sync_repo *repo, const char *name,
+                                   naula_refusal *refusal, int *skipped) {
     char *id_text = cli_format("git:%s", repo->layout.id.commit);
     if (id_text == NULL) {
         return NAULA_OUT_OF_MEMORY;
@@ -475,7 +484,7 @@ static naula_status confirm_listed(cli_context *context, sync_model *model, sync
         const naula_verdict *copy = copy_verdict(repo);
         *skipped = 1;
         if (copy != NULL) {
-            return add_copy(model, repo, copy);
+            return add_copy(model, repo, name, copy);
         }
         record_unread_place(model, "unconfirmed", &repo->place, &confirmed);
         cli_print_verdicts(&repo->resolution);
@@ -485,6 +494,26 @@ static naula_status confirm_listed(cli_context *context, sync_model *model, sync
         *refusal = confirmed;
     }
     return status;
+}
+
+static naula_status add_empty(sync_model *model, const sync_repo *repo, const char *name, const naula_refusal *why) {
+    sync_empty *grown = naula_memory_reallocate(model->empties, (model->empty_count + 1) * sizeof *grown);
+    if (grown == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    model->empties = grown;
+    sync_empty *empty = &model->empties[model->empty_count];
+    memset(empty, 0, sizeof *empty);
+    empty->place = naula_place_text(&repo->place);
+    empty->name = copy_text(name);
+    if (empty->place == NULL || (name != NULL && empty->name == NULL)) {
+        naula_memory_release(empty->place);
+        naula_memory_release(empty->name);
+        return NAULA_OUT_OF_MEMORY;
+    }
+    snprintf(empty->detail, sizeof empty->detail, "%s", why->detail);
+    model->empty_count++;
+    return NAULA_OK;
 }
 
 static naula_status gather_listed(cli_context *context, const sync_request *request, sync_model *model,
@@ -517,11 +546,8 @@ static naula_status gather_listed(cli_context *context, const sync_request *requ
                      "the host answered no clone url naula hands to git");
     }
     if (status == NAULA_NOT_FOUND) {
-        char *text = naula_place_text(&repo->place);
-        printf("note unadopted: %s: %s\n", text == NULL ? "(home)" : text, derived.detail);
-        naula_memory_release(text);
+        status = add_empty(model, repo, listed->name, &derived);
         skipped = 1;
-        status = NAULA_OK;
     } else if (status == NAULA_REFUSED) {
         record_unread_place(model, "unreadable", &repo->place, &derived);
         skipped = 1;
@@ -530,7 +556,7 @@ static naula_status gather_listed(cli_context *context, const sync_request *requ
         *refusal = derived;
     }
     if (status == NAULA_OK && !skipped && adopted && !listed->archived) {
-        status = confirm_listed(context, model, repo, refusal, &skipped);
+        status = confirm_listed(context, model, repo, file.name, refusal, &skipped);
     }
     if (status == NAULA_OK && !skipped) {
         status = repo->resolved ? fill_from_resolution(repo) : fill_from_host(context, provider, listed, &file, repo);
@@ -704,23 +730,6 @@ static naula_status scan_checkouts(sync_model *model, const char *folder, unsign
     return status;
 }
 
-static naula_status place_checkouts(sync_model *model) {
-    for (size_t index = 0; index < model->repo_count; index++) {
-        sync_repo *repo = &model->repos[index];
-        for (size_t checkout = 0; checkout < model->checkout_count; checkout++) {
-            if (naula_id_compare(&model->checkouts[checkout].id, &repo->layout.id) == 0) {
-                repo->layout.current_path = copy_text(model->checkouts[checkout].path);
-                repo->layout.clean_and_pushed = model->checkouts[checkout].clean_and_pushed;
-                if (repo->layout.current_path == NULL) {
-                    return NAULA_OUT_OF_MEMORY;
-                }
-                break;
-            }
-        }
-    }
-    return NAULA_OK;
-}
-
 static naula_status hold_orgs(cli_context *context, const sync_request *request, sync_model *model,
                               naula_refusal *refusal) {
     naula_status status = hold_org(context, model, &request->root_file.top, refusal);
@@ -754,40 +763,188 @@ static naula_status gather_accounts(cli_context *context, const sync_request *re
     return status;
 }
 
-/** Whether a link naula recorded making points at the checkout a repo with this id is laid out in. */
-static int is_linked_by_naula(const sync_model *model, const naula_id *id) {
+static int is_separator(char character) {
+    return character == '/' || character == '\\';
+}
+
+static int same_path(const char *left, const char *right) {
+    for (; *left != '\0' && *right != '\0'; left++, right++) {
+        if (*left != *right && !(is_separator(*left) && is_separator(*right))) {
+            return 0;
+        }
+    }
+    return *left == *right;
+}
+
+/** The last segment of `path`, which must not end in a separator. */
+static const char *last_segment(const char *path, size_t length) {
+    while (length > 0 && !is_separator(path[length - 1])) {
+        length--;
+    }
+    return path + length;
+}
+
+/** Whether `target` is a checkout folder of `id`: it ends in `repos/<12 hex>`. */
+static int is_checkout_of(const char *target, const naula_id *id) {
     char folder[13];
-    char ending[24];
     naula_id_folder(id, folder);
-    snprintf(ending, sizeof ending, "/repos/%s", folder);
-    size_t ending_length = strlen(ending);
-    for (size_t index = 0; folder[0] != '\0' && index < model->links.count; index++) {
+    size_t length = strlen(target);
+    const char *name = last_segment(target, length);
+    if (folder[0] == '\0' || strcmp(name, folder) != 0 || name == target) {
+        return 0;
+    }
+    size_t parent_length = (size_t)(name - target) - 1;
+    const char *parent = last_segment(target, parent_length);
+    return (size_t)(target + parent_length - parent) == strlen("repos") && strncmp(parent, "repos", 5) == 0;
+}
+
+/** Whether a link is the repo `name`'s own: a link's last segment is always the name of the repo it is made for. */
+static int is_named(const naula_layout_link *link, const char *name) {
+    return name != NULL && link->path != NULL && same_text(last_segment(link->path, strlen(link->path)), name);
+}
+
+/**
+ * Whether naula recorded a link for this repo: one carrying its name to a checkout of its id. The record names a repo
+ * by nothing else, so a fork of the id under another name is never taken for the repo naula linked.
+ */
+static int has_recorded_link(const sync_model *model, const naula_id *id, const char *name) {
+    for (size_t index = 0; index < model->links.count; index++) {
         const naula_layout_link *link = &model->links.links[index];
-        size_t length = link->target == NULL ? 0 : strlen(link->target);
-        if (link->made_by_naula && length >= ending_length &&
-            strcmp(link->target + length - ending_length, ending) == 0) {
+        if (link->made_by_naula && link->target != NULL && is_checkout_of(link->target, id) && is_named(link, name)) {
             return 1;
         }
     }
     return 0;
 }
 
-/**
- * A copy is skipped with a warning, unless naula linked a checkout of its id and no repo the root lays out holds that
- * id: then the copy may be our own repo with a mistake in its homes, and skipping it would unlink it.
- */
+static int holds_as_copy(const sync_model *model, const naula_id *id) {
+    for (size_t index = 0; index < model->copy_count; index++) {
+        if (naula_id_compare(&model->copies[index].id, id) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/** Whether the checkout at `path` is one of a repo this run read, laid out or skipped as a copy. */
+static int is_claimed_checkout(const sync_model *model, const char *path) {
+    for (size_t index = 0; index < model->checkout_count; index++) {
+        const sync_checkout *checkout = &model->checkouts[index];
+        if (same_path(checkout->path, path)) {
+            return sync_model_holds(model, &checkout->id) || holds_as_copy(model, &checkout->id);
+        }
+    }
+    return 0;
+}
+
+/** A copy naula recorded a link for refuses: it may be our own repo with a mistake in its homes. */
 static void judge_copies(sync_model *model) {
     for (size_t index = 0; index < model->copy_count; index++) {
         const sync_copy *copy = &model->copies[index];
-        if (!sync_model_holds(model, &copy->id) && is_linked_by_naula(model, &copy->id)) {
+        if (has_recorded_link(model, &copy->id, copy->name)) {
             naula_refusal refusal = cli_fresh_refusal();
             naula_refuse(&refusal, copy->code, "fix the homes in its repo.json, or remove the link by hand",
-                         "%s, and naula linked a checkout of its id", copy->detail);
+                         "%s, and naula linked a checkout of its id for it", copy->detail);
             record_unread(model, "copy-linked", copy->place, &refusal);
         } else {
             printf("warning copy-skipped: %s: %s: %s\n", copy->place, copy->code, copy->detail);
         }
     }
+}
+
+/** naula's link for an empty repo, which has no id: one carrying its name to a checkout no repo of this run holds. */
+static const naula_layout_link *link_of_empty(const sync_model *model, const sync_empty *empty) {
+    for (size_t index = 0; index < model->links.count; index++) {
+        const naula_layout_link *link = &model->links.links[index];
+        if (link->made_by_naula && link->target != NULL && is_named(link, empty->name) &&
+            !is_claimed_checkout(model, link->target)) {
+            return link;
+        }
+    }
+    return NULL;
+}
+
+/** An empty repo naula linked refuses, since leaving it out would remove that link; any other is unadopted, a note. */
+static void judge_empties(sync_model *model) {
+    for (size_t index = 0; index < model->empty_count; index++) {
+        const sync_empty *empty = &model->empties[index];
+        const naula_layout_link *linked = link_of_empty(model, empty);
+        if (linked != NULL) {
+            naula_refusal refusal = cli_fresh_refusal();
+            naula_refuse(&refusal, "repo-empty", "push its history back, or remove the link by hand",
+                         "%s, and naula linked %s for a repo of that name", empty->detail, linked->path);
+            record_unread(model, "empty-linked", empty->place, &refusal);
+        } else {
+            printf("note unadopted: %s: %s\n", empty->place, empty->detail);
+        }
+    }
+}
+
+/** Whether another repo this run read, laid out or skipped as a copy, carries the repo's id. */
+static int is_contested(const sync_model *model, const sync_repo *repo) {
+    for (size_t index = 0; index < model->repo_count; index++) {
+        if (&model->repos[index] != repo && naula_id_compare(&model->repos[index].layout.id, &repo->layout.id) == 0) {
+            return 1;
+        }
+    }
+    return holds_as_copy(model, &repo->layout.id);
+}
+
+/** A link naula recorded to `path` for a repo of another name; NULL when there is none, or one is `name`'s own. */
+static const naula_layout_link *recorded_for_another(const sync_model *model, const char *path, const char *name) {
+    const naula_layout_link *other = NULL;
+    for (size_t index = 0; index < model->links.count; index++) {
+        const naula_layout_link *link = &model->links.links[index];
+        if (link->made_by_naula && link->target != NULL && same_path(link->target, path)) {
+            if (is_named(link, name)) {
+                return NULL;
+            }
+            other = link;
+        }
+    }
+    return other;
+}
+
+static void refuse_claimed(sync_model *model, const sync_repo *repo, const sync_checkout *checkout,
+                           const naula_layout_link *other) {
+    char *text = naula_place_text(&repo->place);
+    naula_refusal refusal = cli_fresh_refusal();
+    naula_refuse(&refusal, "checkout-claimed",
+                 "find which repo the checkout is for and fix the other's id or homes, or remove the link by hand",
+                 "%s carries the id of %s, which naula linked as %s for another repo of that id",
+                 repo->layout.name == NULL ? "(repo)" : repo->layout.name, checkout->path, other->path);
+    record_unread(model, "checkout-claimed", text == NULL ? "(home)" : text, &refusal);
+    naula_memory_release(text);
+}
+
+/**
+ * Gives each repo the checkout of its id. Where another repo of this run carries the same id, a checkout naula linked
+ * goes only to the repo that link was made for, and any other repo taking it refuses, so a fork of our id never takes
+ * our checkout and link. A repo alone with its id takes its checkout under a new name too, which is how a rename moves.
+ */
+static naula_status place_checkouts(sync_model *model) {
+    for (size_t index = 0; index < model->repo_count; index++) {
+        sync_repo *repo = &model->repos[index];
+        for (size_t checkout = 0; checkout < model->checkout_count; checkout++) {
+            const sync_checkout *found = &model->checkouts[checkout];
+            if (naula_id_compare(&found->id, &repo->layout.id) != 0) {
+                continue;
+            }
+            const naula_layout_link *other =
+                is_contested(model, repo) ? recorded_for_another(model, found->path, repo->layout.name) : NULL;
+            if (other != NULL) {
+                refuse_claimed(model, repo, found, other);
+                break;
+            }
+            repo->layout.current_path = copy_text(found->path);
+            repo->layout.clean_and_pushed = found->clean_and_pushed;
+            if (repo->layout.current_path == NULL) {
+                return NAULA_OUT_OF_MEMORY;
+            }
+            break;
+        }
+    }
+    return NAULA_OK;
 }
 
 naula_status sync_gather(cli_context *context, const sync_request *request, sync_model *model,
@@ -817,6 +974,8 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
     }
     if (status == NAULA_OK) {
         judge_copies(model);
+        judge_empties(model);
+        status = place_checkouts(model);
     }
     if (status == NAULA_OK && model->unread_count > 0) {
         if (refusal != NULL) {
@@ -826,7 +985,7 @@ naula_status sync_gather(cli_context *context, const sync_request *request, sync
         }
         status = NAULA_REFUSED;
     }
-    return status == NAULA_OK ? place_checkouts(model) : status;
+    return status;
 }
 
 naula_status sync_input(const sync_request *request, sync_model *model, naula_layout_input *input) {

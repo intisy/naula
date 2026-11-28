@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cli.h"
+#include "disk.h"
 #include "naula/git.h"
 #include "naula/memory.h"
 #include "naula/sha256.h"
@@ -135,6 +136,40 @@ static naula_status refuse_over_budget(const cli_history *history, const fetched
     return NAULA_REFUSED;
 }
 
+/** A file git writes while a pack arrives and renames once it is whole, so one is left only by a fetch cut short. */
+static int is_temporary_pack(const char *name) {
+    return strncmp(name, "tmp_pack_", 9) == 0 || strncmp(name, "tmp_idx_", 8) == 0;
+}
+
+static int is_named_in(char *const *names, size_t count, const char *name) {
+    for (size_t index = 0; index < count; index++) {
+        if (strcmp(names[index], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Removes the temporary pack files in `packs` that were not there before this fetch began, so a fetch stopped at a
+ * limit leaves none of its own behind. One that cannot be removed is left: the refusal already says why the fetch
+ * stopped, and git ignores such a file.
+ */
+static void remove_stopped_packs(const char *packs, char *const *before, size_t before_count) {
+    char **names = NULL;
+    size_t count = 0;
+    unsigned long error = 0;
+    if (disk_names(packs, &names, &count, &error) != NAULA_OK) {
+        return;
+    }
+    for (size_t index = 0; index < count; index++) {
+        if (is_temporary_pack(names[index]) && !is_named_in(before, before_count, names[index])) {
+            disk_file_remove(packs, names[index], DISK_FOR_PLAN_STEP, &error);
+        }
+    }
+    disk_names_release(names, count);
+}
+
 /**
  * Fetches commits only, every one kept in a pack (`fetch.unpackLimit=1`) so the bytes it brings can be counted while
  * it runs: a home that sends past the byte limit, or is still sending at the time limit however slowly it trickles, is
@@ -155,9 +190,20 @@ static naula_status fetch_into(cli_history *history, fetched_home *home, naula_r
         return NAULA_OUT_OF_MEMORY;
     }
     cli_folder_bytes(budget.packs, &budget.before);
+    char **before = NULL;
+    size_t before_count = 0;
+    unsigned long error = 0;
+    if (disk_names(budget.packs, &before, &before_count, &error) != NAULA_OK) {
+        before = NULL;
+        before_count = 0;
+    }
     naula_run_limits limits = {sizeof limits, history->time_limit, within_budget, &budget};
     naula_run_result result;
     status = naula_git_run_limited(history->scratch[home->format], arguments, NULL, 0, &limits, &result, refusal);
+    if (status != NAULA_OK) {
+        remove_stopped_packs(budget.packs, before, before_count);
+    }
+    disk_names_release(before, before_count);
     if (status == NAULA_OK) {
         int failed = result.exit_code != 0;
         if (failed) {

@@ -161,68 +161,97 @@ static int is_listed(char *const *paths, size_t count, const char *path) {
     return 0;
 }
 
-/** What naula writes as an org's CLAUDE.md: one line importing the rules, `@<path>`, and nothing else. */
-static int is_generated_rules(const uint8_t *bytes, size_t length) {
-    return length > 2 && bytes[0] == '@' && bytes[length - 1] == '\n' && memchr(bytes, '\n', length - 1) == NULL &&
-           memchr(bytes, '\r', length) == NULL;
-}
-
-/** Removes a CLAUDE.md naula wrote for an org this root no longer lays out; one someone edited is left and named. */
-static naula_status remove_rules_file(const char *root, const char *path, naula_refusal *refusal) {
+/**
+ * Removes a CLAUDE.md naula wrote for an org this root no longer lays out, only while it holds exactly `content`, what
+ * the plan made before the release writes there; one someone edited is left and named.
+ */
+static naula_status remove_rules_file(const char *root, const char *path, const char *content, naula_refusal *refusal) {
     size_t root_length = strlen(root);
     if (strncmp(path, root, root_length) != 0 || path[root_length] != '/') {
         return NAULA_OK;
     }
-    naula_status status = cli_refuse_links_below(root, path + root_length + 1, refusal);
-    uint8_t *bytes = NULL;
-    size_t length = 0;
-    naula_status read = status == NAULA_OK ? cli_read_file(path, &bytes, &length, refusal) : status;
-    if (read == NAULA_OK && is_generated_rules(bytes, length)) {
-        unsigned long error = 0;
-        naula_status removed = disk_file_remove(root, path + root_length + 1, DISK_FOR_PLAN_STEP, &error);
-        if (removed == NAULA_OK || removed == NAULA_NOT_FOUND) {
-            printf("remove %s\n", path);
-        } else if (removed == NAULA_OUT_OF_MEMORY) {
-            status = removed;
-        } else {
-            char text[256];
-            disk_error_text(error, text, sizeof text);
-            naula_refuse(refusal, "file-not-removed", "remove it by hand", "cannot remove %s: %s", path, text);
-            status = NAULA_REFUSED;
-        }
-    } else if (read == NAULA_OK) {
+    int holding = 0;
+    unsigned long error = 0;
+    naula_status status = disk_file_remove_if_holding(root, path + root_length + 1, (const uint8_t *)content,
+                                                      strlen(content), DISK_FOR_PLAN_STEP, &holding, &error);
+    if (status == NAULA_OK && holding) {
+        printf("remove %s\n", path);
+    } else if (status == NAULA_OK) {
         printf("left-alone rules-file-edited: %s: it is not the import naula wrote, so it stays\n", path);
-    } else if (read != NAULA_NOT_FOUND) {
-        status = read;
+    } else if (status == NAULA_REFUSED) {
+        char text[256];
+        disk_error_text(error, text, sizeof text);
+        naula_refuse(refusal, "file-not-removed", "remove it by hand", "cannot remove %s: %s", path, text);
     }
-    naula_memory_release(bytes);
+    return status == NAULA_NOT_FOUND ? NAULA_OK : status;
+}
+
+/** The rules files of the plan made before the release, kept while the release is planned and applied. */
+typedef struct released_rules {
+    char **paths;
+    char **contents;
+    size_t count;
+} released_rules;
+
+static void released_rules_release(released_rules *rules) {
+    for (size_t index = 0; index < rules->count; index++) {
+        naula_memory_release(rules->paths[index]);
+        naula_memory_release(rules->contents[index]);
+    }
+    naula_memory_release(rules->paths);
+    naula_memory_release(rules->contents);
+}
+
+static naula_status remove_released_rules(const sync_request *request, const released_rules *before,
+                                          naula_refusal *refusal) {
+    naula_status status = NAULA_OK;
+    for (size_t index = 0; status == NAULA_OK && index < before->count; index++) {
+        if (!is_listed(request->rules_files, request->rules_file_count, before->paths[index])) {
+            status = remove_rules_file(request->root, before->paths[index], before->contents[index], refusal);
+        }
+    }
     return status;
 }
 
-static naula_status remove_released_rules(const sync_request *request, char *const *before, size_t before_count,
-                                          naula_refusal *refusal) {
-    naula_status status = naula_root_hold(request->root, refusal);
-    for (size_t index = 0; status == NAULA_OK && index < before_count; index++) {
-        if (!is_listed(request->rules_files, request->rules_file_count, before[index])) {
-            status = remove_rules_file(request->root, before[index], refusal);
-        }
-    }
-    naula_root_unhold();
-    return status;
+#if defined(NAULA_TEST_HOOKS)
+/** Names whether this process holds the root's lock as the rules are removed, which a test reads. */
+static void report_lock_for_test(const char *root) {
+    char *lock = cli_join(root, ".naula-journal/lock");
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    unsigned long error = 0;
+    char expected[32];
+    snprintf(expected, sizeof expected, "%lu\n", disk_process_id());
+    int held = lock != NULL && disk_file_read(lock, &bytes, &length, &error) == NAULA_OK && length == strlen(expected) &&
+               memcmp(bytes, expected, length) == 0;
+    fprintf(stderr, "naula-test: root lock %s as the rules are removed\n", held ? "held" : "free");
+    naula_memory_release(bytes);
+    naula_memory_release(lock);
 }
+#else
+static void report_lock_for_test(const char *root) {
+    (void)root;
+}
+#endif
 
 /**
  * The org's links go with the plan made without it; its CLAUDE.md, which no plan writes once the org is left out, is
- * found by planning the root as it stood first and removed once the release is applied.
+ * found by planning the root as it stood first and removed once the release is applied. The root's lock is held for
+ * the whole command, so no other naula changes the root between the plan and the removal.
  */
 static naula_status release_and_sync(cli_context *context, sync_request *request, const char *name,
                                      naula_refusal *refusal) {
+    naula_status status = naula_root_hold(request->root, refusal);
+    if (status != NAULA_OK) {
+        return status;
+    }
+    request->root_held = 1;
     request->plan_only = 1;
-    naula_status status = sync_run(context, request, refusal);
+    status = sync_run(context, request, refusal);
     request->plan_only = 0;
-    char **before = request->rules_files;
-    size_t before_count = request->rules_file_count;
+    released_rules before = {request->rules_files, request->rules_contents, request->rules_file_count};
     request->rules_files = NULL;
+    request->rules_contents = NULL;
     request->rules_file_count = 0;
     if (status == NAULA_OK) {
         status = release_org(context, request, name, refusal);
@@ -231,12 +260,12 @@ static naula_status release_and_sync(cli_context *context, sync_request *request
         status = sync_run(context, request, refusal);
     }
     if (status == NAULA_OK) {
-        status = remove_released_rules(request, before, before_count, refusal);
+        report_lock_for_test(request->root);
+        status = remove_released_rules(request, &before, refusal);
     }
-    for (size_t index = 0; index < before_count; index++) {
-        naula_memory_release(before[index]);
-    }
-    naula_memory_release(before);
+    released_rules_release(&before);
+    request->root_held = 0;
+    naula_root_unhold();
     return status;
 }
 

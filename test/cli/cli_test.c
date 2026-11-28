@@ -649,6 +649,7 @@ static void release_removes_an_orgs_links_but_never_a_dirty_clone(void) {
     snprintf(dirty, sizeof dirty, "%s/%s/work-in-progress.txt", root, checkout);
     write_text(dirty, "not committed anywhere\n");
     expect_exit(naula("release", "beta", "--root", root, NULL), 0, "release beta");
+    expect_output("naula-test: root lock held as the rules are removed", 1, "the root stays held for the whole release");
     expect_absent(root, "beta/app", "beta's app link");
     expect_absent(root, "beta/docs", "beta's docs link");
     expect_absent(root, "beta/CLAUDE.md", "beta's generated rules import");
@@ -882,6 +883,24 @@ static void siblings_checks_every_commit_on_its_own_primary_before_cloning(void)
     CHECK(!exists(siblings));
 }
 
+/** Whether `folder` holds a file git writes while a pack arrives, which only a fetch cut short leaves. */
+static int holds_a_temporary_pack(const char *folder) {
+    char **names = NULL;
+    size_t count = 0;
+    unsigned long error = 0;
+    int found = 0;
+    if (disk_names(folder, &names, &count, &error) == NAULA_OK) {
+        for (size_t index = 0; index < count; index++) {
+            if (strncmp(names[index], "tmp_pack_", 9) == 0 || strncmp(names[index], "tmp_idx_", 8) == 0) {
+                fprintf(stderr, "left in %s: %s\n", folder, names[index]);
+                found = 1;
+            }
+        }
+        disk_names_release(names, count);
+    }
+    return found;
+}
+
 static void siblings_stops_a_fetch_past_its_byte_limit(void) {
     start_case();
     char app[1024];
@@ -890,7 +909,10 @@ static void siblings_stops_a_fetch_past_its_byte_limit(void) {
     expect_exit(naula("siblings", "--repo", app, NULL), 1, "a fetch past its byte limit");
     expect_output("fetch-too-large", 1, "the byte limit");
     char cache[1100];
+    char packs[1200];
     snprintf(cache, sizeof cache, "%s/cache", here.folder);
+    snprintf(packs, sizeof packs, "%s/history/sha1.git/objects/pack", cache);
+    CHECK(!holds_a_temporary_pack(packs));
     const char *forget[] = {NAULA_CMAKE, "-E", "remove_directory", cache, NULL};
     naula_run_result result;
     if (run_in(NULL, forget, NULL, &result)) {
@@ -1317,6 +1339,136 @@ static void sync_takes_the_lock_before_cloning(void) {
     remove_file(lock);
 }
 
+/**
+ * Our tool lists a second home in zeta, whose repo of the same id does not list it back, so the tool is disowned; a
+ * self-listing fork of the tool's id, `fork_name`, sits in alpha, which the root holds.
+ */
+static void make_tool_disowned_beside_a_fork(const char *tool_name, const char *fork_name) {
+    char tool[1024];
+    char fork[1024];
+    char zeta[1024];
+    char url[1100];
+    path_in(tool, "alpha-tool");
+    path_in(fork, "alpha-fork");
+    path_in(zeta, "zeta-tool");
+    snprintf(url, sizeof url, "file://%s", tool);
+    git(NULL, "clone", "--quiet", url, fork, NULL);
+    char fork_file[TEXT_SIZE];
+    app_file(fork_file, fork_name, "alpha", NULL);
+    commit_file("alpha-fork", "repo.json", fork_file);
+    serve(103, "alpha", fork_name, "alpha-fork", NULL);
+    git(NULL, "clone", "--quiet", url, zeta, NULL);
+    char zeta_file[TEXT_SIZE];
+    app_file(zeta_file, tool_name, "zeta", NULL);
+    commit_file("zeta-tool", "repo.json", zeta_file);
+    serve(901, "zeta", tool_name, "zeta-tool", NULL);
+    char tool_file[TEXT_SIZE];
+    snprintf(tool_file, sizeof tool_file,
+             "{\"format\":2,\"name\":\"%s\",\"importName\":\"%s\",\"topics\":[\"tools\"],\"homes\":[{\"provider\":"
+             "\"forge\",\"account\":\"alpha\"},{\"provider\":\"forge\",\"account\":\"zeta\"}]}\n",
+             tool_name, tool_name);
+    commit_file("alpha-tool", "repo.json", tool_file);
+}
+
+static void expect_tool_left_as_it_was(const char *root, const char *before_target, const char *label) {
+    char link[1100];
+    char *target = NULL;
+    unsigned long error = 0;
+    snprintf(link, sizeof link, "%s/tools/tool", root);
+    expect_path(root, "tools/tool", 1, label);
+    if (disk_link_target(link, &target, &error) == NAULA_OK) {
+        check_text(target, before_target, label);
+        naula_memory_release(target);
+    }
+    expect_absent(root, "evil", "the fork gets no link");
+}
+
+static void tool_link_target(const char *root, char *target_out, size_t capacity) {
+    char link[1100];
+    char *target = NULL;
+    unsigned long error = 0;
+    snprintf(link, sizeof link, "%s/tools/tool", root);
+    target_out[0] = '\0';
+    if (disk_link_target(link, &target, &error) == NAULA_OK) {
+        snprintf(target_out, capacity, "%s", target);
+        naula_memory_release(target);
+    }
+}
+
+static void sync_keeps_a_linked_copys_checkout_from_a_fork_of_its_id(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char before[1100];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    tool_link_target(root, before, sizeof before);
+    make_tool_disowned_beside_a_fork("tool", "evil");
+    expect_exit(naula("sync", "--root", root, NULL), 1, "our linked repo made a copy beside a fork of its id");
+    expect_output("copy-linked", 1, "the copy naula linked refuses");
+    expect_tool_left_as_it_was(root, before, "the tool keeps its link and checkout");
+}
+
+static void sync_refuses_a_fork_taking_a_checkout_naula_linked(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char before[1100];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    tool_link_target(root, before, sizeof before);
+    make_tool_disowned_beside_a_fork("renamed", "evil");
+    expect_exit(naula("sync", "--root", root, NULL), 1, "a fork of our id beside our renamed copy");
+    expect_output("checkout-claimed", 1, "the fork may not take the checkout naula linked");
+    expect_output("copy-skipped", 1, "the renamed copy has no link of its own");
+    expect_output("copy-linked", 0, "a link is never matched by its id alone");
+    expect_tool_left_as_it_was(root, before, "the tool keeps its link and checkout");
+}
+
+static void sync_refuses_an_empty_repo_naula_linked(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char empty[1024];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    path_in(empty, "alpha-tool-emptied");
+    make_folder(empty);
+    git(empty, "init", "--quiet", "-b", "main", NULL);
+    for (size_t index = 0; index < here.repo_count; index++) {
+        if (here.repos[index].number == 102) {
+            snprintf(here.repos[index].path, sizeof here.repos[index].path, "%s", empty);
+        }
+    }
+    expect_exit(naula("sync", "--root", root, NULL), 1, "our linked repo emptied on its host");
+    expect_output("empty-linked", 1, "the empty repo naula linked refuses");
+    expect_output("note unadopted", 0, "never a note");
+    expect_path(root, "tools/tool", 1, "its link is kept");
+}
+
+static void release_keeps_an_edited_one_line_rules_file(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char rules[1100];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    expect_exit(naula("hold", "forge:201", "--root", root, NULL), 0, "hold beta");
+    snprintf(rules, sizeof rules, "%s/beta/CLAUDE.md", root);
+    write_text(rules, "@docs/MY-OWN-RULES.md\n");
+    expect_exit(naula("release", "beta", "--root", root, NULL), 0, "release beta");
+    expect_output("rules-file-edited", 1, "the edited import is named");
+    expect_path(root, "beta/CLAUDE.md", 0, "the edited import stays");
+}
+
 typedef struct test_entry {
     const char *name;
     void (*run)(void);
@@ -1358,6 +1510,10 @@ static const test_entry tests[] = {
     {"sync_notes_an_empty_repo_as_unadopted", sync_notes_an_empty_repo_as_unadopted},
     {"init_and_sync_take_a_root_with_a_trailing_separator", init_and_sync_take_a_root_with_a_trailing_separator},
     {"sync_takes_the_lock_before_cloning", sync_takes_the_lock_before_cloning},
+    {"sync_keeps_a_linked_copys_checkout_from_a_fork_of_its_id", sync_keeps_a_linked_copys_checkout_from_a_fork_of_its_id},
+    {"sync_refuses_a_fork_taking_a_checkout_naula_linked", sync_refuses_a_fork_taking_a_checkout_naula_linked},
+    {"sync_refuses_an_empty_repo_naula_linked", sync_refuses_an_empty_repo_naula_linked},
+    {"release_keeps_an_edited_one_line_rules_file", release_keeps_an_edited_one_line_rules_file},
 };
 
 int main(int count, char **values) {

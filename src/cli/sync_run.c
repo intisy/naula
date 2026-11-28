@@ -12,9 +12,12 @@ static const char *const note_codes[] = {"unadopted", "not-held", "path-outside-
 void sync_rules_files_release(sync_request *request) {
     for (size_t index = 0; index < request->rules_file_count; index++) {
         naula_memory_release(request->rules_files[index]);
+        naula_memory_release(request->rules_contents[index]);
     }
     naula_memory_release(request->rules_files);
+    naula_memory_release(request->rules_contents);
     request->rules_files = NULL;
+    request->rules_contents = NULL;
     request->rules_file_count = 0;
 }
 
@@ -33,16 +36,22 @@ static int is_rules_file(const naula_layout_step *step) {
 static naula_status collect_rules_files(sync_request *request, const naula_layout_plan *plan) {
     sync_rules_files_release(request);
     request->rules_files = naula_memory_allocate((plan->step_count + 1) * sizeof *request->rules_files);
-    if (request->rules_files == NULL) {
+    request->rules_contents = naula_memory_allocate((plan->step_count + 1) * sizeof *request->rules_contents);
+    if (request->rules_files == NULL || request->rules_contents == NULL) {
         return NAULA_OUT_OF_MEMORY;
     }
     for (size_t index = 0; index < plan->step_count; index++) {
-        if (is_rules_file(&plan->steps[index])) {
-            char *copy = naula_memory_duplicate_text(plan->steps[index].path);
-            if (copy == NULL) {
+        const naula_layout_step *step = &plan->steps[index];
+        if (is_rules_file(step)) {
+            char *path = naula_memory_duplicate_text(step->path);
+            char *content = naula_memory_duplicate_text(step->content == NULL ? "" : step->content);
+            if (path == NULL || content == NULL) {
+                naula_memory_release(path);
+                naula_memory_release(content);
                 return NAULA_OUT_OF_MEMORY;
             }
-            request->rules_files[request->rules_file_count++] = copy;
+            request->rules_files[request->rules_file_count] = path;
+            request->rules_contents[request->rules_file_count++] = content;
         }
     }
     return NAULA_OK;
@@ -473,9 +482,9 @@ static naula_status lay_out(cli_context *context, sync_request *request, sync_mo
 }
 
 naula_status sync_run(cli_context *context, sync_request *request, naula_refusal *refusal) {
-    int held = 0;
+    int held = request->root_held;
     naula_status status = NAULA_OK;
-    if (cli_is_folder(request->root)) {
+    if (!held && cli_is_folder(request->root)) {
         status = naula_root_hold(request->root, refusal);
         held = status == NAULA_OK;
     }
@@ -491,7 +500,7 @@ naula_status sync_run(cli_context *context, sync_request *request, naula_refusal
         cli_print_questions(context);
     }
     sync_model_release(&model);
-    if (held) {
+    if (held && !request->root_held) {
         naula_root_unhold();
     }
     return status;
