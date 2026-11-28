@@ -49,7 +49,9 @@ naula_status naula_run_with_input(const char *const *arguments, const char *dire
 /**
  * What stops a run early. A program still running `time_limit_milliseconds` after it started (0 for no limit), or
  * one whose `keep_going` answers 0 when asked, every few milliseconds while it runs, is stopped together with every
- * program it started: NAULA_TIMED_OUT `run-timed-out` or NAULA_REFUSED `run-stopped`, its output discarded.
+ * program it started: NAULA_TIMED_OUT `run-timed-out` or NAULA_REFUSED `run-stopped`, its output discarded. A program
+ * seen ending at or past its time limit ran past it too and is refused the same way, however soon after the last
+ * check it ended.
  * First shape ends at `context`.
  */
 typedef struct naula_run_limits {

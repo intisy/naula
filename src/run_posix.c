@@ -339,7 +339,12 @@ static int collect(pid_t child, int output_descriptor, int error_descriptor, run
                 descriptors[slot] = -1;
             }
         }
-        exited = exited || reap_if_exited(child, status, state);
+        if (!exited && reap_if_exited(child, status, state)) {
+            exited = 1;
+            if (state->stopped == RUN_NOT_STOPPED) {
+                state->stopped = run_limits_judge_ended(clock, now_milliseconds());
+            }
+        }
         if (!exited && clock->limits != NULL) {
             enforce_limits(child, clock, state);
         }

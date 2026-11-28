@@ -85,6 +85,14 @@ run_stop run_limits_judge(const run_limits_clock *clock, uint64_t now) {
     return RUN_NOT_STOPPED;
 }
 
+run_stop run_limits_judge_ended(const run_limits_clock *clock, uint64_t ended) {
+    const naula_run_limits *limits = clock->limits;
+    return limits != NULL && limits->time_limit_milliseconds != 0 &&
+                   ended - clock->started >= limits->time_limit_milliseconds
+               ? RUN_TIMED_OUT
+               : RUN_NOT_STOPPED;
+}
+
 naula_status run_refuse_stopped(run_stop stopped, const naula_run_limits *limits, const char *program,
                                 naula_refusal *refusal) {
     if (stopped == RUN_TIMED_OUT) {

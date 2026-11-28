@@ -232,14 +232,44 @@ typedef struct run_watch {
     run_stop stopped;
 } run_watch;
 
+/** @implNote GetTickCount64 moves in steps of about 16 ms, too coarse to judge a limit of a few milliseconds by. */
+static uint64_t now_milliseconds(void) {
+    LARGE_INTEGER count;
+    LARGE_INTEGER frequency;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&frequency);
+    return (uint64_t)count.QuadPart / (uint64_t)frequency.QuadPart * 1000u +
+           (uint64_t)count.QuadPart % (uint64_t)frequency.QuadPart * 1000u / (uint64_t)frequency.QuadPart;
+}
+
 static void enforce_limits(HANDLE process, run_watch *watch) {
     if (watch->clock.limits == NULL || watch->stopped != RUN_NOT_STOPPED) {
         return;
     }
-    watch->stopped = run_limits_judge(&watch->clock, GetTickCount64());
+    watch->stopped = run_limits_judge(&watch->clock, now_milliseconds());
     if (watch->stopped != RUN_NOT_STOPPED) {
         TerminateJobObject(watch->job, 1);
         TerminateProcess(process, 1);
+    }
+}
+
+#define JOB_END_WAIT_MILLISECONDS 10000u
+
+/**
+ * Waits, a bounded time, until no process is left in the stopped run's job, since ending a job is asynchronous: a
+ * program still dying holds its files open, so its caller could not yet remove what it left.
+ */
+static void wait_for_empty_job(HANDLE job) {
+    uint64_t until = now_milliseconds() + JOB_END_WAIT_MILLISECONDS;
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+    while (now_milliseconds() < until) {
+        memset(&accounting, 0, sizeof accounting);
+        if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting, sizeof accounting,
+                                       NULL) ||
+            accounting.ActiveProcesses == 0) {
+            return;
+        }
+        Sleep(5);
     }
 }
 
@@ -254,6 +284,9 @@ static int collect(HANDLE process, run_handles *handles, run_buffer *output, run
             drain(handles->output_read, output, &read_any, out_of_memory);
             drain(handles->error_read, error, &read_any, out_of_memory);
             if (!read_any) {
+                if (watch->stopped == RUN_NOT_STOPPED) {
+                    watch->stopped = run_limits_judge_ended(&watch->clock, now_milliseconds());
+                }
                 break;
             }
         }
@@ -282,7 +315,7 @@ static naula_status run_prepared(const run_inputs *inputs, const char *const *ar
                                  run_handles *handles, const naula_run_limits *limits, naula_run_result *result,
                                  naula_refusal *refusal) {
     PROCESS_INFORMATION information = {NULL, NULL, 0, 0};
-    run_watch watch = {{limits, GetTickCount64()}, NULL, RUN_NOT_STOPPED};
+    run_watch watch = {{limits, now_milliseconds()}, NULL, RUN_NOT_STOPPED};
     if (limits != NULL) {
         watch.job = open_job();
         if (watch.job == NULL) {
@@ -309,7 +342,7 @@ static naula_status run_prepared(const run_inputs *inputs, const char *const *ar
                      "cannot start %s inside a job object: Windows error %lu", arguments[0], (unsigned long)failure);
         return NAULA_REFUSED;
     }
-    watch.clock.started = GetTickCount64();
+    watch.clock.started = now_milliseconds();
     close_handle(&handles->output_write);
     close_handle(&handles->error_write);
     CloseHandle(information.hThread);
@@ -317,6 +350,10 @@ static naula_status run_prepared(const run_inputs *inputs, const char *const *ar
     run_buffer error = {NULL, 0, 0};
     int out_of_memory = 0;
     int exit_code = collect(information.hProcess, handles, &output, &error, &out_of_memory, &watch);
+    if (watch.stopped != RUN_NOT_STOPPED && watch.job != NULL) {
+        TerminateJobObject(watch.job, 1);
+        wait_for_empty_job(watch.job);
+    }
     CloseHandle(information.hProcess);
     close_handle(&watch.job);
     if (out_of_memory || watch.stopped != RUN_NOT_STOPPED) {

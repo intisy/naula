@@ -34,6 +34,9 @@ typedef struct run_limits_clock {
 /** Whether the run must stop now: past its time limit, or its `keep_going` answered 0. */
 run_stop run_limits_judge(const run_limits_clock *clock, uint64_t now);
 
+/** RUN_TIMED_OUT for a program seen ended at `ended`, at or past its time limit; RUN_NOT_STOPPED otherwise. */
+run_stop run_limits_judge_ended(const run_limits_clock *clock, uint64_t ended);
+
 /** The refusal of a run its limits stopped: NAULA_TIMED_OUT `run-timed-out` or NAULA_REFUSED `run-stopped`. */
 naula_status run_refuse_stopped(run_stop stopped, const naula_run_limits *limits, const char *program,
                                 naula_refusal *refusal);
