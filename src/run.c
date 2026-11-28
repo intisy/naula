@@ -51,6 +51,60 @@ naula_status run_begin(const char *const *arguments, naula_run_result *result, n
     return NAULA_OK;
 }
 
+naula_status run_check_input(const char *input, size_t input_length, naula_refusal *refusal) {
+    if (input != NULL && input_length > NAULA_RUN_INPUT_LIMIT) {
+        naula_refuse(refusal, "run-input-too-large", "pass at most 4096 bytes of input",
+                     "the input is %zu bytes", input_length);
+        return NAULA_MALFORMED;
+    }
+    return NAULA_OK;
+}
+
+naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
+                       naula_run_result *result, naula_refusal *refusal) {
+    return naula_run_limited(arguments, directory, environment, NULL, 0, NULL, result, refusal);
+}
+
+naula_status naula_run_with_input(const char *const *arguments, const char *directory,
+                                  const char *const *environment, const char *input, size_t input_length,
+                                  naula_run_result *result, naula_refusal *refusal) {
+    return naula_run_limited(arguments, directory, environment, input, input_length, NULL, result, refusal);
+}
+
+run_stop run_limits_judge(const run_limits_clock *clock, uint64_t now) {
+    const naula_run_limits *limits = clock->limits;
+    if (limits == NULL) {
+        return RUN_NOT_STOPPED;
+    }
+    if (limits->time_limit_milliseconds != 0 && now - clock->started >= limits->time_limit_milliseconds) {
+        return RUN_TIMED_OUT;
+    }
+    if (limits->keep_going != NULL && !limits->keep_going(limits->context)) {
+        return RUN_STOPPED;
+    }
+    return RUN_NOT_STOPPED;
+}
+
+run_stop run_limits_judge_ended(const run_limits_clock *clock, uint64_t ended) {
+    const naula_run_limits *limits = clock->limits;
+    return limits != NULL && limits->time_limit_milliseconds != 0 &&
+                   ended - clock->started >= limits->time_limit_milliseconds
+               ? RUN_TIMED_OUT
+               : RUN_NOT_STOPPED;
+}
+
+naula_status run_refuse_stopped(run_stop stopped, const naula_run_limits *limits, const char *program,
+                                naula_refusal *refusal) {
+    if (stopped == RUN_TIMED_OUT) {
+        naula_refuse(refusal, "run-timed-out", "run it again once whatever it waits on answers faster",
+                     "%s ran past its limit of %llu ms and was stopped", program,
+                     (unsigned long long)limits->time_limit_milliseconds);
+        return NAULA_TIMED_OUT;
+    }
+    naula_refuse(refusal, "run-stopped", "see why its caller stopped it", "%s was stopped by its caller", program);
+    return NAULA_REFUSED;
+}
+
 naula_status run_finish(naula_run_result *result, run_buffer *output, run_buffer *error, int exit_code) {
     result->exit_code = exit_code;
     result->output_length = output->length;

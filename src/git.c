@@ -14,14 +14,21 @@
 
 static const char *const git_program = "git";
 
+static const char *const git_environment[] = {
+    "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_ASKPASS=", "SSH_ASKPASS=",
+    "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*", "GIT_CONFIG_PARAMETERS", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_VARIANT",
+    "GIT_PROXY_COMMAND", "GIT_TEMPLATE_DIR", "GIT_DEFAULT_HASH", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS",
+    "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_QUARANTINE_PATH", "GIT_ALLOW_PROTOCOL", "GIT_SSL_NO_VERIFY",
+    NULL};
+
 void naula_git_environment(naula_git_environment_entries *entries) {
     size_t count = 0;
-    entries->list[count++] = "GIT_TERMINAL_PROMPT=0";
-    entries->list[count++] = "GCM_INTERACTIVE=never";
-    entries->list[count++] = "GIT_ASKPASS=";
-    entries->list[count++] = "SSH_ASKPASS=";
-    if (getenv("GIT_SSH_COMMAND") == NULL) {
-        entries->list[count++] = "GIT_SSH_COMMAND=ssh -o BatchMode=yes";
+    while (git_environment[count] != NULL && count + 1 < sizeof entries->list / sizeof entries->list[0]) {
+        entries->list[count] = git_environment[count];
+        count++;
     }
     entries->list[count] = NULL;
 }
@@ -31,24 +38,42 @@ static void refuse_git_failed(naula_refusal *refusal, const char *what, const na
                  result->exit_code, result->error);
 }
 
-/** Runs git with `arguments` after the program name; a git that cannot start is the `git-missing` refusal. */
-static naula_status run_git(const char *repository, const char *const *arguments, naula_run_result *result,
-                            naula_refusal *refusal) {
-    const char *command[24];
+#define GIT_ARGUMENT_LIMIT 32
+
+naula_status naula_git_run(const char *repository, const char *const *arguments, const char *input,
+                           size_t input_length, naula_run_result *result, naula_refusal *refusal) {
+    return naula_git_run_limited(repository, arguments, input, input_length, NULL, result, refusal);
+}
+
+naula_status naula_git_run_limited(const char *repository, const char *const *arguments, const char *input,
+                                   size_t input_length, const naula_run_limits *limits, naula_run_result *result,
+                                   naula_refusal *refusal) {
+    const char *command[GIT_ARGUMENT_LIMIT + 2];
     size_t count = 0;
     command[count++] = git_program;
-    for (size_t index = 0; arguments[index] != NULL && count < 23; index++) {
+    for (size_t index = 0; arguments[index] != NULL; index++) {
+        if (count > GIT_ARGUMENT_LIMIT) {
+            naula_refuse(refusal, "git-arguments-too-many", "pass at most 32 arguments to git",
+                         "the git command has more than 32 arguments");
+            return NAULA_MALFORMED;
+        }
         command[count++] = arguments[index];
     }
     command[count] = NULL;
     naula_git_environment_entries environment;
     naula_git_environment(&environment);
-    naula_status status = naula_run(command, repository, environment.list, result, refusal);
+    naula_status status =
+        naula_run_limited(command, repository, environment.list, input, input_length, limits, result, refusal);
     if (status == NAULA_NOT_FOUND) {
         naula_refuse(refusal, "git-missing", "install git 2.24 or newer and put it on PATH", "no git program was found");
         return NAULA_REFUSED;
     }
     return status;
+}
+
+static naula_status run_git(const char *repository, const char *const *arguments, naula_run_result *result,
+                            naula_refusal *refusal) {
+    return naula_git_run(repository, arguments, NULL, 0, result, refusal);
 }
 
 static naula_status run_git_succeeding(const char *repository, const char *const *arguments, const char *what,

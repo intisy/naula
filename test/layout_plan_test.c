@@ -262,6 +262,18 @@ static void nests_a_suborg_under_its_parent(void) {
     naula_layout_plan_release(&plan);
 }
 
+/** Every step lies below the root and the applier takes the root as given, so none makes it. */
+static void plan_never_makes_the_root_folder(void) {
+    scenario world;
+    start_world(&world);
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT) == NULL);
+    CHECK(find_step(&plan, NAULA_MAKE_FOLDER, ROOT "/repos") != NULL);
+    naula_layout_plan_release(&plan);
+}
+
 static void a_suborg_holds_its_account_once_a_repo_there_confirms_it(void) {
     scenario world;
     start_world(&world);
@@ -690,6 +702,23 @@ static void plan_refuses_two_repos_with_one_id(void) {
     CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shared/library") == NULL);
     CHECK(find_step(&plan, NAULA_MAKE_LINK, ROOT "/spisor/shelf-data") == NULL);
+    naula_layout_plan_release(&plan);
+}
+
+/** A link naula recorded to the checkout two repos of one id share stays: the plan cannot say whose it is. */
+static void plan_keeps_the_recorded_link_of_two_repos_with_one_id(void) {
+    scenario world;
+    start_world(&world);
+    world.repos[3].current_path = ROOT "/spisor/repos/eeeeeeeeeeee";
+    add_repo(&world, repo_at(hex_of('e'), "library", "weivel", NULL));
+    add_link_made(&world, ROOT "/spisor/shared/library", ROOT "/spisor/repos/eeeeeeeeeeee", 1);
+    naula_layout_plan plan;
+    naula_refusal refusal;
+    CHECK(plan_world(&world, &plan, &refusal) == NAULA_OK);
+    CHECK(find_report(&plan, "id-collision", ROOT "/spisor/repos/eeeeeeeeeeee") != NULL);
+    CHECK(find_step(&plan, NAULA_REMOVE_LINK, ROOT "/spisor/shared/library") == NULL);
+    CHECK(count_kind(&plan, NAULA_REMOVE_LINK) == 0);
+    CHECK(count_kind(&plan, NAULA_MOVE_CHECKOUT) == 0);
     naula_layout_plan_release(&plan);
 }
 
@@ -2287,6 +2316,7 @@ static void survives_every_allocation_failure(void) {
 
 int main(void) {
     nests_a_suborg_under_its_parent();
+    plan_never_makes_the_root_folder();
     a_suborg_holds_its_account_once_a_repo_there_confirms_it();
     an_org_holds_an_extra_account_through_a_confirming_repo();
     a_strangers_member_of_confirms_nothing();
@@ -2311,6 +2341,7 @@ int main(void) {
     refuses_an_account_held_by_two_orgs();
     refuses_a_parent_cycle();
     plan_refuses_two_repos_with_one_id();
+    plan_keeps_the_recorded_link_of_two_repos_with_one_id();
     plan_refuses_a_twelve_hex_collision_naming_both();
     a_mirror_account_never_decides_the_org();
     plan_keeps_an_archived_clone_with_unpushed_commits();

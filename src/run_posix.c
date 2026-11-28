@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "naula/memory.h"
@@ -39,6 +40,7 @@ typedef struct collect_state {
     int out_of_memory;
     int lost_child;
     int poll_failed;
+    run_stop stopped;
 } collect_state;
 
 static void close_descriptor(int *descriptor) {
@@ -101,10 +103,21 @@ static size_t name_length(const char *entry) {
     return equals == NULL ? strlen(entry) : (size_t)(equals - entry);
 }
 
+static int is_removal(const char *addition) {
+    return strchr(addition, '=') == NULL;
+}
+
+static int names_entry(const char *addition, const char *entry) {
+    size_t length = name_length(addition);
+    if (is_removal(addition) && length > 0 && addition[length - 1] == '*') {
+        return strncmp(entry, addition, length - 1) == 0 && name_length(entry) >= length - 1;
+    }
+    return strncmp(entry, addition, length) == 0 && entry[length] == '=';
+}
+
 static int overrides(const char *entry, const char *const *additions) {
     for (size_t index = 0; additions != NULL && additions[index] != NULL; index++) {
-        size_t length = name_length(additions[index]);
-        if (strncmp(entry, additions[index], length) == 0 && entry[length] == '=') {
+        if (names_entry(additions[index], entry)) {
             return 1;
         }
     }
@@ -135,7 +148,9 @@ static char **merged_environment(const char *const *additions) {
         }
     }
     for (size_t index = 0; merged != NULL && index < added; index++) {
-        merged[count++] = (char *)additions[index];
+        if (!is_removal(additions[index])) {
+            merged[count++] = (char *)additions[index];
+        }
     }
     if (merged != NULL) {
         merged[count] = NULL;
@@ -210,12 +225,16 @@ static naula_status prepare_program(const char *name, const char *const *additio
 }
 
 static void run_child(const char *const *arguments, const char *directory, const child_program *program,
-                      const run_pipe *output, const run_pipe *error, const run_pipe *report) {
-    int null_device = open("/dev/null", O_RDONLY | O_CLOEXEC);
+                      const run_pipe *input, const run_pipe *output, const run_pipe *error, const run_pipe *report,
+                      int own_group) {
+    if (own_group) {
+        setpgid(0, 0);
+    }
+    int standard_input = input->ends[0] >= 0 ? input->ends[0] : open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (directory != NULL && chdir(directory) != 0) {
         report_and_exit(report->ends[1], STAGE_DIRECTORY, errno);
     }
-    if (null_device < 0 || dup2(null_device, 0) < 0 || dup2(output->ends[1], 1) < 0 || dup2(error->ends[1], 2) < 0) {
+    if (standard_input < 0 || dup2(standard_input, 0) < 0 || dup2(output->ends[1], 1) < 0 || dup2(error->ends[1], 2) < 0) {
         report_and_exit(report->ends[1], STAGE_EXEC, errno);
     }
     restore_signals();
@@ -255,6 +274,24 @@ static int take_chunk(int descriptor, run_buffer *buffer, int *out_of_memory) {
     return got < 0 && errno == EINTR;
 }
 
+static uint64_t now_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+/** Stops the child and everything it started, which share its process group, once a limit says so. */
+static void enforce_limits(pid_t child, const run_limits_clock *clock, collect_state *state) {
+    if (state->stopped != RUN_NOT_STOPPED) {
+        return;
+    }
+    state->stopped = run_limits_judge(clock, now_milliseconds());
+    if (state->stopped != RUN_NOT_STOPPED) {
+        kill(-child, SIGKILL);
+        kill(child, SIGKILL);
+    }
+}
+
 /** 1 once the child is reaped; sets state->lost_child when it cannot be. */
 static int reap_if_exited(pid_t child, int *status, collect_state *state) {
     pid_t waited = waitpid(child, status, WNOHANG);
@@ -272,7 +309,7 @@ static int reap_if_exited(pid_t child, int *status, collect_state *state) {
  * inherited a pipe, as a detached git maintenance run does, never holds the run open.
  */
 static int collect(pid_t child, int output_descriptor, int error_descriptor, run_buffer *output, run_buffer *error,
-                   int *status, collect_state *state) {
+                   int *status, const run_limits_clock *clock, collect_state *state) {
     int descriptors[2] = {output_descriptor, error_descriptor};
     run_buffer *buffers[2] = {output, error};
     int exited = 0;
@@ -302,7 +339,15 @@ static int collect(pid_t child, int output_descriptor, int error_descriptor, run
                 descriptors[slot] = -1;
             }
         }
-        exited = exited || reap_if_exited(child, status, state);
+        if (!exited && reap_if_exited(child, status, state)) {
+            exited = 1;
+            if (state->stopped == RUN_NOT_STOPPED) {
+                state->stopped = run_limits_judge_ended(clock, now_milliseconds());
+            }
+        }
+        if (!exited && clock->limits != NULL) {
+            enforce_limits(child, clock, state);
+        }
     }
     return exited;
 }
@@ -336,8 +381,11 @@ static naula_status refuse_collecting(const collect_state *state, const char *pr
 }
 
 static naula_status run_started(pid_t child, run_pipe *output, run_pipe *error, run_pipe *report,
-                                const char *const *arguments, const char *directory, naula_run_result *result,
-                                naula_refusal *refusal) {
+                                const char *const *arguments, const char *directory, const naula_run_limits *limits,
+                                naula_run_result *result, naula_refusal *refusal) {
+    if (limits != NULL) {
+        setpgid(child, child);
+    }
     close_descriptor(&output->ends[1]);
     close_descriptor(&error->ends[1]);
     close_descriptor(&report->ends[1]);
@@ -349,18 +397,22 @@ static naula_status run_started(pid_t child, run_pipe *output, run_pipe *error, 
     }
     run_buffer collected_output = {NULL, 0, 0};
     run_buffer collected_error = {NULL, 0, 0};
-    collect_state state = {0, 0, 0};
-    int exited = collect(child, output->ends[0], error->ends[0], &collected_output, &collected_error, &status, &state);
+    collect_state state = {0, 0, 0, RUN_NOT_STOPPED};
+    run_limits_clock clock = {limits, now_milliseconds()};
+    int exited = collect(child, output->ends[0], error->ends[0], &collected_output, &collected_error, &status, &clock,
+                         &state);
     if (state.poll_failed && !exited) {
         kill(child, SIGKILL);
     }
     if (!exited && !wait_for(child, &status)) {
         state.lost_child = 1;
     }
-    if (state.out_of_memory || state.lost_child || state.poll_failed) {
+    if (state.out_of_memory || state.lost_child || state.poll_failed || state.stopped != RUN_NOT_STOPPED) {
         run_buffer_discard(&collected_output);
         run_buffer_discard(&collected_error);
-        return refuse_collecting(&state, arguments[0], refusal);
+        return state.stopped != RUN_NOT_STOPPED && !state.out_of_memory
+                   ? run_refuse_stopped(state.stopped, limits, arguments[0], refusal)
+                   : refuse_collecting(&state, arguments[0], refusal);
     }
     return run_finish(result, &collected_output, &collected_error, exit_code_of(status));
 }
@@ -372,9 +424,38 @@ static naula_status refuse_system_failure(const char *what, const char *program,
     return saved == ENOMEM ? NAULA_OUT_OF_MEMORY : NAULA_REFUSED;
 }
 
-naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
-                       naula_run_result *result, naula_refusal *refusal) {
+/**
+ * A pipe already holding all of `input` with its write end closed, so the child reads it and then end of file.
+ *
+ * @implNote Written before the child starts, while this process still holds the read end, so the write can never
+ * raise SIGPIPE; run_check_input keeps it within what every system's pipe holds.
+ */
+static int fill_input(const char *input, size_t input_length, run_pipe *made) {
+    if (!open_pipe(made)) {
+        return 0;
+    }
+    size_t written = 0;
+    while (written < input_length) {
+        ssize_t wrote = write(made->ends[1], input + written, input_length - written);
+        if (wrote < 0 && errno == EINTR) {
+            continue;
+        }
+        if (wrote <= 0) {
+            return 0;
+        }
+        written += (size_t)wrote;
+    }
+    close_descriptor(&made->ends[1]);
+    return 1;
+}
+
+naula_status naula_run_limited(const char *const *arguments, const char *directory, const char *const *environment,
+                               const char *input, size_t input_length, const naula_run_limits *limits,
+                               naula_run_result *result, naula_refusal *refusal) {
     naula_status begun = run_begin(arguments, result, refusal);
+    if (begun == NAULA_OK) {
+        begun = run_check_input(input, input_length, refusal);
+    }
     if (begun != NAULA_OK) {
         return begun;
     }
@@ -383,22 +464,25 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
     if (begun != NAULA_OK) {
         return begun;
     }
+    run_pipe input_pipe = {{-1, -1}};
     run_pipe output = {{-1, -1}};
     run_pipe error = {{-1, -1}};
     run_pipe report = {{-1, -1}};
     naula_status status = NAULA_OK;
-    if (!open_pipe(&output) || !open_pipe(&error) || !open_pipe(&report)) {
+    if ((input != NULL && !fill_input(input, input_length, &input_pipe)) || !open_pipe(&output) ||
+        !open_pipe(&error) || !open_pipe(&report)) {
         status = refuse_system_failure("open a pipe for", arguments[0], refusal);
     } else {
         pid_t child = fork();
         if (child < 0) {
             status = refuse_system_failure("start", arguments[0], refusal);
         } else if (child == 0) {
-            run_child(arguments, directory, &program, &output, &error, &report);
+            run_child(arguments, directory, &program, &input_pipe, &output, &error, &report, limits != NULL);
         } else {
-            status = run_started(child, &output, &error, &report, arguments, directory, result, refusal);
+            status = run_started(child, &output, &error, &report, arguments, directory, limits, result, refusal);
         }
     }
+    close_pipe(&input_pipe);
     close_pipe(&output);
     close_pipe(&error);
     close_pipe(&report);

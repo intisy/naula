@@ -177,6 +177,16 @@ typedef struct naula_root_file {
     char **extra_orgs;
 } naula_root_file;
 
+/**
+ * Takes the root's lock, as naula_layout_apply does, and keeps it until naula_root_unhold, so a command's several
+ * steps (writing `.naula.json`, cloning, scanning links, applying, resuming) run under one lock with no other naula
+ * between them: while it is held, every call of this process on that root uses the held lock instead of taking its
+ * own. One root at a time per process, and not for several threads at once. Makes `<root>/.naula-journal` when it is
+ * missing; the root itself must exist.
+ */
+naula_status naula_root_hold(const char *root, naula_refusal *refusal);
+void naula_root_unhold(void);
+
 /** NAULA_NOT_FOUND when the root has no `.naula.json`. Release with naula_root_file_release. */
 naula_status naula_root_file_read(const char *root, naula_root_file *file, naula_refusal *refusal);
 /**

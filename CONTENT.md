@@ -30,3 +30,47 @@ A C library and command line that lays out, identifies and renames git repos fro
   heard it (a 404 by number, a provider that is not installed) counts a home as gone, so a timeout or an unresolved
   host never lets a copy past the home that would disown it. A home on a provider that is not installed is
   `dead-skipped`, and a refusal it decides names "install a plugin that provides a resolver" as its `fix`.
+- **The command line** (`naula`, `src/cli`): `init`, `hold`, `release`, `sync` and `clone` lay a root out from the
+  orgs it holds; `resolve` prints the homes that speak for an id; `check` is the gate a repo passes before a push;
+  `siblings` checks every dependency out at its commit. It reads history with the `git` it runs under (2.24 or newer,
+  refused below with the fix), fetching each home's commits once a run into `<cache>/history`, and takes a host's token
+  from `git credential fill`. Every git it runs has the variables that would point it at another repository,
+  configuration or program (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXEC_PATH`, `GIT_SSH` and the like) removed, so a hook or a
+  CI step cannot point naula's git elsewhere. `GIT_CONFIG_GLOBAL` is among them: naula's git reads the user's own
+  global configuration from where git looks by default (`~/.gitconfig`, or `git/config` under `XDG_CONFIG_HOME`), never
+  from a file that variable names. One home's fetch is stopped and refused past 10 minutes (`fetch-too-slow`) or past
+  1 GiB of history (`fetch-too-large`), however slowly the home trickles; `NAULA_FETCH_TIME_LIMIT_MS` and
+  `NAULA_FETCH_BYTE_LIMIT` set other limits. A fetch stopped that way leaves none of git's temporary pack files
+  (`tmp_pack_*`, `tmp_idx_*`) it wrote in `<cache>/history`; naula removes those it made and no other. Exit 0 done,
+  1 refused (code, detail and fix on standard error), 2 usage; `resolve` and `check` take `--json`. An acceptance the
+  resolver asks for is never remembered: each run names it and `--accept-primary` or `--accept-number` grants it for
+  that run.
+- **What a refused layout command leaves:** `init`, `hold`, `release`, `sync` and `clone` read every home first, and
+  a repo of a held account or kept in `extra` that gets no definite answer (unreachable, refused, without its branch,
+  with an invalid `repo.json`, unconfirmed) refuses the whole run as `repos-unread`, naming each, before any link,
+  clone or file is touched, and so does a refused plan. A repo a home it lists disowns, or a fork
+  of the repo holding its id, is a definite answer and skipped with a warning (`copy-skipped`), unless naula recorded a
+  link for it, one carrying its name to a checkout of its id: then it refuses (`copy-linked`), since it may be our own
+  repo with a mistake in its homes, whatever other repo holds the id. So a home that forges `disowned-by` against our
+  own repo refuses the whole sync until our repo's homes are fixed: it fails closed, by design. An id two repos of the
+  run carry, laid out or skipped as copies, refuses the whole run (`id-contested`, naming both and the link) when naula
+  recorded a link to that id's checkout, whatever its name, so a fork of our id never takes our checkout or link; with
+  no such link the two are left where they are (`id-collision`), and the plan never removes a recorded link to a
+  checkout two repos' ids name. An
+  empty repo with no branch is unadopted, a note, unless naula linked a repo of its name to a checkout no repo of the
+  run holds: then it refuses (`empty-linked`) rather than remove that link. From the first write on, the run holds the
+  root's lock: it writes
+  `.naula.json`, clones what is missing straight into its `repos/<12 hex>` folder, then applies the plan journalled. A
+  refusal after that point can leave `.naula.json` written and clones already in `repos/`, which the next run finds and
+  keeps, and a journal the next run resumes; it never leaves a half-made link or move. `release` holds the lock for the
+  whole command, and also removes the released org's `CLAUDE.md` while its bytes are exactly what naula's plan writes
+  there, read and removed through one walk from the root; one someone edited is left and named.
+- **`siblings`** resolves every dependency and checks that a branch of its primary holds its commit before the first
+  clone, so a refused dependency clones nothing; a clone that then fails (a disk error, a folder git will not clone
+  into) leaves the siblings already cloned. A link or reparse point anywhere in `siblings/<path>` below the repo, the
+  `siblings` folder included, is refused, asked again right before each clone. Two paths that differ only in case are
+  one path.
+- **`check`** refuses a shallow checkout (`fetch-depth: 0` in actions/checkout), takes a `--previous` of all zeros as
+  no previous tip, and fails as `too-many-findings` rather than stop counting past 255 findings. A home that holds the
+  name is this repo when the id confirms there, or, for a host repo with no format 2 `repo.json` yet, when its own
+  history gives our id; one that cannot be heard is `name-unverifiable`, a warning.

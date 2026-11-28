@@ -303,6 +303,14 @@ static void set_variable(const char *name, const char *value) {
 #endif
 }
 
+static void remove_variable(const char *name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 static void run_replaces_a_variable_the_parent_already_has(void) {
     const char *arguments[] = {own_program, "--print-environment", "NAULA_TEST_OVERRIDDEN", NULL};
     const char *added[] = {"NAULA_TEST_OVERRIDDEN=added", NULL};
@@ -312,6 +320,46 @@ static void run_replaces_a_variable_the_parent_already_has(void) {
     CHECK(naula_run(arguments, NULL, added, &result, &refusal) == NAULA_OK);
     check_text(result.output, "added\n", "overridden variable");
     naula_run_result_release(&result);
+}
+
+static void git_children_never_inherit_another_repository(void) {
+    static const char *const names[] = {"GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_KEY_0",
+                                        "GIT_EXEC_PATH", "GIT_SSH_COMMAND"};
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        set_variable(names[index], "inherited");
+    }
+    naula_git_environment_entries entries;
+    naula_git_environment(&entries);
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        const char *arguments[] = {own_program, "--print-environment", names[index], NULL};
+        naula_run_result result;
+        naula_refusal refusal;
+        CHECK(naula_run(arguments, NULL, entries.list, &result, &refusal) == NAULA_OK);
+        int inherited = result.output != NULL && strcmp(result.output, "inherited\n") == 0;
+        if (inherited) {
+            fprintf(stderr, "%s reached the git child\n", names[index]);
+        }
+        CHECK(!inherited);
+        naula_run_result_release(&result);
+    }
+    for (size_t index = 0; index < sizeof names / sizeof names[0]; index++) {
+        remove_variable(names[index]);
+    }
+}
+
+static void run_removes_the_variables_an_entry_names_without_a_value(void) {
+    set_variable("NAULA_TEST_REMOVED", "parent");
+    set_variable("NAULA_TEST_PREFIXED_ONE", "parent");
+    const char *removed[] = {"NAULA_TEST_REMOVED", "NAULA_TEST_PREFIXED_*", NULL};
+    const char *names[] = {"NAULA_TEST_REMOVED", "NAULA_TEST_PREFIXED_ONE"};
+    for (size_t index = 0; index < 2; index++) {
+        const char *arguments[] = {own_program, "--print-environment", names[index], NULL};
+        naula_run_result result;
+        naula_refusal refusal;
+        CHECK(naula_run(arguments, NULL, removed, &result, &refusal) == NAULA_OK);
+        check_text(result.output, "(unset)\n", names[index]);
+        naula_run_result_release(&result);
+    }
 }
 
 static void run_never_runs_a_program_from_the_current_directory(void) {
@@ -359,6 +407,44 @@ static int print_arguments(int count, char **values) {
     return 0;
 }
 
+static int copy_input(void) {
+#if defined(_WIN32)
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    char block[512];
+    size_t got;
+    while ((got = fread(block, 1, sizeof block, stdin)) > 0) {
+        fwrite(block, 1, got, stdout);
+    }
+    return 0;
+}
+
+static void run_passes_input_and_then_end_of_file(void) {
+    const char *arguments[] = {own_program, "--copy-input", NULL};
+    const char input[] = "protocol=https\nhost=example.org\n\n";
+    naula_run_result result;
+    naula_refusal refusal;
+    CHECK(naula_run_with_input(arguments, NULL, NULL, input, sizeof input - 1, &result, &refusal) == NAULA_OK);
+    CHECK(result.exit_code == 0);
+    check_text(result.output, input, "copied input");
+    naula_run_result_release(&result);
+    CHECK(naula_run_with_input(arguments, NULL, NULL, "", 0, &result, &refusal) == NAULA_OK);
+    check_text(result.output, "", "empty input");
+    naula_run_result_release(&result);
+}
+
+static void run_refuses_input_past_its_limit(void) {
+    static char input[NAULA_RUN_INPUT_LIMIT + 1];
+    const char *arguments[] = {own_program, "--copy-input", NULL};
+    naula_run_result result;
+    naula_refusal refusal;
+    memset(input, 'x', sizeof input);
+    CHECK(naula_run_with_input(arguments, NULL, NULL, input, sizeof input, &result, &refusal) == NAULA_MALFORMED);
+    check_text(refusal.code, "run-input-too-large", "input past the limit");
+    naula_run_result_release(&result);
+}
+
 static int flood(void) {
     char block[1024];
     memset(block, 'x', sizeof block);
@@ -376,6 +462,9 @@ int main(int count, char **values) {
     }
     if (count > 2 && strcmp(values[1], "--print-environment") == 0) {
         return print_environment(values[2]);
+    }
+    if (count > 1 && strcmp(values[1], "--copy-input") == 0) {
+        return copy_input();
     }
     if (count > 1 && strcmp(values[1], "--flood") == 0) {
         return flood();
@@ -402,6 +491,10 @@ int main(int count, char **values) {
     run_gives_the_child_the_added_environment();
     git_children_never_wait_for_a_person();
     run_replaces_a_variable_the_parent_already_has();
+    run_removes_the_variables_an_entry_names_without_a_value();
+    git_children_never_inherit_another_repository();
     run_never_runs_a_program_from_the_current_directory();
+    run_passes_input_and_then_end_of_file();
+    run_refuses_input_past_its_limit();
     return check_summary("git_test");
 }

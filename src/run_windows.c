@@ -12,6 +12,7 @@
 
 typedef struct run_handles {
     HANDLE null_device;
+    HANDLE input_read;
     HANDLE output_read;
     HANDLE output_write;
     HANDLE error_read;
@@ -33,6 +34,7 @@ static void release_handles(run_handles *handles) {
         naula_memory_release(handles->attributes);
     }
     close_handle(&handles->null_device);
+    close_handle(&handles->input_read);
     close_handle(&handles->output_read);
     close_handle(&handles->output_write);
     close_handle(&handles->error_read);
@@ -131,15 +133,34 @@ static int prepare_attributes(run_handles *handles) {
         handles->attributes = NULL;
         return 0;
     }
-    handles->inherited[0] = handles->null_device;
+    handles->inherited[0] = handles->input_read != NULL ? handles->input_read : handles->null_device;
     handles->inherited[1] = handles->output_write;
     handles->inherited[2] = handles->error_write;
     return UpdateProcThreadAttribute(handles->attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles->inherited,
                                      sizeof handles->inherited, NULL, NULL) != 0;
 }
 
-static int prepare(run_handles *handles) {
+/** A pipe already holding all of `input` and closed for writing, its read end inheritable. */
+static int open_input(const char *input, size_t input_length, HANDLE *read_end) {
+    SECURITY_ATTRIBUTES inheritable = {sizeof inheritable, NULL, TRUE};
+    HANDLE write_end = NULL;
+    if (!CreatePipe(read_end, &write_end, &inheritable, PIPE_BYTES)) {
+        *read_end = NULL;
+        return 0;
+    }
+    DWORD written = 0;
+    int complete = SetHandleInformation(write_end, HANDLE_FLAG_INHERIT, 0) &&
+                   (input_length == 0 || (WriteFile(write_end, input, (DWORD)input_length, &written, NULL) &&
+                                          written == (DWORD)input_length));
+    CloseHandle(write_end);
+    return complete;
+}
+
+static int prepare(run_handles *handles, const char *input, size_t input_length) {
     memset(handles, 0, sizeof *handles);
+    if (input != NULL && !open_input(input, input_length, &handles->input_read)) {
+        return 0;
+    }
     handles->null_device = open_null_device();
     if (handles->null_device == INVALID_HANDLE_VALUE) {
         handles->null_device = NULL;
@@ -156,18 +177,19 @@ typedef struct run_inputs {
     wchar_t *wide_directory;
 } run_inputs;
 
-static int create(const run_inputs *inputs, run_handles *handles, PROCESS_INFORMATION *information) {
+static int create(const run_inputs *inputs, run_handles *handles, int suspended, PROCESS_INFORMATION *information) {
     STARTUPINFOEXW startup;
     memset(&startup, 0, sizeof startup);
     startup.StartupInfo.cb = sizeof startup;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = handles->null_device;
+    startup.StartupInfo.hStdInput = handles->inherited[0];
     startup.StartupInfo.hStdOutput = handles->output_write;
     startup.StartupInfo.hStdError = handles->error_write;
     startup.lpAttributeList = handles->attributes;
-    return CreateProcessW(inputs->application, inputs->line, NULL, NULL, TRUE,
-                          CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                          inputs->environment, inputs->wide_directory, &startup.StartupInfo, information) != 0;
+    DWORD flags = CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT |
+                  (suspended ? CREATE_SUSPENDED : 0);
+    return CreateProcessW(inputs->application, inputs->line, NULL, NULL, TRUE, flags, inputs->environment,
+                          inputs->wide_directory, &startup.StartupInfo, information) != 0;
 }
 
 /** Reads what the pipe holds now into buffer; sets *read_any when it took bytes. */
@@ -190,8 +212,71 @@ static void drain(HANDLE pipe, run_buffer *buffer, int *read_any, int *out_of_me
  * @implNote Output is read only until the child has exited and nothing is left to read, so a grandchild that
  * inherited a pipe, as a detached git maintenance run does, never holds the run open.
  */
-static int collect(HANDLE process, run_handles *handles, run_buffer *output, run_buffer *error, int *out_of_memory) {
+/** A job that ends every process in it once its last handle closes, so a stopped run leaves no program behind. */
+static HANDLE open_job(void) {
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION information;
+    memset(&information, 0, sizeof information);
+    information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job != NULL &&
+        !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &information, sizeof information)) {
+        CloseHandle(job);
+        job = NULL;
+    }
+    return job;
+}
+
+typedef struct run_watch {
+    run_limits_clock clock;
+    HANDLE job;
+    run_stop stopped;
+} run_watch;
+
+/** @implNote GetTickCount64 moves in steps of about 16 ms, too coarse to judge a limit of a few milliseconds by. */
+static uint64_t now_milliseconds(void) {
+    LARGE_INTEGER count;
+    LARGE_INTEGER frequency;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&frequency);
+    return (uint64_t)count.QuadPart / (uint64_t)frequency.QuadPart * 1000u +
+           (uint64_t)count.QuadPart % (uint64_t)frequency.QuadPart * 1000u / (uint64_t)frequency.QuadPart;
+}
+
+static void enforce_limits(HANDLE process, run_watch *watch) {
+    if (watch->clock.limits == NULL || watch->stopped != RUN_NOT_STOPPED) {
+        return;
+    }
+    watch->stopped = run_limits_judge(&watch->clock, now_milliseconds());
+    if (watch->stopped != RUN_NOT_STOPPED) {
+        TerminateJobObject(watch->job, 1);
+        TerminateProcess(process, 1);
+    }
+}
+
+#define JOB_END_WAIT_MILLISECONDS 10000u
+
+/**
+ * Waits, a bounded time, until no process is left in the stopped run's job, since ending a job is asynchronous: a
+ * program still dying holds its files open, so its caller could not yet remove what it left.
+ */
+static void wait_for_empty_job(HANDLE job) {
+    uint64_t until = now_milliseconds() + JOB_END_WAIT_MILLISECONDS;
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+    while (now_milliseconds() < until) {
+        memset(&accounting, 0, sizeof accounting);
+        if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting, sizeof accounting,
+                                       NULL) ||
+            accounting.ActiveProcesses == 0) {
+            return;
+        }
+        Sleep(5);
+    }
+}
+
+static int collect(HANDLE process, run_handles *handles, run_buffer *output, run_buffer *error, int *out_of_memory,
+                   run_watch *watch) {
     for (;;) {
+        enforce_limits(process, watch);
         int read_any = 0;
         drain(handles->output_read, output, &read_any, out_of_memory);
         drain(handles->error_read, error, &read_any, out_of_memory);
@@ -199,6 +284,9 @@ static int collect(HANDLE process, run_handles *handles, run_buffer *output, run
             drain(handles->output_read, output, &read_any, out_of_memory);
             drain(handles->error_read, error, &read_any, out_of_memory);
             if (!read_any) {
+                if (watch->stopped == RUN_NOT_STOPPED) {
+                    watch->stopped = run_limits_judge_ended(&watch->clock, now_milliseconds());
+                }
                 break;
             }
         }
@@ -224,23 +312,54 @@ static naula_status refuse_create_failure(DWORD error, const char *program, cons
 }
 
 static naula_status run_prepared(const run_inputs *inputs, const char *const *arguments, const char *directory,
-                                 run_handles *handles, naula_run_result *result, naula_refusal *refusal) {
+                                 run_handles *handles, const naula_run_limits *limits, naula_run_result *result,
+                                 naula_refusal *refusal) {
     PROCESS_INFORMATION information = {NULL, NULL, 0, 0};
-    if (!create(inputs, handles, &information)) {
-        return refuse_create_failure(GetLastError(), arguments[0], directory, refusal);
+    run_watch watch = {{limits, now_milliseconds()}, NULL, RUN_NOT_STOPPED};
+    if (limits != NULL) {
+        watch.job = open_job();
+        if (watch.job == NULL) {
+            naula_refuse(refusal, "run-failed", "close some programs and try again",
+                         "cannot make a job object for %s: Windows error %lu", arguments[0],
+                         (unsigned long)GetLastError());
+            return NAULA_REFUSED;
+        }
     }
+    if (!create(inputs, handles, limits != NULL, &information)) {
+        DWORD failure = GetLastError();
+        close_handle(&watch.job);
+        return refuse_create_failure(failure, arguments[0], directory, refusal);
+    }
+    if (watch.job != NULL && (!AssignProcessToJobObject(watch.job, information.hProcess) ||
+                              ResumeThread(information.hThread) == (DWORD)-1)) {
+        DWORD failure = GetLastError();
+        TerminateProcess(information.hProcess, 1);
+        WaitForSingleObject(information.hProcess, INFINITE);
+        CloseHandle(information.hThread);
+        CloseHandle(information.hProcess);
+        close_handle(&watch.job);
+        naula_refuse(refusal, "run-failed", "close some programs and try again",
+                     "cannot start %s inside a job object: Windows error %lu", arguments[0], (unsigned long)failure);
+        return NAULA_REFUSED;
+    }
+    watch.clock.started = now_milliseconds();
     close_handle(&handles->output_write);
     close_handle(&handles->error_write);
     CloseHandle(information.hThread);
     run_buffer output = {NULL, 0, 0};
     run_buffer error = {NULL, 0, 0};
     int out_of_memory = 0;
-    int exit_code = collect(information.hProcess, handles, &output, &error, &out_of_memory);
+    int exit_code = collect(information.hProcess, handles, &output, &error, &out_of_memory, &watch);
+    if (watch.stopped != RUN_NOT_STOPPED && watch.job != NULL) {
+        TerminateJobObject(watch.job, 1);
+        wait_for_empty_job(watch.job);
+    }
     CloseHandle(information.hProcess);
-    if (out_of_memory) {
+    close_handle(&watch.job);
+    if (out_of_memory || watch.stopped != RUN_NOT_STOPPED) {
         run_buffer_discard(&output);
         run_buffer_discard(&error);
-        return NAULA_OUT_OF_MEMORY;
+        return out_of_memory ? NAULA_OUT_OF_MEMORY : run_refuse_stopped(watch.stopped, limits, arguments[0], refusal);
     }
     return run_finish(result, &output, &error, exit_code);
 }
@@ -300,12 +419,24 @@ static wchar_t *resolve_program(const wchar_t *name, int *out_of_memory) {
     return found;
 }
 
+static int is_removal(const wchar_t *addition) {
+    return wcschr(addition, L'=') == NULL;
+}
+
 static int overrides(const wchar_t *entry, const wchar_t *addition) {
     size_t length = 0;
     while (addition[length] != L'\0' && addition[length] != L'=') {
         length++;
     }
-    return entry[0] != L'=' && wcslen(entry) > length && entry[length] == L'=' && _wcsnicmp(entry, addition, length) == 0;
+    if (entry[0] == L'=') {
+        return 0;
+    }
+    if (is_removal(addition) && length > 0 && addition[length - 1] == L'*') {
+        const wchar_t *equals = wcschr(entry, L'=');
+        size_t entry_name = equals == NULL ? wcslen(entry) : (size_t)(equals - entry);
+        return entry_name >= length - 1 && _wcsnicmp(entry, addition, length - 1) == 0;
+    }
+    return wcslen(entry) > length && entry[length] == L'=' && _wcsnicmp(entry, addition, length) == 0;
 }
 
 static int is_overridden(const wchar_t *entry, wchar_t *const *additions, size_t count) {
@@ -365,7 +496,9 @@ static wchar_t *merged_environment(wchar_t *const *additions, size_t count) {
         }
     }
     for (size_t index = 0; sorted != NULL && index < count; index++) {
-        sorted[kept++] = additions[index];
+        if (!is_removal(additions[index])) {
+            sorted[kept++] = additions[index];
+        }
     }
     run_buffer block = {NULL, 0, 0};
     int complete = sorted != NULL;
@@ -467,9 +600,13 @@ static naula_status build_inputs(const char *const *arguments, const char *direc
     return out_of_memory ? NAULA_OUT_OF_MEMORY : NAULA_MALFORMED;
 }
 
-naula_status naula_run(const char *const *arguments, const char *directory, const char *const *environment,
-                       naula_run_result *result, naula_refusal *refusal) {
+naula_status naula_run_limited(const char *const *arguments, const char *directory, const char *const *environment,
+                               const char *input, size_t input_length, const naula_run_limits *limits,
+                               naula_run_result *result, naula_refusal *refusal) {
     naula_status status = run_begin(arguments, result, refusal);
+    if (status == NAULA_OK) {
+        status = run_check_input(input, input_length, refusal);
+    }
     if (status != NAULA_OK) {
         return status;
     }
@@ -477,8 +614,8 @@ naula_status naula_run(const char *const *arguments, const char *directory, cons
     status = build_inputs(arguments, directory, environment, &inputs, refusal);
     if (status == NAULA_OK) {
         run_handles handles;
-        if (prepare(&handles)) {
-            status = run_prepared(&inputs, arguments, directory, &handles, result, refusal);
+        if (prepare(&handles, input, input_length)) {
+            status = run_prepared(&inputs, arguments, directory, &handles, limits, result, refusal);
         } else {
             naula_refuse(refusal, "run-failed", "close some programs and try again", "cannot prepare to run %s",
                          arguments[0]);

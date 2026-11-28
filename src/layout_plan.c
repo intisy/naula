@@ -117,11 +117,14 @@ static int compare_entries(const void *left_pointer, const void *right_pointer) 
     return compared == 0 ? compare_text(left->step.content, right->step.content) : compared;
 }
 
+/** The top org's folder is the root itself, which every step lies below and the applier takes as given. */
 static naula_status emit_tree_folders(const layout_tree *tree, layout_builder *builder) {
     naula_status status = NAULA_OK;
     for (size_t index = 0; index < tree->count && status == NAULA_OK; index++) {
-        status = layout_add(builder, LAYOUT_PHASE_TREE_FOLDERS, 0, NAULA_MAKE_FOLDER, tree->orgs[index].folder, NULL,
-                            NULL);
+        if (!layout_path_equal(tree->orgs[index].folder, tree->root)) {
+            status = layout_add(builder, LAYOUT_PHASE_TREE_FOLDERS, 0, NAULA_MAKE_FOLDER, tree->orgs[index].folder,
+                                NULL, NULL);
+        }
         if (status == NAULA_OK) {
             status = layout_add(builder, LAYOUT_PHASE_TREE_FOLDERS, 0, NAULA_MAKE_FOLDER,
                                 tree->orgs[index].repos_folder, NULL, NULL);
@@ -626,6 +629,26 @@ static naula_status is_stale_link(const naula_layout_input *input, const layout_
     return answer < 0 ? NAULA_OUT_OF_MEMORY : NAULA_OK;
 }
 
+/**
+ * Whether the checkout folder `link` points at is the one two or more input repos name, by the twelve hex digits of
+ * their ids: the plan leaves such a pair where it is and cannot say whose link this is, so the link is never removed.
+ */
+static int targets_a_shared_checkout(const naula_layout_input *input, const naula_layout_link *link) {
+    const char *name = link->target;
+    for (const char *each = link->target; *each != '\0'; each++) {
+        if ((*each == '/' || *each == '\\') && each[1] != '\0') {
+            name = each + 1;
+        }
+    }
+    size_t length = strcspn(name, "/\\");
+    size_t naming = 0;
+    for (size_t index = 0; length == 12 && index < input->repo_count; index++) {
+        const naula_id *id = &input->repos[index].id;
+        naming += id->kind == NAULA_ID_GIT && strncmp(id->commit, name, 12) == 0;
+    }
+    return naming >= 2;
+}
+
 static naula_status emit_stale_links(const naula_layout_input *input, const layout_tree *tree,
                                      const layout_placements *placements, layout_builder *builder) {
     naula_status status = NAULA_OK;
@@ -634,7 +657,7 @@ static naula_status emit_stale_links(const naula_layout_input *input, const layo
         int stale = 0;
         status = !link->made_by_naula || is_made(placements, link) ? NAULA_OK
                                                                    : is_stale_link(input, tree, link, &stale);
-        if (status == NAULA_OK && stale) {
+        if (status == NAULA_OK && stale && !targets_a_shared_checkout(input, link)) {
             status = emit_link_removal(input, link->path, link->target, builder);
         }
     }
@@ -654,7 +677,8 @@ static naula_status mark_removable_links(const naula_layout_input *input, layout
         if (status != NAULA_OK) {
             return status;
         }
-        tree->removable_links[index] = (unsigned char)(stale && checkout_at_or_below(input, link->path) == NULL);
+        tree->removable_links[index] = (unsigned char)(stale && !targets_a_shared_checkout(input, link) &&
+                                                       checkout_at_or_below(input, link->path) == NULL);
     }
     return NAULA_OK;
 }

@@ -265,6 +265,101 @@ static naula_status refuse_unless_link(HANDLE handle, DWORD *attributes, unsigne
     return NAULA_OK;
 }
 
+/**
+ * Opens the regular file the walk names by the walked folder's handle, judged by that handle: a link, a folder or
+ * anything else there is refused, and nothing there is NAULA_NOT_FOUND. `file` is left for the caller to close.
+ */
+static naula_status open_regular_file(const disk_walk *walk, ACCESS_MASK access, ULONG share, HANDLE *file,
+                                      DWORD *attributes, unsigned long *error) {
+    naula_status status = disk_open_at(&walk->opener, walk->parent, walk->name, walk->name_bytes, access, share,
+                                       FILE_OPEN, FILE_NON_DIRECTORY_FILE | DISK_OPEN_OPTIONS, file, error);
+    if (status == NAULA_REFUSED && is_missing_error(*error)) {
+        return NAULA_NOT_FOUND;
+    }
+    if (status != NAULA_OK) {
+        return status;
+    }
+    FILE_ATTRIBUTE_TAG_INFO tag;
+    memset(&tag, 0, sizeof tag);
+    if (!GetFileInformationByHandleEx(*file, FileAttributeTagInfo, &tag, sizeof tag)) {
+        return refused(error);
+    }
+    if ((tag.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        *error = ERROR_INVALID_FUNCTION;
+        return NAULA_REFUSED;
+    }
+    *attributes = tag.FileAttributes;
+    return NAULA_OK;
+}
+
+naula_status disk_file_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
+    *error = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    DWORD attributes = 0;
+    if (status == NAULA_OK) {
+        status = open_regular_file(&walk, LINK_REMOVE_ACCESS, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   &file, &attributes, error);
+    }
+    if (status == NAULA_OK) {
+        status = disk_delete_by_handle(file, attributes, error);
+    }
+    if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+    }
+    disk_walk_release(&walk);
+    return status;
+}
+
+static naula_status holds_exactly(HANDLE file, const uint8_t *bytes, size_t length, int *holding,
+                                  unsigned long *error) {
+    uint8_t buffer[4096];
+    size_t seen = 0;
+    for (;;) {
+        DWORD read_now = 0;
+        if (!ReadFile(file, buffer, sizeof buffer, &read_now, NULL)) {
+            return refused(error);
+        }
+        if (read_now == 0) {
+            break;
+        }
+        if ((size_t)read_now > length - seen || memcmp(buffer, bytes + seen, read_now) != 0) {
+            *holding = 0;
+            return NAULA_OK;
+        }
+        seen += read_now;
+    }
+    *holding = seen == length;
+    return NAULA_OK;
+}
+
+/** @implNote Opened sharing reads only, so no writer changes the file between the read and the removal by handle. */
+naula_status disk_file_remove_if_holding(const char *root, const char *below, const uint8_t *bytes, size_t length,
+                                         disk_walk_purpose purpose, int *holding, unsigned long *error) {
+    *error = 0;
+    *holding = 0;
+    disk_walk walk;
+    naula_status status = disk_walk_to_parent(root, below, purpose, &walk, error);
+    HANDLE file = INVALID_HANDLE_VALUE;
+    DWORD attributes = 0;
+    if (status == NAULA_OK) {
+        status = open_regular_file(&walk, FILE_READ_DATA | LINK_REMOVE_ACCESS, FILE_SHARE_READ, &file, &attributes,
+                                   error);
+    }
+    if (status == NAULA_OK) {
+        status = holds_exactly(file, bytes, length, holding, error);
+    }
+    if (status == NAULA_OK && *holding) {
+        status = disk_delete_by_handle(file, attributes, error);
+    }
+    if (file != INVALID_HANDLE_VALUE) {
+        CloseHandle(file);
+    }
+    disk_walk_release(&walk);
+    return status;
+}
+
 naula_status disk_link_remove(const char *root, const char *below, disk_walk_purpose purpose, unsigned long *error) {
     *error = 0;
     disk_walk walk;
