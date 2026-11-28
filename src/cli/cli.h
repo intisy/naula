@@ -72,6 +72,9 @@ naula_status cli_make_folders(const char *path, naula_refusal *refusal);
 int cli_is_folder(const char *path);
 int cli_exists(const char *path);
 
+/** Removes the one file at `path`, a link there itself rather than what it points at. */
+naula_status cli_remove_file(const char *path, unsigned long *error);
+
 /** The whole file, NUL-terminated past `length`; NAULA_NOT_FOUND when there is none. */
 naula_status cli_read_file(const char *path, uint8_t **bytes, size_t *length, naula_refusal *refusal);
 

@@ -692,9 +692,17 @@ static void make_folder(const char *path) {
     }
 }
 
-static void make_link(const char *path, const char *target) {
+static void make_link(const char *folder, const char *name, const char *target) {
     unsigned long error = 0;
-    CHECK(disk_link_make(path, target, &error) == NAULA_OK);
+    CHECK(disk_link_make(folder, name, target, &error) == NAULA_OK);
+}
+
+static void remove_file(const char *path) {
+    const char *remove[] = {NAULA_CMAKE, "-E", "rm", "-f", path, NULL};
+    naula_run_result result;
+    if (run_in(NULL, remove, NULL, &result)) {
+        naula_run_result_release(&result);
+    }
 }
 
 /** A repo `app` of account gamma depending on `lib` of alpha, served as forge:<number>, its dependency extra appended. */
@@ -731,7 +739,7 @@ static void siblings_refuses_a_link_in_its_own_siblings_folder(void) {
     path_in(escaped, "escaped");
     make_folder(escaped);
     snprintf(link, sizeof link, "%s/siblings", app);
-    make_link(link, escaped);
+    make_link(app, "siblings", escaped);
     expect_exit(naula("siblings", "--repo", app, NULL), 1, "a linked siblings folder");
     expect_output("path-linked", 1, "why the link was refused");
     snprintf(written, sizeof written, "%s/lib", escaped);
@@ -1144,9 +1152,8 @@ static int stop_between_move_and_bank(const char *root, const char *from, const 
         naula_run_result_release(&result);
         if (stopped && exists(to) && exists(bank)) {
             char lock[1100];
-            unsigned long error = 0;
             snprintf(lock, sizeof lock, "%s/.naula-journal/lock", root);
-            disk_file_remove(lock, &error);
+            remove_file(lock);
             return 1;
         }
     }
@@ -1193,6 +1200,76 @@ static void init_and_sync_take_a_root_with_a_trailing_separator(void) {
     expect_output("unlink ", 0, "the same root, not another");
 }
 
+/** gamma's thing copied into alpha, its repo.json pointing at beta's app, which holds another id and disowns it. */
+static void sync_skips_a_copy_a_home_disowns(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char thing[1024];
+    char copy[1024];
+    char url[1100];
+    make_orgs(alpha, beta_app, gamma);
+    path_in(thing, "gamma-thing");
+    path_in(copy, "alpha-copy");
+    snprintf(url, sizeof url, "file://%s", thing);
+    git(NULL, "clone", "--quiet", url, copy, NULL);
+    char file[TEXT_SIZE];
+    snprintf(file, sizeof file, "{\"format\":2,\"name\":\"%s\",\"importName\":\"%s\",\"homes\":["
+             "{\"provider\":\"forge\",\"account\":\"alpha\"},{\"provider\":\"forge\",\"account\":\"beta\"}]}\n",
+             "app", "app");
+    commit_file("alpha-copy", "repo.json", file);
+    serve(103, "alpha", "app", "alpha-copy", NULL);
+    path_in(root, "root");
+    expect_exit(naula("init", root, "forge:101", NULL), 0, "a copy in a held account");
+    expect_output("copy-skipped", 1, "the copy is named");
+    expect_output("repos-unread", 0, "and the run goes on");
+    expect_path(root, "tools/tool", 1, "the rest is laid out");
+}
+
+static void sync_refuses_a_copy_naula_linked(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    make_orgs(alpha, beta_app, gamma);
+    init_root(root);
+    char file[TEXT_SIZE];
+    snprintf(file, sizeof file, "{\"format\":2,\"name\":\"%s\",\"importName\":\"%s\",\"homes\":["
+             "{\"provider\":\"forge\",\"account\":\"alpha\"},{\"provider\":\"forge\",\"account\":\"beta\"}]}\n",
+             "tool", "tool");
+    commit_file("alpha-tool", "repo.json", file);
+    char other[TEXT_SIZE];
+    app_file(other, "tool", "beta", NULL);
+    const char *other_files[] = {"repo.json", other, NULL};
+    make_repo("beta-tool", other_files);
+    serve(203, "beta", "tool", "beta-tool", NULL);
+    expect_exit(naula("sync", "--root", root, NULL), 1, "our own repo with a mistake in its homes");
+    expect_output("copy-linked", 1, "why it was not skipped");
+    expect_path(root, "tools/tool", 1, "its link is kept");
+}
+
+static void sync_notes_an_empty_repo_as_unadopted(void) {
+    start_case();
+    char alpha[65];
+    char beta_app[65];
+    char gamma[65];
+    char root[1024];
+    char empty[1024];
+    make_orgs(alpha, beta_app, gamma);
+    path_in(empty, "alpha-empty");
+    make_folder(empty);
+    git(empty, "init", "--quiet", "-b", "main", NULL);
+    serve(104, "alpha", "empty", "alpha-empty", NULL);
+    path_in(root, "root");
+    expect_exit(naula("init", root, "forge:101", NULL), 0, "an empty repo in a held account");
+    expect_output("note unadopted", 1, "the empty repo is a note");
+    expect_output("repos-unread", 0, "never a refusal");
+    expect_path(root, "tools/tool", 1, "the rest is laid out");
+}
+
 static void check_counts_an_unheard_home_as_unverifiable(void) {
     start_case();
     char file[TEXT_SIZE];
@@ -1237,8 +1314,7 @@ static void sync_takes_the_lock_before_cloning(void) {
     expect_exit(naula("sync", "--root", root, NULL), 1, "a root another naula holds");
     expect_output("root-locked", 1, "the lock");
     CHECK(!exists(path));
-    unsigned long error = 0;
-    disk_file_remove(lock, &error);
+    remove_file(lock);
 }
 
 typedef struct test_entry {
@@ -1277,6 +1353,9 @@ static const test_entry tests[] = {
      check_reads_a_repo_in_a_folder_named_outside_the_code_page},
     {"sync_resumes_a_move_with_its_memory_bank", sync_resumes_a_move_with_its_memory_bank},
     {"check_counts_an_unheard_home_as_unverifiable", check_counts_an_unheard_home_as_unverifiable},
+    {"sync_skips_a_copy_a_home_disowns", sync_skips_a_copy_a_home_disowns},
+    {"sync_refuses_a_copy_naula_linked", sync_refuses_a_copy_naula_linked},
+    {"sync_notes_an_empty_repo_as_unadopted", sync_notes_an_empty_repo_as_unadopted},
     {"init_and_sync_take_a_root_with_a_trailing_separator", init_and_sync_take_a_root_with_a_trailing_separator},
     {"sync_takes_the_lock_before_cloning", sync_takes_the_lock_before_cloning},
 };

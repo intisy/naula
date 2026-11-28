@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -204,6 +205,27 @@ int cli_exists(const char *path) {
     return disk_kind_of(path, &kind, &error) == NAULA_OK && kind != DISK_MISSING;
 }
 
+/** Makes the one folder `path` under its parent, the parent kept with its separator when it is a file system root. */
+static naula_status make_one_folder(const char *path, unsigned long *error) {
+    const char *slash = strrchr(path, '/');
+    const char *backslash = strrchr(path, '\\');
+    if (backslash != NULL && (slash == NULL || backslash > slash)) {
+        slash = backslash;
+    }
+    if (slash == NULL) {
+        return NAULA_REFUSED;
+    }
+    size_t parent_length = (size_t)(slash - path);
+    int is_root = parent_length == 0 || (parent_length == 2 && path[1] == ':');
+    char *parent = cli_format("%.*s", (int)(parent_length + (is_root ? 1 : 0)), path);
+    if (parent == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    naula_status status = disk_folder_make(parent, slash + 1, error);
+    naula_memory_release(parent);
+    return status;
+}
+
 naula_status cli_make_folders(const char *path, naula_refusal *refusal) {
     char *copy = naula_memory_duplicate_text(path);
     if (copy == NULL) {
@@ -221,7 +243,7 @@ naula_status cli_make_folders(const char *path, naula_refusal *refusal) {
         disk_kind kind = DISK_MISSING;
         int is_drive = strlen(copy) == 2 && copy[1] == ':';
         if (!is_drive && disk_kind_of(copy, &kind, &error) == NAULA_OK && kind == DISK_MISSING &&
-            disk_folder_make(copy, &error) != NAULA_OK) {
+            make_one_folder(copy, &error) != NAULA_OK) {
             char text[256];
             disk_error_text(error, text, sizeof text);
             naula_refuse(refusal, "folder-not-made", "check the folder can be written", "cannot make %s: %s", copy,
@@ -235,6 +257,23 @@ naula_status cli_make_folders(const char *path, naula_refusal *refusal) {
     }
     naula_memory_release(copy);
     return status;
+}
+
+naula_status cli_remove_file(const char *path, unsigned long *error) {
+#if defined(_WIN32)
+    wchar_t *wide = widen(path);
+    if (wide == NULL) {
+        return NAULA_OUT_OF_MEMORY;
+    }
+    int removed = DeleteFileW(wide) != 0;
+    *error = removed ? 0 : GetLastError();
+    naula_memory_release(wide);
+    return removed ? NAULA_OK : NAULA_REFUSED;
+#else
+    int removed = unlink(path) == 0;
+    *error = removed ? 0 : (unsigned long)errno;
+    return removed ? NAULA_OK : NAULA_REFUSED;
+#endif
 }
 
 naula_status cli_read_file(const char *path, uint8_t **bytes, size_t *length, naula_refusal *refusal) {
