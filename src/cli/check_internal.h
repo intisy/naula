@@ -23,8 +23,10 @@ typedef struct check_findings {
     check_finding items[CHECK_FINDING_LIMIT];
     size_t count;
     int out_of_memory;
+    int overflowed;
 } check_findings;
 
+/** Past CHECK_FINDING_LIMIT the last slot holds the error `too-many-findings`, so a gate that ran out of room fails. */
 void check_add(check_findings *findings, check_level level, const char *code, const char *fix, const char *format,
                ...);
 

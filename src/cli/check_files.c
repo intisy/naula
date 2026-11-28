@@ -82,9 +82,19 @@ static int names_a_date(const char *path) {
 }
 
 /** A record keeps what was true when it was written, names included, so the literal rule never reads one. */
+static int same_ignoring_case(const char *left, const char *right) {
+    for (; *left != '\0' && *right != '\0'; left++, right++) {
+        if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
+            return 0;
+        }
+    }
+    return *left == *right;
+}
+
+/** workspace's RECORD_FILE (workspace/src/checks.ts), which matches ignoring case, folders and files alike. */
 static int is_record(const char *path) {
     for (size_t index = 0; index < sizeof record_files / sizeof record_files[0]; index++) {
-        if (strcmp(base_name(path), record_files[index]) == 0) {
+        if (same_ignoring_case(base_name(path), record_files[index])) {
             return 1;
         }
     }
@@ -247,13 +257,19 @@ static char *literal_in(const char *line, size_t length, const char *const *acco
     return NULL;
 }
 
+/** A step's `uses:` key, as `uses:` or `- uses:` after the indentation; `uses:` anywhere else in a line is not one. */
 static int is_uses_line(const char *line, size_t length) {
-    for (size_t at = 0; at + 5 <= length; at++) {
-        if (memcmp(line + at, "uses:", 5) == 0) {
-            return 1;
+    size_t at = 0;
+    while (at < length && (line[at] == ' ' || line[at] == '\t')) {
+        at++;
+    }
+    if (at < length && line[at] == '-') {
+        at++;
+        while (at < length && (line[at] == ' ' || line[at] == '\t')) {
+            at++;
         }
     }
-    return 0;
+    return at + 5 <= length && memcmp(line + at, "uses:", 5) == 0;
 }
 
 typedef struct file_scan {

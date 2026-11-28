@@ -13,7 +13,7 @@
 
 void check_add(check_findings *findings, check_level level, const char *code, const char *fix, const char *format,
                ...) {
-    if (findings->count >= CHECK_FINDING_LIMIT) {
+    if (findings->overflowed) {
         return;
     }
     va_list arguments;
@@ -21,6 +21,14 @@ void check_add(check_findings *findings, check_level level, const char *code, co
     char text[1200];
     vsnprintf(text, sizeof text, format, arguments);
     va_end(arguments);
+    if (findings->count == CHECK_FINDING_LIMIT - 1) {
+        findings->overflowed = 1;
+        level = CHECK_ERROR;
+        code = "too-many-findings";
+        fix = "fix the findings listed, then run the check again to see the rest";
+        snprintf(text, sizeof text, "more than %d findings: the rest were not recorded, so the gate fails",
+                 CHECK_FINDING_LIMIT - 1);
+    }
     check_finding *finding = &findings->items[findings->count];
     memset(finding, 0, sizeof *finding);
     finding->level = level;
@@ -32,7 +40,7 @@ void check_add(check_findings *findings, check_level level, const char *code, co
 }
 
 void check_attach_line(check_findings *findings, char *line) {
-    if (findings->count == 0 || line == NULL) {
+    if (findings->count == 0 || line == NULL || findings->overflowed) {
         findings->out_of_memory = findings->out_of_memory || line == NULL;
         naula_memory_release(line);
         return;
@@ -67,6 +75,39 @@ typedef struct check_run {
     char own_id[80];
     check_findings findings;
 } check_run;
+
+typedef enum repo_match { MATCH_UNHEARD = 0, MATCH_THIS_REPO = 1, MATCH_OTHER_REPO = 2 } repo_match;
+
+static int is_unheard(naula_status status) {
+    return status == NAULA_TIMED_OUT || status == NAULA_UNREACHABLE;
+}
+
+/** CI's `before` for a branch that did not exist yet: forty or sixty-four zeros, meaning there is no previous tip. */
+static int names_no_commit(const char *commit) {
+    size_t length = strlen(commit);
+    return (length == 40 || length == 64) && strspn(commit, "0") == length;
+}
+
+/**
+ * A shallow checkout's oldest commit has its parents cut off, so git reads it as the root and every id check would
+ * judge the shallow boundary instead of the repo; actions/checkout makes one unless told `fetch-depth: 0`.
+ */
+static int is_shallow(check_run *run) {
+    const char *arguments[] = {"rev-parse", "--is-shallow-repository", NULL};
+    naula_run_result result;
+    naula_refusal refusal = cli_fresh_refusal();
+    if (cli_git(run->repository, arguments, &result, &refusal) != NAULA_OK) {
+        return 0;
+    }
+    int shallow = strncmp(result.output, "true", 4) == 0;
+    naula_run_result_release(&result);
+    if (shallow) {
+        check_add(&run->findings, CHECK_ERROR, "shallow-checkout",
+                  "check the repo out with its whole history (actions/checkout: fetch-depth: 0)",
+                  "the checkout is shallow, so its oldest commit would be read as the root and the id is unknown");
+    }
+    return shallow;
+}
 
 static naula_status read_repo_file(check_run *run) {
     char *path = cli_join(run->repository, "repo.json");
@@ -137,7 +178,7 @@ static void check_identity(check_run *run) {
         snprintf(run->own_id, sizeof run->own_id, "git:%s", id.commit);
     }
     naula_id_release(&id);
-    if (run->arguments->previous == NULL) {
+    if (run->arguments->previous == NULL || names_no_commit(run->arguments->previous)) {
         return;
     }
     char *previous_stated = stated_id_at(run->repository, run->arguments->previous);
@@ -255,10 +296,60 @@ static void check_dependencies(check_run *run, cli_context *context) {
     }
 }
 
+/**
+ * For a host repo that has no format 2 repo.json yet, as the adoption change of an existing repo meets it: the id its
+ * own history gives, with our stated id taken as the fork exception, compared with ours.
+ */
+static repo_match compare_unadopted(check_run *run, cli_context *context, const naula_place *place) {
+    naula_repository repository;
+    naula_refusal refusal = cli_fresh_refusal();
+    naula_status status = cli_history_lookup(context->history, place, &repository, &refusal);
+    if (status != NAULA_OK) {
+        return is_unheard(status) ? MATCH_UNHEARD : MATCH_OTHER_REPO;
+    }
+    naula_id id;
+    char *branch = NULL;
+    status = cli_history_id(context->history, repository.clone_url, repository.default_branch, NULL, &id, &branch,
+                            &refusal);
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    int adopted = 0;
+    if (status == NAULA_OK) {
+        naula_status read = cli_read_home_file(context, place, branch, &bytes, &length, &refusal);
+        naula_repo_file file;
+        memset(&file, 0, sizeof file);
+        file.size = sizeof file;
+        naula_refusal parsed = cli_fresh_refusal();
+        adopted = read == NAULA_OK && naula_repo_file_parse(bytes, length, &file, &parsed) == NAULA_OK;
+        naula_repo_file_release(&file);
+        status = read == NAULA_OK || read == NAULA_NOT_FOUND || read == NAULA_REFUSED ? NAULA_OK : read;
+    }
+    naula_memory_release(bytes);
+    if (status == NAULA_OK && !adopted && run->file.id != NULL) {
+        naula_id_release(&id);
+        naula_memory_release(branch);
+        branch = NULL;
+        status = cli_history_id(context->history, repository.clone_url, repository.default_branch, run->file.id, &id,
+                                &branch, &refusal);
+    }
+    repo_match match = is_unheard(status) ? MATCH_UNHEARD : MATCH_OTHER_REPO;
+    if (status == NAULA_OK && !adopted) {
+        char text[80];
+        snprintf(text, sizeof text, "git:%s", id.commit);
+        match = id.kind == NAULA_ID_GIT && strcmp(text, run->own_id) == 0 ? MATCH_THIS_REPO : MATCH_OTHER_REPO;
+    }
+    if (status == NAULA_OK) {
+        naula_id_release(&id);
+    }
+    naula_memory_release(branch);
+    naula_repository_release(&repository);
+    return match;
+}
+
 /** Whether the repo the host holds under the name is this one: its id must confirm that home. */
-static int is_this_repo(check_run *run, cli_context *context, const naula_home *home, uint64_t number) {
+static repo_match is_this_repo(check_run *run, cli_context *context, const naula_home *home, uint64_t number) {
     if (run->own_id[0] == '\0') {
-        return 0;
+        return MATCH_UNHEARD;
     }
     naula_place place;
     memset(&place, 0, sizeof place);
@@ -275,14 +366,16 @@ static int is_this_repo(check_run *run, cli_context *context, const naula_home *
     reference.at_count = 1;
     naula_resolution resolution;
     naula_refusal refusal = cli_fresh_refusal();
+    naula_status status = cli_resolve(context, &reference, &resolution, &refusal);
     int ours = 0;
-    if (cli_resolve(context, &reference, &resolution, &refusal) == NAULA_OK) {
-        for (size_t index = 0; index < resolution.home_count; index++) {
-            ours = ours || resolution.homes[index].number == number;
-        }
+    for (size_t index = 0; status == NAULA_OK && index < resolution.home_count; index++) {
+        ours = ours || resolution.homes[index].number == number;
     }
     naula_resolution_release(&resolution);
-    return ours;
+    if (ours) {
+        return MATCH_THIS_REPO;
+    }
+    return is_unheard(status) ? MATCH_UNHEARD : compare_unadopted(run, context, &place);
 }
 
 static void check_name_free(check_run *run, cli_context *context) {
@@ -300,11 +393,16 @@ static void check_name_free(check_run *run, cli_context *context) {
                                                                 cli_credentials_token(context->credentials,
                                                                                       home->provider, home->host),
                                                                 &number, &refusal);
+        repo_match match = status == NAULA_OK && number != 0 ? is_this_repo(run, context, home, number) : MATCH_THIS_REPO;
         if (status != NAULA_OK) {
             check_add(&run->findings, CHECK_WARNING, "name-unverifiable", "run the check again once the home answers",
                       "whether homes[%zu] already holds the name %s is unknown: %s: %s", index, run->file.name,
                       refusal.code, refusal.detail);
-        } else if (number != 0 && !is_this_repo(run, context, home, number)) {
+        } else if (match == MATCH_UNHEARD) {
+            check_add(&run->findings, CHECK_WARNING, "name-unverifiable", "run the check again once the home answers",
+                      "%s account %s holds a repository named %s (number %llu), and whether it is this repo is unknown",
+                      home->provider, home->account, run->file.name, (unsigned long long)number);
+        } else if (match == MATCH_OTHER_REPO) {
             check_add(&run->findings, CHECK_ERROR, "name-taken", "choose another name, or retire the repo holding it",
                       "%s account %s already holds a repository named %s (number %llu) that is not this repo",
                       home->provider, home->account, run->file.name, (unsigned long long)number);
@@ -390,7 +488,9 @@ static void run_checks(check_run *run) {
     if (read_repo_file(run) != NAULA_OK || !run->has_file) {
         return;
     }
-    check_identity(run);
+    if (!is_shallow(run)) {
+        check_identity(run);
+    }
     check_url_forms(run);
     const char *accounts[ACCOUNT_LIMIT];
     size_t account_count = collect_accounts(&run->file, accounts);
